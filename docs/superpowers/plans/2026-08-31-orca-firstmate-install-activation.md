@@ -1932,6 +1932,12 @@ while [ -L "$_self" ] && [ "$_hops" -lt 16 ]; do
   esac
   _hops=$((_hops + 1))
 done
+# Chạm trần thì BÁO LỖI, không đi tiếp với đường dẫn giải dở. Đi tiếp là suy
+# thoái im lặng — đúng loại lỗi đã cắn dự án này ba lần (cd "" thành no-op,
+# trap tín hiệu chạy tiếp, guard nối chuỗi trước khi kiểm) — và ở đây nó có thể
+# cho ra một REPO_DIR sai mà vẫn hợp lệ.
+[ -L "$_self" ] && {
+  printf 'error: chuỗi symlink quá sâu (>16 hop) từ %s\n' "$0" >&2; exit 2; }
 SELF_DIR="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)" || {
   printf 'error: không xác định được thư mục của script\n' >&2; exit 2; }
 REPO_DIR="$(cd "$SELF_DIR/.." 2>/dev/null && pwd)" || {
