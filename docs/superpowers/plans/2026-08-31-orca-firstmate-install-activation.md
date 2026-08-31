@@ -233,7 +233,7 @@ printf '\n%s TEST FILE(S) FAILED\n' "$failed" >&2; exit 1
 - [ ] **Step 6: Chạy test cho pass**
 
 Run: `chmod +x tests/fake-orca/orca tests/run-all.sh && bash tests/helpers.test.sh`
-Expected: PASS — `ok: 6 asserts passed (helpers.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (helpers.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 7: Commit**
 
@@ -426,7 +426,7 @@ ofm_lock_release() {  # <session_id> — chỉ đúng chủ mới xoá được
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `bash tests/lock.test.sh`
-Expected: PASS — `ok: 17 asserts passed (lock.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (lock.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 5: Commit**
 
@@ -594,7 +594,7 @@ _ofm_wake_kill_all() {  # <tmpdir>
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `bash tests/wake-lib.test.sh`
-Expected: PASS — `ok: 9 asserts passed (wake-lib.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (wake-lib.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 5: Commit**
 
@@ -729,7 +729,7 @@ exit 2
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `chmod +x hooks/wake-claude.sh && bash tests/wake-claude.test.sh`
-Expected: PASS — `ok: 12 asserts passed (wake-claude.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (wake-claude.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 5: Commit**
 
@@ -882,7 +882,7 @@ exit 0
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `chmod +x hooks/wake-cursor.sh && bash tests/wake-cursor.test.sh`
-Expected: PASS — `ok: 9 asserts passed (wake-cursor.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (wake-cursor.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 5: Commit**
 
@@ -1093,7 +1093,7 @@ Kích hoạt phiên này thành first mate.
 - [ ] **Step 7: Chạy test cho pass**
 
 Run: `chmod +x bin/ofm-activate.sh hooks/reidentify-claude.sh && bash tests/activate.test.sh`
-Expected: PASS — `ok: 10 asserts passed (activate.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (activate.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 8: Commit**
 
@@ -1243,7 +1243,7 @@ esac
 - [ ] **Step 5: Chạy test cho pass**
 
 Run: `chmod +x bin/ofm-adapter-claude.sh && bash tests/adapter-claude.test.sh`
-Expected: PASS — `ok: 10 asserts passed (adapter-claude.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (adapter-claude.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 6: Commit**
 
@@ -1441,7 +1441,7 @@ esac
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `chmod +x bin/ofm-adapter-cursor.sh && bash tests/adapter-cursor.test.sh`
-Expected: PASS — `ok: 19 asserts passed (adapter-cursor.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (adapter-cursor.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 5: Commit**
 
@@ -1857,7 +1857,7 @@ echo "  orca-firstmate install    # cài vào harness (sẽ sửa cấu hình ha
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `chmod +x install.sh && bash tests/install-sh.test.sh`
-Expected: PASS — `ok: 15 asserts passed (install-sh.test.sh)`
+Expected: PASS — dòng cuối là `ok: <n> asserts passed (install-sh.test.sh)`. Con số cụ thể KHÔNG phải hợp đồng: nếu nó lệch, đếm lại assert trong test là đúng, đừng sửa test cho khớp con số.
 
 - [ ] **Step 5: Commit**
 
