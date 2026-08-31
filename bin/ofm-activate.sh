@@ -24,8 +24,6 @@ LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib 
 # shellcheck source=/dev/null
 . "$LIB/ofm-home.sh"
 
-mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
-
 # PID phải là tiến trình HARNESS sống lâu, không phải shell tạm đang gọi script.
 # $PPID là shell của Bash tool và có thể chết ngay sau đó, khiến `kill -0` coi
 # một first mate đang sống là đã chết và cho phiên khác cướp lock — đúng hỏng
@@ -39,5 +37,9 @@ case "$pid" in
     printf 'refused reason=no_harness_pid harness=%s\n' "$harness" >&2
     exit 2 ;;
 esac
+
+# Chỉ tạo home SAU khi mọi phép từ chối đã qua: một lần kích hoạt bị từ chối
+# không nên để lại thư mục nào mà lần kích hoạt thành công sau thấy lạ.
+mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
 
 ofm_lock_claim "$session_id" "$harness" "$pid"

@@ -30,6 +30,15 @@ out=$(CLAUDE_CODE_SESSION_ID=from-env bash "$ACT" claude); rc=$?
 assert_rc "$rc" 0 "lấy được session id từ môi trường"
 assert_eq "$(ofm_lock_get session_id)" "from-env" "lock ghi đúng session id của môi trường"
 
+# Không xác định được pid harness thì TỪ CHỐI. Nhánh này trước đó KHÔNG có test
+# nào chạm tới, vì mọi lời gọi đều đọc CLAUDE_PID có thật của môi trường test.
+# Bỏ CLAUDE_PID và đặt một tên harness không thể có trong cây tiến trình.
+rm -f "$(ofm_lock_path)"
+out=$(env -u CLAUDE_PID bash "$ACT" no-such-harness-xyz 2>&1); rc=$?
+assert_rc "$rc" 2 "không tìm được pid harness thì rc 2"
+assert_contains "$out" "no_harness_pid" "nói rõ lý do"
+assert_eq "$(ofm_lock_get session_id)" "" "không ghi lock nào khi thiếu pid harness"
+
 # PostCompact: khớp lock thì in identity ra stderr, lệch thì câm
 rm -f "$(ofm_lock_path)"
 CLAUDE_CODE_SESSION_ID=sess-a bash "$ACT" claude sess-a > /dev/null

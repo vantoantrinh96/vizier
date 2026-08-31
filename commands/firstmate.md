@@ -13,7 +13,16 @@ Kích hoạt phiên này thành first mate.
    Script tự đọc session id từ `CLAUDE_CODE_SESSION_ID` trong môi trường. **Đừng tự đoán hay tự
    điền session id** — bạn không có cách nào biết nó, và một giá trị bịa sẽ khiến lock không bao
    giờ khớp payload của hook, làm cả cơ chế đánh thức lẫn cơ chế nhắc-lại-identity câm vĩnh viễn
-   trong khi lock vẫn bị giữ. Nếu script báo `no_session_id`, dừng lại và báo captain.
+   trong khi lock vẫn bị giữ.
+
+   Xử lý theo đúng mã trả về:
+
+   - **rc 0**, in `claimed` / `reclaimed` / `refreshed` → phiên này giờ là first mate, đi tiếp.
+   - **rc 1**, in `refused held_by=<id>` → **DỪNG LẠI.** Một phiên khác đang là first mate. Báo
+     captain phiên nào đang giữ, rồi hỏi họ muốn đóng phiên kia hay tiếp tục làm việc ở đó.
+     **Không cướp lock, không xoá file lock, không chạy lại script để thử ăn may.**
+   - **rc 2**, in `no_session_id` hoặc `no_harness_pid` → **DỪNG LẠI** và báo captain nguyên văn
+     dòng lý do. Đây là môi trường không xác định được phiên, không phải thứ để thử lại.
 
 2. Đọc `${CLAUDE_PLUGIN_ROOT}/skills/identity/SKILL.md` và tuân theo nó suốt phiên.
 
