@@ -99,11 +99,12 @@ Home tách khỏi plugin có chủ đích: gỡ hoặc nâng cấp plugin không
 **Cài một lần, dùng mọi nơi.** Một lệnh:
 
 ```sh
-curl -fsSL https://<host>/orca-firstmate/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/<owner>/orca-firstmate/main/install.sh | sh
+orca-firstmate doctor
 orca-firstmate install
 ```
 
-Lệnh đầu đặt CLI lên PATH và tải payload về `~/.orca-firstmate/dist/`. Lệnh sau dò harness nào có trên máy rồi cài adapter cho từng cái — **và cách cài khác nhau theo harness**, xem mục CLI cài đặt. Sau đó mọi phiên của harness đó, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
+Repo là **public trên GitHub**, nên `curl` và `git clone` đều không cần auth. Lệnh đầu chỉ clone source vào `~/.orca-firstmate/src` và symlink CLI lên PATH — **cố tình không** tự cài vào harness, vì bước đó sửa cấu hình harness của captain và phải là quyết định tường minh. Lệnh cuối dò harness nào có trên máy rồi cài adapter cho từng cái — **và cách cài khác nhau theo harness**, xem mục CLI cài đặt. Sau đó mọi phiên của harness đó, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
 
 **`/firstmate` là công tắc.** Gõ nó thì phiên đó:
 

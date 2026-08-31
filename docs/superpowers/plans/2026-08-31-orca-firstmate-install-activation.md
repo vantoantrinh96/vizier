@@ -1676,9 +1676,23 @@ bare repo local qua `file://` nên chạy được offline, không cần repo đ
   `$OFM_HOME/src`, symlink `$OFM_BIN_DIR/orca-firstmate`, rồi in bước tiếp theo. rc 0 khi xong,
   rc 1 khi thiếu `git`/`jq` hoặc clone thất bại.
 
+> **Tiền đề:** repo đã có remote `origin` trỏ tới một repo **public** trên GitHub. Captain tự
+> đặt remote đó; Step 0 chỉ đọc lại chứ không tạo.
+
 > **Bootstrap KHÔNG tự chạy `orca-firstmate install`.** Cài binary và cài vào harness là hai
 > quyết định khác nhau: cái sau sửa `~/.cursor/hooks.json` của captain. Một `curl | sh` không
 > được phép âm thầm làm việc đó.
+
+- [ ] **Step 0: Lấy URL thật của repo**
+
+Repo là public trên GitHub và remote do captain tự đặt. Đọc nó ra, đừng đoán:
+
+```bash
+git remote get-url origin
+```
+
+Dùng giá trị đó làm mặc định trong `install.sh` ở Step 3, và thay `OWNER_PLACEHOLDER` bằng
+owner thật. Nếu `git remote get-url origin` chưa có gì, **dừng và hỏi captain** — đừng bịa URL.
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -1728,6 +1742,13 @@ printf 'rác\n' > "$OFM_HOME/src/bin/orca-firstmate"
 sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "src bẩn vẫn cập nhật được"
 assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "src bẩn được khôi phục"
 
+# Mặc định phải là URL thật, không phải placeholder. Test này là thứ bắt lỗi
+# "quên điền" thay vì để nó trôi tới máy người dùng.
+grep -q 'OWNER_PLACEHOLDER' "$OFM_TEST_REPO/install.sh"; assert_rc $? 1 "không còn placeholder owner"
+default_url=$(sed -n 's/^REPO_URL="\${OFM_REPO_URL:-\(.*\)}"$/\1/p' "$OFM_TEST_REPO/install.sh")
+assert_contains "$default_url" "github.com" "mặc định trỏ tới GitHub"
+assert_contains "$default_url" "orca-firstmate" "mặc định trỏ đúng repo"
+
 # URL hỏng thì fail rõ ràng, không để lại symlink chết
 export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
 rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
@@ -1760,12 +1781,9 @@ Expected: FAIL — `install.sh: No such file or directory`
 # POSIX sh, không bashism: nó chạy qua `sh` của người dùng, không phải bash.
 set -eu
 
-REPO_URL="${OFM_REPO_URL:-}"
-if [ -z "$REPO_URL" ]; then
-  echo "error: chưa biết lấy source ở đâu." >&2
-  echo "  đặt OFM_REPO_URL, ví dụ: OFM_REPO_URL=https://github.com/<owner>/orca-firstmate.git" >&2
-  exit 1
-fi
+# Repo public trên GitHub, nên clone và curl đều không cần auth.
+# OWNER lấy từ `git remote get-url origin` ở Step 0; không để nguyên chuỗi này.
+REPO_URL="${OFM_REPO_URL:-https://github.com/OWNER_PLACEHOLDER/orca-firstmate.git}"
 
 HOME_DIR="${OFM_HOME:-$HOME/.orca-firstmate}"
 SRC="$HOME_DIR/src"
@@ -1803,7 +1821,7 @@ echo "  orca-firstmate install    # cài vào harness (sẽ sửa cấu hình ha
 - [ ] **Step 4: Chạy test cho pass**
 
 Run: `chmod +x install.sh && bash tests/install-sh.test.sh`
-Expected: PASS — `ok: 12 asserts passed (install-sh.test.sh)`
+Expected: PASS — `ok: 15 asserts passed (install-sh.test.sh)`
 
 - [ ] **Step 5: Commit**
 
