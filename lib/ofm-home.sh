@@ -20,18 +20,6 @@ ofm_lock_get() {  # <key>
   sed -n "s/^$1=//p" "$f" 2>/dev/null | head -1
 }
 
-ofm_pid_is_harness() {  # <pid> <harness>
-  local pid=$1 want=$2 comm
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  [ -n "$comm" ] || return 1
-  case "$comm" in *"$want"*) return 0 ;; esac
-  # Tên lệnh khác nghĩa là "chưa chứng minh được đây là harness đó" — KHÔNG
-  # phải "đã chết". Quyết định cướp lock chỉ dựa vào liveness, xem ofm_lock_claim.
-  return 1
-}
-
 ofm_harness_pid() {  # <harness> — in pid tổ tiên gần nhất khớp, rỗng nếu không có
   local want=$1 pid=$$ hops=0 comm ppid
   while [ "$pid" != "1" ] && [ "$hops" -lt 20 ]; do
@@ -60,6 +48,23 @@ _ofm_lock_write() {  # <session_id> <harness> <pid>
   mv "$tmp" "$f"
 }
 
+# Đọc LẠI lock sau khi ghi, và chỉ báo thành công khi ta thực sự là chủ.
+# Vì sao cần: chuỗi đọc-quyết-ghi trong ofm_lock_claim không nguyên tử, nên hai
+# phiên cùng thấy lock trống (hoặc cùng thấy một chủ đã chết) đều ghi và đều
+# tưởng mình thắng — đúng hỏng hóc tệ nhất của thiết kế này: hai phiên cùng ghi
+# requests/. Đọc lại biến bất biến thành "KHÔNG BAO GIỜ có quá một phiên tin
+# mình giữ lock", không cần thêm file mutex nào và không sinh trạng thái mutex cũ.
+_ofm_lock_confirm() {  # <session_id> <verb> <detail>
+  local sid=$1 verb=$2 detail=$3 winner
+  if ofm_lock_matches "$sid"; then
+    printf '%s %s\n' "$verb" "$detail"
+    return 0
+  fi
+  winner=$(ofm_lock_get session_id)
+  printf 'refused held_by=%s pid=%s\n' "${winner:-unknown}" "$(ofm_lock_get pid)"
+  return 1
+}
+
 ofm_lock_claim() {  # <session_id> <harness> <pid>
   local sid=$1 harness=$2 pid=$3 owner owner_pid
   owner=$(ofm_lock_get session_id)
@@ -86,11 +91,11 @@ ofm_lock_claim() {  # <session_id> <harness> <pid>
       return 1
     fi
     _ofm_lock_write "$sid" "$harness" "$pid" || return 1
-    printf 'reclaimed from=%s dead_pid=%s\n' "$owner" "$owner_pid"
-    return 0
+    _ofm_lock_confirm "$sid" reclaimed "from=$owner dead_pid=$owner_pid"
+    return $?
   fi
   _ofm_lock_write "$sid" "$harness" "$pid" || return 1
-  printf 'claimed session_id=%s\n' "$sid"
+  _ofm_lock_confirm "$sid" claimed "session_id=$sid"
 }
 
 ofm_lock_release() {  # <session_id> — chỉ đúng chủ mới xoá được

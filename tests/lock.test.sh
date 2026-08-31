@@ -36,6 +36,26 @@ assert_eq "$(ofm_lock_get session_id)" "sess-c" "chủ mới đã ghi"
 printf 'session_id=sess-x\nharness=claude\npid=abc\nsince=1\n' > "$(ofm_lock_path)"
 ofm_lock_claim "sess-d" claude $$ >/dev/null; assert_rc $? 1 "pid rác thì không cướp lock"
 
+# ofm_harness_pid: tìm được tổ tiên là bash (chính shell test), và không bịa ra pid
+hp=$(ofm_harness_pid bash)
+case "$hp" in ''|*[!0-9]*) assert_eq "$hp" "<numeric pid>" "tìm được pid tổ tiên bash" ;; esac
+kill -0 "${hp:-0}" 2>/dev/null; assert_rc $? 0 "pid tổ tiên trả về đang sống"
+assert_eq "$(ofm_harness_pid definitely-not-a-real-harness-xyz)" "" "không tìm thấy thì trả rỗng"
+
+# Bất biến chống race: nhiều phiên cùng giành lock trống thì KHÔNG QUÁ MỘT phiên
+# tin mình giữ lock. Không assert "đúng một" vì kẻ ghi cuối có thể ghi sau lần
+# đọc lại của kẻ đọc cuối; bất biến thật là "không quá một".
+rm -f "$(ofm_lock_path)"
+race="$OFM_TEST_TMP/race"; mkdir -p "$race"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  ( ofm_lock_claim "race-$i" claude $$ > "$race/$i.out" 2>&1 ) &
+done
+wait
+wins=$(grep -l '^claimed' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+[ "$wins" -le 1 ]; assert_rc $? 0 "không quá một phiên tin mình giành được lock (thấy $wins)"
+owners=$(sed -n 's/^session_id=//p' "$(ofm_lock_path)" | wc -l | tr -d ' ')
+assert_eq "$owners" "1" "lock cuối cùng chỉ ghi tên một phiên"
+
 # Release chỉ có tác dụng với đúng chủ
 printf 'session_id=sess-e\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
 ofm_lock_release "sess-other" >/dev/null
