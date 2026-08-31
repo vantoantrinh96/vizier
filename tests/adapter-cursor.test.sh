@@ -96,5 +96,12 @@ bash "$AD" install "$DIST" "$HLINK" >/dev/null 2>&1
 [ -L "$HLINK" ]; assert_rc $? 0 "symlink vẫn là symlink sau khi cài"
 assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select(.command|contains($m))] | length' "$HREAL")" "1" "nội dung ghi vào file thật sau link"
 
+# Chuỗi symlink hai tầng: ghi xuyên tới file thật cuối cùng, giữ nguyên cả hai link
+R2="$OFM_TEST_TMP/chain-real.json"; L1="$OFM_TEST_TMP/chain-1.json"; L2="$OFM_TEST_TMP/chain-2.json"
+printf '%s\n' '{"version":1,"hooks":{}}' > "$R2"; ln -sf "$R2" "$L1"; ln -sf "$L1" "$L2"
+bash "$AD" install "$DIST" "$L2" >/dev/null 2>&1; assert_rc $? 0 "cài qua chuỗi hai link"
+[ -L "$L2" ] && [ -L "$L1" ]; assert_rc $? 0 "cả hai link còn nguyên là link"
+assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select((.command|type)=="string" and (.command|contains($m)))] | length' "$R2")" "1" "nội dung tới đúng file thật cuối chuỗi"
+
 ofm_test_teardown
 ofm_test_report
