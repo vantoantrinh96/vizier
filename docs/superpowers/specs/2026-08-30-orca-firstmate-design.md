@@ -147,7 +147,7 @@ Quy tắc cứng: **không release vì timeout, TUI idle, heartbeat, status, que
 
 Mỗi project một file `projects/<tên>.md`, captain sửa trực tiếp được. Skill `brief` ghép bốn tầng thành `--spec` cho `task-create`:
 
-1. **Bất biến** (mọi worker): báo xong đúng cú pháp `orchestration send --type worker_done … --outcome succeeded|failed` (thất bại phải nằm trong `--outcome`, không chỉ trong prose); bí thì `orchestration ask` chứ không đoán; không tự merge; không rời worktree được giao; **không bao giờ stop/restart/update daemon `no-mistakes`** — một instance dùng chung mọi worktree và host, restart là giết run đang chạy của người khác, gặp lỗi daemon thì escalate rồi dừng.
+1. **Bất biến** (mọi worker): báo xong đúng cú pháp `orchestration send --type worker_done … --outcome succeeded|failed` (thất bại phải nằm trong `--outcome`, không chỉ trong prose); bí thì `orchestration ask` chứ không đoán; không tự merge; không rời worktree được giao; **dùng CLI chính chủ** — `git` và `gh` cho GitHub, không wrapper bên thứ ba, trừ khi file tri thức project khai công cụ khác cho project đó; **không bao giờ stop/restart/update daemon `no-mistakes`** — một instance dùng chung mọi worktree và host, restart là giết run đang chạy của người khác, gặp lỗi daemon thì escalate rồi dừng.
 2. **Project** (từ file tri thức): cách build/test, convention, cách ship (PR vào nhánh nào, format commit), bẫy đã biết, link tài liệu.
 3. **Hợp đồng giao hàng** (từ mode đã chốt): mở đầu bằng một dòng cố định `Delivery contract: mode=<mode>`, kèm định nghĩa hoàn thành riêng của mode đó — chi tiết ở mục Delivery mode dưới.
 4. **Task** (từ yêu cầu captain): việc cụ thể + định nghĩa hoàn thành.
@@ -177,7 +177,7 @@ Mode khai trong frontmatter `projects/<tên>.md` (`delivery: direct-PR`) — đ�
 
 Tầng 3 của brief mở đầu bằng dòng cố định `Delivery contract: mode=<mode>`, rồi:
 
-- **`direct-PR`**: implement → push nhánh riêng → mở PR → `worker_done --outcome succeeded` kèm URL `https://…` đầy đủ. Không bao giờ push nhánh mặc định, không bao giờ tự merge.
+- **`direct-PR`**: implement → push nhánh riêng → mở PR **bằng `gh`** → `worker_done --outcome succeeded` kèm URL `https://…` đầy đủ. Không bao giờ push nhánh mặc định, không bao giờ tự merge.
 - **`no-mistakes`**: chạy `no-mistakes doctor`, nếu repo chưa init trong worktree thì `no-mistakes init`; implement → commit → `axi run --intent <ý định của captain>` → lái tiếp **mọi** `axi run`/`axi respond` cho tới outcome. `worker_done` chỉ gửi khi axi trả outcome terminal, và **body phải chứa outcome đó** (`passed` / `checks-passed` / `failed` / `cancelled`) cùng PR URL.
 
 Vì brief đã bắt worker tự chạy `doctor`/`init`, **routing không cần probe gate readiness trên host** — host thiếu binary thì worker escalate. Đỡ hẳn một vòng khám phá xuyên host.
@@ -203,6 +203,21 @@ Với task mode `no-mistakes`, `worker_done` thiếu outcome axi terminal thì *
 ### Merge authority
 
 v1: **captain merge mọi PR.** Thẩm quyền merge thường trực kiểu `yolo` ngoài phạm vi — nhưng ghi lại cho đúng: `yolo` là một trục **trực giao** với delivery mode, nó chỉ nói ai được merge, không nói work đi qua pipeline nào.
+
+## Phụ thuộc bên ngoài
+
+Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
+
+| Thứ | Bắt buộc | Vì sao |
+|---|---|---|
+| Orca app + `orca` CLI | luôn | worktree, terminal, Run/Task/Dispatch, mailbox, federation |
+| Claude Code | luôn | harness của first mate; Stop hook `asyncRewake` là cơ chế đánh thức |
+| `git`, `gh` | luôn | worker push nhánh và mở PR |
+| `no-mistakes` | chỉ khi task mode `no-mistakes` | chạy validation pipeline; xem mục Delivery mode |
+
+**Không dùng wrapper CLI của bên thứ ba.** firstmate bơm `gh-axi`, `chrome-devtools-axi`, `lavish-axi`, `tasks-axi`, `quota-axi` vào mọi brief và mọi lần bootstrap; orca-firstmate không. Lý do: phần lớn trong số đó tồn tại để dựng lại thứ Orca đã có (`tasks-axi` là sổ backlog tự chế — ở đây là `requests/` + Orca Run; `lavish-axi` board là fleet view tự chế — ở đây là `worktree ps --json`), còn phần còn lại chỉ là lớp mỏng trên CLI chính chủ. Đổi lại: worker parse JSON của `gh` tốn token hơn TOON, chấp nhận được.
+
+`no-mistakes` là ngoại lệ có chủ đích, không phải wrapper: nó **là** pipeline, không có CLI chính chủ nào thay thế.
 
 ## Xử lý lỗi
 
