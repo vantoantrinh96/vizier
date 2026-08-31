@@ -2371,8 +2371,9 @@ trình không đọc stdin bao giờ — mà `--send hello --expect hello` vẫn
 vậy `--expect` PHẢI là chuỗi do agent SINH RA, không phải chuỗi ta gửi đi. Với
 smoke Cursor, đó là `orca-firstmate:` trong follow-up của hook.
 
-Tổng thời gian chạy là --wait CỘNG khoảng 10 giây cố định (8s chờ TUI dựng, 2s
-bơm sau khi gửi, 0.4s tắt máy). Có chặn trên, không treo vô hạn.
+Tổng thời gian chạy là --wait CỘNG khoảng 10-11 giây: 8s chờ TUI dựng, 2s bơm
+sau khi gửi, và tới ~1.2s tắt máy khi con kháng tín hiệu (0.2s Ctrl-C + 0.5s
+chờ SIGTERM + 0.5s chờ SIGKILL). Có chặn trên ở mọi bước bình thường.
 
 Dùng: pty-drive.py <cmd> [args...] --send <text> --expect <marker> --wait <sec>
 """
@@ -2445,23 +2446,30 @@ def main():
         except (ChildProcessError, OSError):
             pass
 
+    # try/finally, KHÔNG chỉ try/except OSError. Bắt riêng OSError vẫn để hở mọi
+    # exception khác — và cái dễ xảy ra nhất là KeyboardInterrupt: captain bấm
+    # Ctrl-C trên chính lượt smoke đang chạy. Khi đó `shutdown()` không chạy và
+    # agent bị rò, đúng lỗ hổng vòng trước vừa đóng. `finally` phủ mọi đường ra.
+    found = None
+    write_err = None
     try:
         pump(8)                                  # để TUI dựng xong
-        # Ghi có thể nổ OSError nếu con đã chết (Errno 5 trên pty). Không bọc
-        # thì traceback nhảy qua cả đường FAIL lẫn đường tắt máy.
+        # Ghi có thể nổ OSError nếu con đã chết (Errno 5 trên pty).
         os.write(fd, send.encode()); pump(2)     # gõ chữ
         os.write(fd, b"\r")                      # Enter RIÊNG
         found = pump(wait)
     except OSError as e:
-        shutdown(); os.close(fd)
-        print(f"FAIL: không ghi được vào pty ({e})", file=sys.stderr)
-        return 1
+        write_err = e
+    finally:
+        shutdown()
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
-    shutdown()
-    try:
-        os.close(fd)
-    except OSError:
-        pass
+    if write_err is not None:
+        print(f"FAIL: không ghi được vào pty ({write_err})", file=sys.stderr)
+        return 1
 
     if found == "found":
         print(f"PASS: thấy {expect!r}"); return 0
