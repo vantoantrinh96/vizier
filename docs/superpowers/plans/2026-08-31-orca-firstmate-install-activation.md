@@ -1597,7 +1597,12 @@ Expected: FAIL — `bin/ofm-adapter-cursor.sh: No such file or directory`
 # bằng nhau: hai chuỗi rỗng so với nhau thì "bằng", và đó là cách một lỗi thật
 # đội lốt trạng thái lành.
 ofm_no_lost_update() {  # <others_before> <others_after> <mine_after>
-  case "$1$2$3" in *[!0-9]*|'') return 1 ;; esac
+  # Kiểm TỪNG tham số, không nối chúng lại. Bản nối `case "$1$2$3"` từng lọt
+  # ca `"" "" 1`: chuỗi nối thành "1", qua được phép kiểm chữ số, rồi `"" = ""`
+  # cho ra "không lệch" — đúng thứ guard này sinh ra để chặn.
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  case "$2" in ''|*[!0-9]*) return 1 ;; esac
+  case "$3" in ''|*[!0-9]*) return 1 ;; esac
   [ "$2" = "$1" ] && [ "$3" = "1" ]
 }
 ```
