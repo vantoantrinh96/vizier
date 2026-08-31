@@ -40,7 +40,7 @@
 | `bin/ofm-adapter-claude.sh` | cài/gỡ adapter Claude |
 | `bin/ofm-adapter-cursor.sh` | merge/unmerge `~/.cursor/hooks.json` |
 | `bin/orca-firstmate` | CLI: `install`, `doctor`, `update`, `uninstall` |
-| `install.sh` | bootstrap `curl \| sh` |
+| `install.sh` | bootstrap `curl \| sh` — clone source, symlink CLI, KHÔNG tự cài vào harness |
 | `tests/helpers.sh` | môi trường test tách biệt, fake harness, khẳng định |
 | `tests/fake-orca/orca` | `orca` giả trên PATH |
 | `tests/*.test.sh` | một file test mỗi đơn vị |
@@ -1452,11 +1452,10 @@ git commit -m "feat: merge the Cursor stop hook into a file another tool owns"
 
 ---
 
-### Task 9: CLI `orca-firstmate` và `install.sh`
+### Task 9: CLI `orca-firstmate`
 
 **Files:**
 - Create: `bin/orca-firstmate`
-- Create: `install.sh`
 - Create: `tests/cli.test.sh`
 - Modify: `tests/run-all.sh` (không cần sửa — đã quét `*.test.sh`)
 
@@ -1511,6 +1510,13 @@ mkdir -p "$OFM_HOME/requests"; printf 'x\n' > "$OFM_HOME/requests/keep.md"
 bash "$CLI" uninstall >/dev/null 2>&1
 [ -f "$OFM_HOME/requests/keep.md" ]; assert_rc $? 0 "uninstall KHÔNG xoá requests"
 [ -d "$OFM_CLAUDE_SKILLS_DIR/orca-firstmate" ]; assert_rc $? 1 "uninstall gỡ adapter"
+
+# uninstall phải dọn cả dấu vết của bootstrap
+export OFM_BIN_DIR="$OFM_TEST_TMP/bin"; mkdir -p "$OFM_BIN_DIR" "$OFM_HOME/src"
+ln -sf /usr/bin/true "$OFM_BIN_DIR/orca-firstmate"
+bash "$CLI" uninstall >/dev/null 2>&1
+[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 1 "uninstall gỡ symlink trên PATH"
+[ -d "$OFM_HOME/src" ]; assert_rc $? 1 "uninstall gỡ clone src"
 
 ofm_test_teardown
 ofm_test_report
@@ -1624,7 +1630,12 @@ cmd_uninstall() {
   [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
   [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
   rm -rf "$DIST"
-  printf 'đã gỡ adapter và payload. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
+  # Dọn cả những gì install.sh tạo ra, nếu không captain gỡ xong vẫn còn một
+  # lệnh chết trên PATH trỏ vào clone đã mồ côi.
+  local bin_link="${OFM_BIN_DIR:-$HOME/.local/bin}/orca-firstmate"
+  [ -L "$bin_link" ] && rm -f "$bin_link"
+  rm -rf "$(ofm_home)/src"
+  printf 'đã gỡ adapter, payload, symlink và clone. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
 }
 
 case "${1:-}" in
@@ -1636,55 +1647,174 @@ case "${1:-}" in
 esac
 ```
 
-- [ ] **Step 4: Viết `install.sh`**
+- [ ] **Step 4: Chạy toàn bộ test cho pass**
 
-```bash
-#!/usr/bin/env sh
-# Bootstrap: curl -fsSL <url>/install.sh | sh
-# Clone (hoặc cập nhật) repo vào ~/.orca-firstmate/src rồi chạy `install`.
-set -eu
-
-REPO_URL="${OFM_REPO_URL:-https://github.com/toantv/orca-firstmate.git}"
-HOME_DIR="${OFM_HOME:-$HOME/.orca-firstmate}"
-SRC="$HOME_DIR/src"
-
-command -v git >/dev/null 2>&1 || { echo "error: cần git" >&2; exit 1; }
-command -v jq  >/dev/null 2>&1 || { echo "error: cần jq (brew install jq)" >&2; exit 1; }
-
-mkdir -p "$HOME_DIR"
-if [ -d "$SRC/.git" ]; then
-  git -C "$SRC" fetch --quiet origin && git -C "$SRC" reset --quiet --hard origin/HEAD
-else
-  git clone --quiet "$REPO_URL" "$SRC"
-fi
-
-BIN_DIR="${OFM_BIN_DIR:-$HOME/.local/bin}"
-mkdir -p "$BIN_DIR"
-ln -sf "$SRC/bin/orca-firstmate" "$BIN_DIR/orca-firstmate"
-
-echo "đã cài orca-firstmate vào $BIN_DIR/orca-firstmate"
-echo "tiếp theo:  orca-firstmate install"
-case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *) echo "lưu ý: $BIN_DIR chưa nằm trong PATH" ;;
-esac
-```
-
-- [ ] **Step 5: Chạy toàn bộ test cho pass**
-
-Run: `chmod +x bin/orca-firstmate install.sh && bash tests/run-all.sh`
+Run: `chmod +x bin/orca-firstmate && bash tests/run-all.sh`
 Expected: PASS — mọi file test in `ok:`, kết thúc bằng `ALL TEST FILES PASSED`
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add bin/orca-firstmate install.sh tests/cli.test.sh
-git commit -m "feat: add the installer CLI and its one-line bootstrap"
+git add bin/orca-firstmate tests/cli.test.sh
+git commit -m "feat: add the installer CLI"
 ```
 
 ---
 
-### Task 10: Smoke test thật hai harness
+### Task 10: Bootstrap `install.sh` — cài bằng một lệnh
+
+Đây là thứ mọi người dùng chạm đầu tiên, nên nó phải có test như mọi thứ khác. Test dùng một
+bare repo local qua `file://` nên chạy được offline, không cần repo đã publish.
+
+**Files:**
+- Create: `install.sh`
+- Create: `tests/install-sh.test.sh`
+
+**Interfaces:**
+- Consumes: `bin/orca-firstmate` (chỉ để symlink; bootstrap không tự chạy `install`)
+- Produces: `install.sh` đọc `OFM_REPO_URL`, `OFM_HOME`, `OFM_BIN_DIR`; clone hoặc cập nhật
+  `$OFM_HOME/src`, symlink `$OFM_BIN_DIR/orca-firstmate`, rồi in bước tiếp theo. rc 0 khi xong,
+  rc 1 khi thiếu `git`/`jq` hoặc clone thất bại.
+
+> **Bootstrap KHÔNG tự chạy `orca-firstmate install`.** Cài binary và cài vào harness là hai
+> quyết định khác nhau: cái sau sửa `~/.cursor/hooks.json` của captain. Một `curl | sh` không
+> được phép âm thầm làm việc đó.
+
+- [ ] **Step 1: Viết test thất bại**
+
+```bash
+# tests/install-sh.test.sh
+#!/usr/bin/env bash
+set -u
+. "$(dirname "$0")/helpers.sh"
+ofm_test_setup
+
+# Bare repo local đóng vai remote: test chạy offline, không phụ thuộc repo đã publish.
+ORIGIN="$OFM_TEST_TMP/origin.git"
+WORK="$OFM_TEST_TMP/work"
+git init --quiet --bare "$ORIGIN"
+git clone --quiet "$ORIGIN" "$WORK"
+mkdir -p "$WORK/bin"
+printf '#!/usr/bin/env bash\necho stub-cli\n' > "$WORK/bin/orca-firstmate"
+chmod +x "$WORK/bin/orca-firstmate"
+cp "$OFM_TEST_REPO/install.sh" "$WORK/install.sh"
+git -C "$WORK" add -A
+git -C "$WORK" -c user.email=t@t -c user.name=t commit --quiet -m init
+git -C "$WORK" push --quiet origin HEAD:refs/heads/main
+git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
+
+export OFM_REPO_URL="file://$ORIGIN"
+export OFM_BIN_DIR="$OFM_TEST_TMP/bin"
+
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 0 "bootstrap thành công"
+[ -d "$OFM_HOME/src/.git" ]; assert_rc $? 0 "clone vào src/"
+[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 0 "tạo symlink"
+assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-cli" "symlink chạy đúng CLI"
+assert_contains "$out" "orca-firstmate install" "in bước tiếp theo"
+
+# KHÔNG được tự cài vào harness: đó là quyết định riêng, có sửa file của người khác
+assert_eq "$(ls "$OFM_HOME/dist" 2>/dev/null)" "" "bootstrap không tự chạy install"
+
+# Chạy lại là cập nhật, không hỏng
+printf '#!/usr/bin/env bash\necho stub-v2\n' > "$WORK/bin/orca-firstmate"
+git -C "$WORK" -c user.email=t@t -c user.name=t commit --quiet -am v2
+git -C "$WORK" push --quiet origin HEAD:refs/heads/main
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "chạy lại thành công"
+assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "chạy lại thì cập nhật lên bản mới"
+
+# Thay đổi local trong src bị ghi đè, không làm bootstrap kẹt
+printf 'rác\n' > "$OFM_HOME/src/bin/orca-firstmate"
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "src bẩn vẫn cập nhật được"
+assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "src bẩn được khôi phục"
+
+# URL hỏng thì fail rõ ràng, không để lại symlink chết
+export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
+rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "URL hỏng thì rc 1"
+[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 1 "thất bại thì không để lại symlink chết"
+
+ofm_test_teardown
+ofm_test_report
+```
+
+- [ ] **Step 2: Chạy để thấy nó fail**
+
+Run: `bash tests/install-sh.test.sh`
+Expected: FAIL — `install.sh: No such file or directory`
+
+- [ ] **Step 3: Viết `install.sh`**
+
+```bash
+#!/usr/bin/env sh
+# Bootstrap orca-firstmate.
+#
+#   curl -fsSL <RAW_URL>/install.sh | sh
+#
+# Chỉ làm hai việc: lấy source về $OFM_HOME/src và đặt một symlink lên PATH.
+# CỐ TÌNH KHÔNG chạy `orca-firstmate install`: bước đó sửa cấu hình harness của
+# captain (với Cursor là ~/.cursor/hooks.json, file Orca cũng dùng), nên nó
+# phải là một quyết định tường minh, không phải hệ quả của `curl | sh`.
+#
+# POSIX sh, không bashism: nó chạy qua `sh` của người dùng, không phải bash.
+set -eu
+
+REPO_URL="${OFM_REPO_URL:-}"
+if [ -z "$REPO_URL" ]; then
+  echo "error: chưa biết lấy source ở đâu." >&2
+  echo "  đặt OFM_REPO_URL, ví dụ: OFM_REPO_URL=https://github.com/<owner>/orca-firstmate.git" >&2
+  exit 1
+fi
+
+HOME_DIR="${OFM_HOME:-$HOME/.orca-firstmate}"
+SRC="$HOME_DIR/src"
+BIN_DIR="${OFM_BIN_DIR:-$HOME/.local/bin}"
+
+for t in git jq; do
+  command -v "$t" >/dev/null 2>&1 || { echo "error: cần $t (brew install $t)" >&2; exit 1; }
+done
+
+mkdir -p "$HOME_DIR"
+if [ -d "$SRC/.git" ]; then
+  git -C "$SRC" fetch --quiet origin || { echo "error: fetch thất bại từ $REPO_URL" >&2; exit 1; }
+  # reset --hard: $SRC do tool sở hữu, không phải chỗ để sửa tay. Sửa tay ở đó
+  # bị ghi đè có chủ đích, thay vì làm bootstrap kẹt mãi.
+  git -C "$SRC" reset --quiet --hard origin/HEAD || { echo "error: reset thất bại" >&2; exit 1; }
+else
+  git clone --quiet "$REPO_URL" "$SRC" || { echo "error: clone thất bại từ $REPO_URL" >&2; exit 1; }
+fi
+
+[ -x "$SRC/bin/orca-firstmate" ] || { echo "error: source thiếu bin/orca-firstmate" >&2; exit 1; }
+mkdir -p "$BIN_DIR"
+ln -sf "$SRC/bin/orca-firstmate" "$BIN_DIR/orca-firstmate"
+
+echo "đã cài orca-firstmate -> $BIN_DIR/orca-firstmate"
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ;;
+  *) echo "lưu ý: $BIN_DIR chưa nằm trong PATH; thêm nó vào shell profile" ;;
+esac
+echo
+echo "tiếp theo:"
+echo "  orca-firstmate doctor     # kiểm Orca, jq, git, gh"
+echo "  orca-firstmate install    # cài vào harness (sẽ sửa cấu hình harness)"
+```
+
+- [ ] **Step 4: Chạy test cho pass**
+
+Run: `chmod +x install.sh && bash tests/install-sh.test.sh`
+Expected: PASS — `ok: 12 asserts passed (install-sh.test.sh)`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add install.sh tests/install-sh.test.sh
+git commit -m "feat: add the one-line bootstrap installer"
+```
+
+---
+
+### Task 11: Smoke test thật hai harness
 
 Test tự động không chạm Orca thật và không chạm harness thật. Task này đóng khoảng cách đó, và là **cách duy nhất** chứng minh đường wake của Cursor.
 
