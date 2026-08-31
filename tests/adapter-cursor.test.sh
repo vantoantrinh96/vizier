@@ -103,5 +103,16 @@ bash "$AD" install "$DIST" "$L2" >/dev/null 2>&1; assert_rc $? 0 "cài qua chu�
 [ -L "$L2" ] && [ -L "$L1" ]; assert_rc $? 0 "cả hai link còn nguyên là link"
 assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select((.command|type)=="string" and (.command|contains($m)))] | length' "$R2")" "1" "nội dung tới đúng file thật cuối chuỗi"
 
+# Luật quyết định mất-bản-cập-nhật, kiểm bằng số dựng sẵn. Bản thân cuộc đua
+# không tái hiện được trong unit test, nhưng LUẬT thì phải kiểm được.
+. "$OFM_TEST_REPO/lib/ofm-merge-lib.sh"
+ofm_no_lost_update 3 3 1; assert_rc $? 0 "không lệch, của ta đúng một -> ok"
+ofm_no_lost_update 3 4 1; assert_rc $? 1 "entry người khác tăng -> lệch"
+ofm_no_lost_update 3 2 1; assert_rc $? 1 "entry người khác giảm -> lệch"
+ofm_no_lost_update 3 3 0; assert_rc $? 1 "của ta biến mất -> lệch"
+ofm_no_lost_update 3 3 2; assert_rc $? 1 "của ta nhân đôi -> lệch"
+ofm_no_lost_update 3 "" 1; assert_rc $? 1 "phép đếm rỗng tính là lệch, không phải bằng nhau"
+ofm_no_lost_update "" "" 1; assert_rc $? 1 "cả hai rỗng vẫn tính là lệch"
+
 ofm_test_teardown
 ofm_test_report
