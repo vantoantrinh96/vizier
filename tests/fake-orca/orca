@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# orca giả cho test. Ghi log mọi lệnh, phục vụ message đã queue, và KHÔNG
+# BAO GIỜ chạm mạng hay app thật. Chỉ hiện thực đúng bề mặt các test cần.
+set -u
+STATE="${OFM_FAKE_ORCA_STATE:?fake-orca cần OFM_FAKE_ORCA_STATE}"
+printf '%s\n' "$*" >> "$STATE/calls.log"
+
+run_id=""
+wait_mode=0
+timeout_ms=0
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --run) run_id=$arg ;;
+    --timeout-ms) timeout_ms=$arg ;;
+  esac
+  [ "$arg" = "--wait" ] && wait_mode=1
+  prev=$arg
+done
+
+case "$1 ${2:-}" in
+  "orchestration check")
+    q="$STATE/queue/${run_id:-_none}"
+    if [ -s "$q" ]; then
+      cat "$q"
+      exit 0
+    fi
+    if [ "$wait_mode" = 1 ]; then
+      # Mô phỏng chờ: ngủ tối đa timeout rồi trả rỗng, giống hệt một lần
+      # timeout thật. Test dùng timeout rất nhỏ.
+      slept=0
+      while [ "$slept" -lt "${timeout_ms:-0}" ]; do
+        [ -s "$q" ] && { cat "$q"; exit 0; }
+        sleep 0.05
+        slept=$((slept+50))
+      done
+    fi
+    exit 0
+    ;;
+  "status --json"|"status")
+    printf '%s\n' "${OFM_FAKE_ORCA_STATUS:-{\"ok\":true,\"result\":{\"reachable\":true,\"state\":\"ready\",\"capabilities\":[\"orchestration.contract.v1\"]}}}"
+    exit 0
+    ;;
+esac
+exit 0
