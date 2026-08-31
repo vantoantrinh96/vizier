@@ -1,12 +1,12 @@
 # orca-firstmate — Design
 
 Ngày: 2026-08-30
-Cập nhật: 2026-08-31 — bổ sung mục Delivery mode và no-mistakes
+Cập nhật: 2026-08-31 — bổ sung Delivery mode/no-mistakes; đổi entry point sang Claude Code plugin
 Trạng thái: đã duyệt design trong chat, chờ duyệt spec
 
 ## Tóm tắt
 
-`orca-firstmate` là một **agent distro** lấy triết lý của [firstmate](https://github.com/kunchenguid/firstmate) nhưng xây lại từ đầu, Orca-native: mở Claude Code trong thư mục này là thành **first mate** — một liaison duy nhất mà captain (người dùng) trò chuyện, thường qua floating window của Orca. First mate điều phối crew agent chạy trong worktree/terminal do Orca quản lý, trên nhiều host (hiện tại: local + Mac mini; danh sách host thay đổi được trong tương lai).
+`orca-firstmate` là một **agent distro** lấy triết lý của [firstmate](https://github.com/kunchenguid/firstmate) nhưng xây lại từ đầu, Orca-native: cài như một **Claude Code plugin**, rồi gõ `/firstmate` trong bất kỳ phiên Claude Code nào ở bất kỳ thư mục nào để phiên đó thành **first mate** — một liaison duy nhất mà captain (người dùng) trò chuyện, thường qua floating window của Orca. First mate điều phối crew agent chạy trong worktree/terminal do Orca quản lý, trên nhiều host (hiện tại: local + Mac mini; danh sách host thay đổi được trong tương lai).
 
 Nguyên tắc phân vai:
 
@@ -14,7 +14,7 @@ Nguyên tắc phân vai:
 - **First mate sở hữu phán đoán**: chia yêu cầu thành task, sinh brief, chọn host, đọc `worker_done` và quyết bước tiếp theo, nói chuyện với captain bằng ngôn ngữ kết quả.
 - **State riêng tối thiểu**: chỉ sổ `requests/` (khái niệm host-dính-theo-request là của distro, Orca không có chỗ chứa) và tri thức `projects/`.
 
-Khác firstmate ở chỗ: không có 162 script bash, không watcher tự chế, không `state/*.meta`, không backend đa multiplexer. Toàn bộ cơ khí thay bằng `orca orchestration` + một Stop hook nhỏ.
+Khác firstmate ở chỗ: không có 162 script bash, không watcher tự chế, không `state/*.meta`, không backend đa multiplexer, và không phải `cd` vào một thư mục distro. Toàn bộ cơ khí thay bằng `orca orchestration` + một Stop hook nhỏ.
 
 ## Bối cảnh và lý do
 
@@ -37,12 +37,17 @@ captain ── chat (Orca floating window / terminal bất kỳ)
    │
    ▼
 ┌────────────────────────────────────────────┐
-│ orca-firstmate (Claude Code + distro này)  │  Run home: máy local
-│  AGENTS.md   — identity, phép tắc          │
-│  skills/     — brief, routing, supervise   │
-│  hooks/      — Stop hook wake              │
-│  requests/   — sổ request đang mở          │
-│  projects/   — tri thức từng project       │
+│ phiên Claude Code bất kỳ, cwd bất kỳ       │
+│  + plugin orca-firstmate (skills, hook)    │
+│  đã gõ /firstmate → giữ lock → là first mate│
+└──────┬─────────────────────────────────────┘
+       │ đọc/ghi
+       ▼
+┌────────────────────────────────────────────┐
+│ ~/.orca-firstmate/  (home cố định)          │
+│  lock        — session_id + pid chủ hiện tại│
+│  requests/   — sổ request đang mở           │
+│  projects/   — tri thức từng project        │
 └──────┬─────────────────────────────────────┘
        │ orca orchestration …
        ▼
@@ -54,28 +59,58 @@ Dispatch  Dispatch  Dispatch     local / Mac mini / host tương lai
 (worktree + terminal + agent, Orca quản trọn vòng đời)
 ```
 
-### Cấu trúc thư mục distro
+### Cấu trúc plugin (thứ được cài)
 
 ```
 orca-firstmate/
-  AGENTS.md                  # identity + hard rules + lifecycle (~150 dòng), CLAUDE.md import nó
-  CLAUDE.md                  # chỉ chứa @AGENTS.md
-  .claude/settings.json      # Stop hook asyncRewake
-  hooks/
-    wake.sh                  # Stop hook: chờ mailbox, exit 2 để đánh thức (~50 dòng)
+  .claude-plugin/plugin.json
+  commands/
+    firstmate.md             # /firstmate — kích hoạt phiên, giữ lock, gợi ý project từ cwd
   skills/
     brief/SKILL.md           # sinh spec 4 tầng cho task-create
     routing/SKILL.md         # khám phá host, eligibility, chọn host per-request
     supervise/SKILL.md       # xử lý batch mailbox, release/reuse, ack, báo cáo
     delivery/SKILL.md        # delivery mode, hợp đồng giao hàng, chính sách ask-user
-  requests/                  # state động, git-ignored nhưng bền trên đĩa (restart-proof cần đĩa, không cần git)
-  projects/
-    <tên>.md                 # tri thức project: delivery mode, build/test/ship, convention, bẫy, gợi ý model
+    identity/SKILL.md        # identity + hard rules; /firstmate và PostCompact đều nạp nó
+  hooks/
+    hooks.json               # Stop (asyncRewake) + PostCompact
+    wake.sh                  # Stop: gate lock → chờ mailbox → exit 2 (~60 dòng)
+    reidentify.sh            # PostCompact: lock khớp thì in lại identity ra stderr
   tests/
     fake-orca/               # orca giả trên PATH trả JSON mẫu
     *.test.sh
   docs/superpowers/specs/    # spec này và các spec sau
+  docs/verification/         # bằng chứng chạy thật kèm version app
 ```
+
+### Home (thứ được sinh ra lúc chạy)
+
+```
+~/.orca-firstmate/
+  lock                       # {session_id, pid, since} — chủ first mate hiện tại
+  requests/<slug>.md         # sổ request đang mở
+  projects/<tên>.md          # tri thức project: delivery mode, build/test/ship, convention, bẫy, gợi ý model
+```
+
+Home tách khỏi plugin có chủ đích: gỡ hoặc nâng cấp plugin không đụng tới state, và state không bao giờ phụ thuộc cwd của phiên.
+
+## Entry point và kích hoạt
+
+**Cài một lần, dùng mọi nơi.** Plugin cài qua marketplace hoặc thả vào `~/.claude/skills/<name>/` (auto-load dạng `<name>@skills-dir`). Sau đó mọi phiên Claude Code, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
+
+**`/firstmate` là công tắc.** Gõ nó thì phiên đó:
+
+1. Ghi `~/.orca-firstmate/lock` = `{session_id, pid, since}`. Lock đã có và chủ còn sống → **từ chối**, báo phiên nào đang giữ. Chủ chết mà chưa dọn → thu hồi. **Một first mate tại một thời điểm**, để hai phiên không cùng ghi `requests/`.
+2. Nạp skill `identity` — identity và hard rules vào context.
+3. Đọc git remote ở cwd và **gợi ý** project cho request đầu tiên. Chỉ là gợi ý; cwd không bao giờ là authority, captain gật mới tính.
+
+Phiên không gõ `/firstmate` thì không giữ lock, nên hook câm và không có gì thay đổi với nó.
+
+**Sống sót qua compact.** Hook `PostCompact`: lock khớp phiên này thì in lại identity + hard rules ra stderr. Không có nó, một lần nén context là first mate quên mình là ai trong khi vẫn đang giữ lock và vẫn đang bị đánh thức.
+
+**Không dùng `CLAUDE.md` của plugin** cho identity — file đó nạp vào *mọi* phiên, kể cả phiên bạn chỉ muốn sửa code. Identity phải là thứ được kích hoạt, không phải thứ luôn bật.
+
+**Truy cập home.** Phiên first mate có cwd bất kỳ, còn state ở `~/.orca-firstmate/`. First mate đọc/ghi home qua Bash. Nếu captain chạy permission mode chặt, thêm `--add-dir ~/.orca-firstmate` khi mở phiên.
 
 ## Khái niệm Request (đơn vị điều phối)
 
@@ -128,9 +163,10 @@ orca orchestration check --wait --types worker_done,escalation,question --timeou
 
 Block tới khi có message cho Run; FIFO; replay cùng Delivery tới khi `--ack`; keepalive JSON mỗi 15s ra stderr (lọc bằng `_keepalive`). Hoạt động xuyên host.
 
-**Nửa Claude Code** — `hooks/wake.sh` đăng ký trong `.claude/settings.json` dạng Stop hook `"asyncRewake": true`, timeout dài (tham khảo firstmate: 28800s):
+**Nửa Claude Code** — `hooks/wake.sh` đăng ký trong `hooks/hooks.json` của plugin dạng Stop hook `"asyncRewake": true`, timeout dài (tham khảo firstmate: 28800s). Claude Code bắn Stop hook trên **mọi** Stop của **mọi** phiên trên máy và không dedupe, nên thứ tự cổng chặn là bắt buộc, rẻ trước đắt sau:
 
-- Không có request nào `status: open` trong `requests/` → exit 0, im lặng, không tốn gì.
+- `session_id` trong payload stdin **không khớp** `~/.orca-firstmate/lock` → exit 0. Một lần đọc file; đây là thứ giữ hook câm trong mọi phiên Claude Code khác.
+- Khớp lock nhưng không có request nào `status: open` → exit 0, im lặng, không tốn gì.
 - Có → `check --wait --peek` (peek: không đánh dấu đã đọc), `--timeout-ms` đặt ngắn hơn timeout của hook một khoảng an toàn (ví dụ hook 28800s → wait 28500s) để hook luôn tự thoát có kiểm soát. Có message → in một dòng tóm tắt ra stderr, **exit 2** → Claude Code tỉnh dậy kể cả khi idle. Timeout → exit 2 với lý do "re-arm" để lượt kế cắm lại vòng chờ.
 - **Hook không bao giờ ack.** Ack thuộc về first mate sau khi xử lý xong. Nhờ replay-tới-ack, hook chết giữa chừng không mất message; phiên mới chỉ cần `check` là thấy lại mọi thứ chưa ack — restart-proof đến từ Orca, không phải từ distro.
 
@@ -140,6 +176,8 @@ Khi tỉnh, first mate (skill `supervise`):
 2. Mỗi `worker_done` được chấp nhận: quyết terminal đi đâu **trước khi ack** — có task nối tiếp cho đúng agent đó → đọc `worker.agent_terminal_handle` từ `worker-show`, rồi `worker-start --task <next> --terminal <handle>` (Orca chuyển ownership cleanup); không → `worker-release --dispatch <id>`. Release chạy cho cả `worker_done` thành công lẫn thất bại, trừ khi captain yêu cầu giữ terminal (`worker-retain`).
 3. `--ack <delivery_id>` chỉ sau khi mọi message trong batch được xử lý.
 4. Báo captain **một** tin gộp, chỉ điều đáng nói: outcome, PR, quyết định cần captain. `escalation`/`question` → chuyển thành câu hỏi kèm ngữ cảnh; trả lời của captain đi ngược qua `orchestration reply`. `question` mang một ask-user finding của no-mistakes đi qua chính sách của skill `delivery` trước, không mặc định chuyển thẳng cho captain.
+
+Toàn bộ chuỗi này đã kiểm chứng chạy thật ở dạng plugin — xem `docs/verification/2026-08-31-plugin-wake.md`.
 
 Quy tắc cứng: **không release vì timeout, TUI idle, heartbeat, status, question, escalation, hay `worker_done` bị reject/stale** — chỉ release sau `worker_done` thật đã xử lý. Thêm một điều kiện cho mode `no-mistakes`: `worker_done` chỉ được coi là terminal khi body báo outcome axi terminal (`passed`, `checks-passed`, `failed`, `cancelled`); thiếu thì **không release**, vì có thể một run vẫn đang sở hữu nhánh. Worker im lâu bất thường → `worker-read --dispatch` (nguồn `auto`: transcript hook-proven hoặc terminal-bounded) để chẩn đoán rồi báo captain.
 
@@ -230,7 +268,7 @@ Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
 
 ## Kiểm thử
 
-- **fake-orca**: script `tests/fake-orca/orca` đặt trước PATH, trả JSON mẫu đã đối chiếu với schema thật (lấy từ `orca agent-context --json` và output thật trên máy captain). Test lifecycle không cần app: routing loại host không ready, brief ghép đúng 4 tầng, hook exit 0 khi không có request mở / exit 2 khi có message, supervise không ack trước khi xử lý xong batch. Thêm ba ca cho delivery: brief mode `no-mistakes` sinh đúng dòng `Delivery contract:` và DoD chờ outcome axi; supervise **không** release khi `worker_done` của task `no-mistakes` thiếu outcome; `question` mang ask-user finding đi vào chính sách của `delivery` thay vì ack thẳng.
+- **fake-orca**: script `tests/fake-orca/orca` đặt trước PATH, trả JSON mẫu đã đối chiếu với schema thật (lấy từ `orca agent-context --json` và output thật trên máy captain). Test lifecycle không cần app: routing loại host không ready, brief ghép đúng 4 tầng, hook exit 0 khi không có request mở / exit 2 khi có message, supervise không ack trước khi xử lý xong batch. Thêm ba ca cho delivery: brief mode `no-mistakes` sinh đúng dòng `Delivery contract:` và DoD chờ outcome axi; supervise **không** release khi `worker_done` của task `no-mistakes` thiếu outcome; `question` mang ask-user finding đi vào chính sách của `delivery` thay vì ack thẳng. Và ba ca cho entry point: `wake.sh` exit 0 khi `session_id` không khớp lock; `/firstmate` từ chối khi lock còn chủ sống; `/firstmate` thu hồi lock khi chủ đã chết.
 - **Smoke thật** (chạy tay, có Orca thật): mở request → 1 task echo → worker chạy → `worker_done` → hook đánh thức → release → đóng request. Một biến thể `--on "Mac mini"`.
 - Ghi kết quả smoke thật vào `docs/verification/` kèm version app đã kiểm (học cách firstmate làm evidence theo version, vì Orca không có protocol version marker — capabilities trong `orca status` là gate tương thích).
 
@@ -247,6 +285,7 @@ Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
 ## Rủi ro đã biết
 
 - **Gắn chặt schema orchestration của Orca**: Orca không có version marker ổn định; đổi contract sẽ lộ lúc runtime. Giảm nhẹ: kiểm `orchestration.contract.v1` trong capabilities lúc session start; fake-orca fixtures ghi rõ version app đã đối chiếu.
-- **Stop hook asyncRewake là hành vi của Claude Code**, đổi harness là mất cơ chế wake — chấp nhận: distro này chọn Claude Code làm harness duy nhất của v1.
+- **Stop hook `asyncRewake` là hành vi của Claude Code**, đổi harness là mất cơ chế wake — chấp nhận: distro này chọn Claude Code làm harness duy nhất của v1. Đã kiểm chứng trên 2.1.236 ở dạng plugin (`docs/verification/2026-08-31-plugin-wake.md`); docs Claude Code có ghi field này cho command hook nhưng **không** nói plugin hook honor nó, nên đây là hành vi cần đo lại khi lên version mới.
+- **Plugin hook chạy trong mọi phiên Claude Code trên máy.** Một `wake.sh` lỗi là lỗi toàn máy, không chỉ lỗi first mate. Giảm nhẹ: cổng lock đứng trước mọi thứ khác và mọi nhánh không chắc chắn đều exit 0.
 - App Orca phải đang chạy — `orca open` ở session start nếu chưa.
 - **Phụ thuộc thêm vào `no-mistakes`** cho mode cùng tên: tên outcome và tên lệnh `axi` có thể đổi giữa các version. Giảm nhẹ có sẵn trong thiết kế: distro **không bao giờ parse output TOON của axi** — worker lái pipeline và tự khai outcome trong `worker_done`, nên bề mặt gắn kết chỉ là bốn tên outcome terminal, không phải cả schema.
