@@ -1091,7 +1091,7 @@ git commit -m "feat: add the Cursor stop hook that answers with a follow-up mess
 
 **Interfaces:**
 - Consumes: `ofm_lock_claim`, `ofm_lock_matches`, `ofm_harness_pid`
-- Produces: `bin/ofm-activate.sh <session_id> <harness>` → rc 0 và in `claimed`/`reclaimed`/`refreshed`, hoặc rc 1 và in `refused held_by=<id>`. `/firstmate` gọi đúng script này qua Bash.
+- Produces: `bin/ofm-activate.sh [harness] [session_id_override]` → rc 0 và in `claimed`/`reclaimed`/`refreshed`; rc 1 và in `refused held_by=<id>`; rc 2 khi không xác định được phiên hoặc pid harness. Session id mặc định lấy từ `CLAUDE_CODE_SESSION_ID`; tham số thứ hai chỉ để test ghi đè. `/firstmate` gọi đúng script này qua Bash, không tham số.
 
 > **Vì sao có `bin/ofm-activate.sh`:** `/firstmate` là file markdown, không chạy được logic. Nó bảo agent chạy đúng một lệnh; script giữ toàn bộ ngữ nghĩa lock ở một nơi test được, thay vì rải thành prose cho model tự diễn giải.
 
@@ -1106,7 +1106,7 @@ ofm_test_setup
 . "$OFM_TEST_REPO/lib/ofm-home.sh"
 ACT="$OFM_TEST_REPO/bin/ofm-activate.sh"
 
-out=$(bash "$ACT" sess-a claude); rc=$?
+out=$(bash "$ACT" claude sess-a); rc=$?
 assert_rc "$rc" 0 "kích hoạt lần đầu thành công"
 assert_contains "$out" "claimed" "báo claimed"
 assert_eq "$(ofm_lock_get session_id)" "sess-a" "lock ghi đúng phiên"
@@ -1116,14 +1116,20 @@ assert_eq "$(ofm_lock_get session_id)" "sess-a" "lock ghi đúng phiên"
 [ -d "$OFM_HOME/projects" ]; assert_rc $? 0 "tạo projects/"
 
 # Phiên thứ hai bị từ chối khi chủ còn sống
-out=$(bash "$ACT" sess-b claude); rc=$?
+out=$(bash "$ACT" claude sess-b); rc=$?
 assert_rc "$rc" 1 "phiên thứ hai bị từ chối"
 assert_contains "$out" "held_by=sess-a" "nói rõ ai đang giữ"
 
-# Thiếu tham số thì fail rõ ràng, không im lặng
-out=$(bash "$ACT" 2>&1); rc=$?
-assert_rc "$rc" 2 "thiếu tham số thì rc 2"
-assert_contains "$out" "usage" "in usage"
+# Không có session id từ môi trường thì TỪ CHỐI, không bịa một giá trị
+rm -f "$(ofm_lock_path)"
+out=$(env -u CLAUDE_CODE_SESSION_ID bash "$ACT" claude 2>&1); rc=$?
+assert_rc "$rc" 2 "không có CLAUDE_CODE_SESSION_ID thì rc 2"
+assert_contains "$out" "no_session_id" "nói rõ lý do"
+assert_eq "$(ofm_lock_get session_id)" "" "không ghi lock nào khi thiếu session id"
+# Có biến môi trường thì dùng nó, model không phải điền gì
+out=$(CLAUDE_CODE_SESSION_ID=from-env bash "$ACT" claude); rc=$?
+assert_rc "$rc" 0 "lấy được session id từ môi trường"
+assert_eq "$(ofm_lock_get session_id)" "from-env" "lock ghi đúng session id của môi trường"
 
 # PostCompact: khớp lock thì in identity ra stderr, lệch thì câm
 HOOK="$OFM_TEST_REPO/hooks/reidentify-claude.sh"
@@ -1150,12 +1156,22 @@ Expected: FAIL — `bin/ofm-activate.sh: No such file or directory`
 # In một dòng kết quả; rc 0 = phiên này là first mate, rc 1 = bị từ chối.
 set -u
 
-if [ $# -lt 2 ]; then
-  printf 'usage: ofm-activate.sh <session_id> <harness>\n' >&2
+# SESSION ID LẤY TỪ MÔI TRƯỜNG, KHÔNG TỪ MODEL. Đã đo trên máy captain: Claude
+# Code đặt CLAUDE_CODE_SESSION_ID (UUID 36 ký tự, trùng tên file transcript của
+# phiên) trong môi trường mọi lệnh shell — còn model thì KHÔNG có đường nào biết
+# session id của chính nó. Nếu để model tự điền, nó sẽ bịa một giá trị không bao
+# giờ khớp `session_id` trong payload mà hook nhận, và khi đó CẢ wake hook LẪN
+# PostCompact hook câm vĩnh viễn trong khi lock vẫn bị giữ — hỏng toàn bộ sản
+# phẩm, im lặng. Thà từ chối kích hoạt.
+# Usage: ofm-activate.sh [harness] [session_id_override]
+harness=${1:-claude}
+session_id=${2:-${CLAUDE_CODE_SESSION_ID:-}}
+if [ -z "$session_id" ]; then
+  printf 'refused reason=no_session_id\n' >&2
+  printf 'không đọc được session id (CLAUDE_CODE_SESSION_ID rỗng): phiên này\n' >&2
+  printf 'không chạy dưới Claude Code, hoặc harness chưa được hỗ trợ.\n' >&2
   exit 2
 fi
-session_id=$1
-harness=$2
 
 LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib not found\n' >&2; exit 2; }
 # shellcheck source=/dev/null
@@ -1163,8 +1179,19 @@ LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib 
 
 mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
 
-pid=$(ofm_harness_pid "$harness")
-[ -n "$pid" ] || pid=$PPID
+# PID phải là tiến trình HARNESS sống lâu, không phải shell tạm đang gọi script.
+# $PPID là shell của Bash tool và có thể chết ngay sau đó, khiến `kill -0` coi
+# một first mate đang sống là đã chết và cho phiên khác cướp lock — đúng hỏng
+# hóc mà quy tắc liveness gọi là tệ hơn một lock kẹt. Đã đo: CLAUDE_PID và
+# ofm_harness_pid cho cùng một pid, nên ưu tiên biến môi trường rồi mới đi bộ
+# cây tiến trình, và KHÔNG có đường lùi nào khác.
+pid=${CLAUDE_PID:-}
+case "$pid" in ''|*[!0-9]*) pid=$(ofm_harness_pid "$harness") ;; esac
+case "$pid" in
+  ''|*[!0-9]*)
+    printf 'refused reason=no_harness_pid harness=%s\n' "$harness" >&2
+    exit 2 ;;
+esac
 
 ofm_lock_claim "$session_id" "$harness" "$pid"
 ```
@@ -1225,7 +1252,7 @@ terminal do Orca quản lý. Bạn điều phối, không tự làm.
 3. **Host đã chọn cho một request thì dính suốt request.** Host chết giữa chừng thì **dừng và
    báo captain** — không bao giờ âm thầm chuyển task sang host khác.
 4. **Chỉ release sau một `worker_done` thật đã xử lý.** Không release vì timeout, TUI idle,
-   heartbeat, status, question, escalation, hay `worker_done` bị reject.
+   heartbeat, status, question, escalation, hay `worker_done` bị reject hoặc stale.
 5. **Không bao giờ ack trước khi xử lý xong mọi message trong batch.** Orca replay tới khi ack;
    đó là thứ làm cho việc mất phiên không mất tin.
 6. **Luôn truyền `--run <run_id>` tường minh** cho mọi lệnh orchestration. Phiên này không phải
@@ -1255,11 +1282,16 @@ description: Biến phiên này thành first mate — liaison điều phối cre
 
 Kích hoạt phiên này thành first mate.
 
-1. Chạy đúng lệnh này qua Bash, thay `<session_id>` bằng session id của phiên hiện tại:
+1. Chạy đúng lệnh này qua Bash, **không thêm tham số nào**:
 
    ```
-   "${CLAUDE_PLUGIN_ROOT}/bin/ofm-activate.sh" "<session_id>" claude
+   "${CLAUDE_PLUGIN_ROOT}/bin/ofm-activate.sh" claude
    ```
+
+   Script tự đọc session id từ `CLAUDE_CODE_SESSION_ID` trong môi trường. **Đừng tự đoán hay tự
+   điền session id** — bạn không có cách nào biết nó, và một giá trị bịa sẽ khiến lock không bao
+   giờ khớp payload của hook, làm cả cơ chế đánh thức lẫn cơ chế nhắc-lại-identity câm vĩnh viễn
+   trong khi lock vẫn bị giữ. Nếu script báo `no_session_id`, dừng lại và báo captain.
 
    - rc 0 và in `claimed`/`reclaimed`/`refreshed` → phiên này giờ là first mate, đi tiếp.
    - rc 1 và in `refused held_by=<id>` → **dừng lại**. Báo captain rằng một phiên khác đang là
