@@ -579,6 +579,11 @@ kill -TERM -"$waiter" 2>/dev/null || kill -TERM "$waiter" 2>/dev/null || true
 sleep 0.8
 leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "$leaked" "0" "giết process group thì không còn orca mồ côi"
+# `pgrep -f run_orphanprobe` CHỈ khớp argv của con orca, nên nó từng báo 0 trong
+# khi shell bọc vẫn sống và quay vòng poll. Đếm cả process group mới thấy được:
+# $waiter là pgid vì khối này chạy dưới `set -m`.
+remaining=$(pgrep -g "$waiter" 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$remaining" "0" "cả process group biến mất, không riêng con orca"
 pkill -f 'run_orphanprobe' 2>/dev/null || true
 rm -f "$(ofm_requests_dir)/orphan.md"
 
@@ -667,7 +672,14 @@ ofm_wait_any_run() {  # <timeout_ms>
     # lại một tiến trình mồ côi có thể sống tới tám tiếng. Trap cũng là đường
     # dọn duy nhất cho cả ba lối ra bình thường, nên không còn chỗ nào phải
     # nhớ gọi cleanup bằng tay.
-    trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT INT TERM HUP
+    # HAI trap, không một. Trong bash, trap TÍN HIỆU chạy handler rồi TIẾP TỤC
+    # thực thi — nó không kết thúc process. Một trap gộp cho cả EXIT và INT/TERM
+    # sẽ dọn sạch nhưng để shell này quay vòng poll tới hết deadline gốc (tám
+    # tiếng ở production), mỗi lần hook chạy một cái: đúng thứ tích tụ mà trap
+    # sinh ra để chặn. Nhánh tín hiệu vì thế phải `exit` tường minh. Dọn hai lần
+    # là vô hại: kill vào pid đã chết và rm -rf vào thư mục đã mất đều không sao.
+    trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT
+    trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"; exit 0' INT TERM HUP
     # KHÔNG BAO GIỜ `set -m` ở đây. Bash không tạo process group mới cho job
     # nền, nên mọi con `orca` ở lại trong process group mà HARNESS sở hữu — và
     # đó chính là thứ làm cho việc harness kết thúc hook dọn sạch cả cụm
