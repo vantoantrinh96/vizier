@@ -103,7 +103,7 @@ curl -fsSL https://<host>/orca-firstmate/install.sh | sh
 orca-firstmate install
 ```
 
-Lệnh đầu đặt CLI lên PATH và tải payload về `~/.orca-firstmate/dist/`. Lệnh sau dò harness nào có trên máy rồi chép payload vào thư mục skill của từng cái (`~/.claude/skills/`, `~/.cursor/skills/`). Sau đó mọi phiên của harness đó, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
+Lệnh đầu đặt CLI lên PATH và tải payload về `~/.orca-firstmate/dist/`. Lệnh sau dò harness nào có trên máy rồi cài adapter cho từng cái — **và cách cài khác nhau theo harness**, xem mục CLI cài đặt. Sau đó mọi phiên của harness đó, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
 
 **`/firstmate` là công tắc.** Gõ nó thì phiên đó:
 
@@ -148,6 +148,14 @@ orca-firstmate/
 
 `install` chép chứ không symlink: một symlink nằm trong thư mục plugin là loại thứ hỏng âm thầm.
 
+**Cursor không cài được dạng plugin.** Đã đo: cùng một hook, đặt trong `~/.cursor/skills/<name>/` với `.cursor-plugin/plugin.json` khai `"hooks"`, **không bao giờ fire** — kể cả khi ép bằng `--plugin-dir`; đặt trong `~/.cursor/hooks.json` thì chạy đủ vòng (`docs/verification/2026-08-31-plugin-wake.md`). Nên adapter Cursor buộc phải **merge phẫu thuật, idempotent** vào `~/.cursor/hooks.json` — chính file Orca đã có 8 entry trong đó: thêm đúng entry của mình, không đụng entry của ai khác, chạy lại không nhân bản, `uninstall` gỡ đúng entry của mình. Đây là ngoại lệ **có bằng chứng** của nguyên tắc "không sửa file config của tool khác", và nó là rủi ro cài đặt lớn nhất của distro.
+
+| | Claude Code | Cursor |
+|---|---|---|
+| Cài vào | plugin riêng trong `~/.claude/skills/<name>/` | **merge vào `~/.cursor/hooks.json` dùng chung** |
+| Gỡ | xoá thư mục | gỡ đúng entry của mình |
+| Hỏng thì sao | không ảnh hưởng ai | **có thể phá config Orca và các tool khác** |
+
 ### Hợp đồng adapter — ba câu
 
 Mỗi harness phải trả lời được, và câu 3 là câu giết:
@@ -166,7 +174,9 @@ Hai adapter của v1 trả lời **khác hẳn nhau**, nên đừng viết chung
 | `exit 2` | đánh thức | **no-op im lặng** |
 | Chặn vòng lặp | `stop_hook_active` | `loop_count` + `loop_limit` khai trong hooks |
 | Tranh chấp | không — async, mỗi Stop một lần bắn | **cần park-owner**: tin captain gõ lúc đang park không giết hook, hai park cùng thấy một message sẽ báo trùng |
-| Headless `-p` | fire | **không fire turn-end** |
+| Headless `-p` | fire | **không fire hook nào cả** — đã đo ở cả ba vị trí khai hook |
+| Payload nhận diện | `session_id`, `cwd` | `session_id`, `workspace_roots`, `loop_count`, `transcript_path`, `status` |
+| Test tự động | được — spike đã tự động hoá trọn vẹn | **không** — phải lái phiên TUI thật qua pty, và gõ text với Enter phải tách rời |
 | Token khi chờ | 0 | 0 |
 
 Hệ quả cho Cursor: cần thêm `~/.orca-firstmate/park-owner` (seq tăng dần); trước khi phát follow-up, park phải xác nhận mình còn là chủ mới nhất, không thì im lặng exit 0. Và `loop_limit` khai trong hooks phải cao hơn trần tự chặn của ta, để bound của ta cắn trước và còn kịp báo một câu.
@@ -175,7 +185,7 @@ Hệ quả cho Cursor: cần thêm `~/.orca-firstmate/park-owner` (seq tăng d�
 
 `install` phải **in ra giới hạn của từng harness** ngay lúc cài, không để captain phát hiện sau ba ngày:
 
-- Cursor: không dùng được ở headless `cursor-agent -p` (không có turn-end hook); phải chạy phiên tương tác.
+- Cursor: không dùng được ở headless `cursor-agent -p` — **không hook nào fire ở chế độ đó**; phải chạy phiên tương tác. Cursor còn đòi trust theo từng thư mục workspace, nên lời hứa "gõ `/firstmate` ở mọi nơi" ở Cursor kèm một lần trust cho mỗi thư mục mới.
 - Harness chưa có adapter: `install` báo thẳng "chưa hỗ trợ", không im lặng bỏ qua.
 - Harness không trả lời được câu 3 — Codex là ca đã biết, cơ chế của nó là "bounded foreground checkpoints" nên **không đánh thức được phiên idle** — thì adapter đó phải nói rõ orca-firstmate ở đó chạy giảm cấp: vẫn dispatch, vẫn brief, nhưng captain phải tự hỏi "xong chưa".
 
@@ -353,7 +363,8 @@ Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
 
 - **Gắn chặt schema orchestration của Orca**: Orca không có version marker ổn định; đổi contract sẽ lộ lúc runtime. Giảm nhẹ: kiểm `orchestration.contract.v1` trong capabilities lúc session start; fake-orca fixtures ghi rõ version app đã đối chiếu.
 - **Stop hook `asyncRewake` là hành vi của Claude Code**, đổi harness là mất cơ chế wake — chấp nhận: distro này chọn Claude Code làm harness duy nhất của v1. Đã kiểm chứng trên 2.1.236 ở dạng plugin (`docs/verification/2026-08-31-plugin-wake.md`); docs Claude Code có ghi field này cho command hook nhưng **không** nói plugin hook honor nó, nên đây là hành vi cần đo lại khi lên version mới.
-- **Cursor cấp user chưa kiểm chứng.** Mọi thứ về `stop` của Cursor (đồng bộ, exit 2 vô hiệu, `followup_message` là kênh duy nhất) lấy từ implementation đã verify của firstmate ở đúng version `2026.08.11-e8db854` — nhưng firstmate dùng `.cursor/hooks.json` **cấp project** với `--trust`, còn ta cài **cấp user**. Chưa đo được vì phép đo bắt buộc phải chạy phiên tương tác. Phải đo trước khi implement adapter Cursor.
+- **Adapter Cursor ghi vào file dùng chung.** Đã kiểm chứng cơ chế wake chạy đủ vòng ở `~/.cursor/hooks.json` cấp user, nhưng cũng vì thế `install` phải sửa một file Orca đang dùng. Merge sai là phá supervision của Orca, không chỉ của ta. Giảm nhẹ: merge idempotent theo khoá riêng, sao lưu trước khi ghi, và `doctor` kiểm lại entry của mình còn nguyên vẹn.
+- **Cursor TUI báo version khác `--version`.** TUI in `2026.08.25-3e8eec8` còn `--version` in `2026.08.11-e8db854`. Đừng gate tương thích bằng `--version`.
 - **Plugin hook chạy trong mọi phiên Claude Code trên máy.** Một `wake.sh` lỗi là lỗi toàn máy, không chỉ lỗi first mate. Giảm nhẹ: cổng lock đứng trước mọi thứ khác và mọi nhánh không chắc chắn đều exit 0.
 - App Orca phải đang chạy — `orca open` ở session start nếu chưa.
 - **Phụ thuộc thêm vào `no-mistakes`** cho mode cùng tên: tên outcome và tên lệnh `axi` có thể đổi giữa các version. Giảm nhẹ có sẵn trong thiết kế: distro **không bao giờ parse output TOON của axi** — worker lái pipeline và tự khai outcome trong `worker_done`, nên bề mặt gắn kết chỉ là bốn tên outcome terminal, không phải cả schema.
