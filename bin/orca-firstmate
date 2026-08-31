@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# orca-firstmate — CLI cài đặt và chẩn đoán.
+#
+# LUẬT CỨNG: script này CHỈ chạy lúc cài và lúc chẩn đoán. Không đường runtime
+# nào được gọi nó. Sau khi cài, first mate nói chuyện thẳng với `orca`.
+set -u
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
+# shellcheck source=/dev/null
+. "$REPO_DIR/lib/ofm-home.sh"
+
+# Normalize home path to ensure consistent path comparisons (no double slashes)
+HOME_NORMALIZED="$(cd "$(ofm_home)" 2>/dev/null && pwd)" || HOME_NORMALIZED="$(ofm_home)"
+DIST="$HOME_NORMALIZED/dist"
+CLAUDE_SKILLS="${OFM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+CURSOR_HOOKS="${OFM_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
+
+_sync_dist() {
+  # TỪ CHỐI khi đang chạy từ chính bản đã cài: _sync_dist xoá $DIST rồi chép từ
+  # $REPO_DIR, mà khi chạy từ dist thì hai đường dẫn đó là một -> tự huỷ.
+  case "$REPO_DIR/" in
+    "$DIST"/*|"$DIST/")
+      printf 'refused: đang chạy từ bản đã cài (%s).\n' "$REPO_DIR" >&2
+      printf '  chạy install/update từ source checkout: %s/src/bin/orca-firstmate install\n' "$(ofm_home)" >&2
+      return 1 ;;
+  esac
+  mkdir -p "$DIST" || return 1
+  rm -rf "${DIST:?}/"*
+  local item
+  for item in lib hooks skills commands bin .claude-plugin; do
+    [ -e "$REPO_DIR/$item" ] || continue
+    cp -R "$REPO_DIR/$item" "$DIST/" || return 1
+  done
+  printf 'payload -> %s\n' "$DIST"
+}
+
+cmd_doctor() {
+  local problems=0 status reachable state caps
+  for t in orca jq git gh; do
+    command -v "$t" >/dev/null 2>&1 || {
+      case "$t" in
+        orca) printf 'MISSING: orca (install: brew install orca)\n' ;;
+        jq)   printf 'MISSING: jq (install: brew install jq)\n' ;;
+        git)  printf 'MISSING: git (install: brew install git)\n' ;;
+        gh)   printf 'MISSING: gh (install: brew install gh && gh auth login)\n' ;;
+      esac
+      problems=$((problems + 1))
+    }
+  done
+  if command -v orca >/dev/null 2>&1; then
+    status=$(orca status --json 2>/dev/null)
+    reachable=$(printf '%s' "$status" | jq -r '.result.reachable // false' 2>/dev/null)
+    state=$(printf '%s' "$status" | jq -r '.result.state // "unknown"' 2>/dev/null)
+    caps=$(printf '%s' "$status" | jq -r '(.result.capabilities // []) | join(",")' 2>/dev/null)
+    if [ "$reachable" != "true" ] || [ "$state" != "ready" ]; then
+      printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, rồi chờ app sẵn sàng)\n' "$reachable" "$state"
+      problems=$((problems + 1))
+    fi
+    case "$caps" in
+      *orchestration.contract.v1*) ;;
+      *) printf 'NOT_READY: Orca thiếu capability orchestration.contract.v1 (fix: cập nhật app Orca)\n'
+         problems=$((problems + 1)) ;;
+    esac
+  fi
+  if [ -z "${OFM_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+    printf 'NOT_READY: gh chưa đăng nhập (fix: gh auth login)\n'
+    problems=$((problems + 1))
+  fi
+  if [ "$problems" -eq 0 ]; then
+    printf 'doctor: ok — orca ready, jq/git/gh sẵn sàng\n'
+    return 0
+  fi
+  return 1
+}
+
+cmd_install() {
+  local want=all
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --harness) want=${2:?--harness cần giá trị}; shift 2 ;;
+      *) printf 'unknown flag: %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+  case "$want" in
+    all|claude|cursor) ;;
+    *) printf 'error: harness "%s" chưa hỗ trợ. v1 chỉ có claude và cursor.\n' "$want" >&2; return 1 ;;
+  esac
+  _sync_dist || return 1
+  local did=0
+  if [ "$want" = all ] || [ "$want" = claude ]; then
+    if bash "$DIST/bin/ofm-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$want" = claude ]; then
+      bash "$DIST/bin/ofm-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
+      did=$((did + 1))
+    fi
+  fi
+  if [ "$want" = all ] || [ "$want" = cursor ]; then
+    if bash "$DIST/bin/ofm-adapter-cursor.sh" detect >/dev/null 2>&1 || [ "$want" = cursor ]; then
+      bash "$DIST/bin/ofm-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
+      did=$((did + 1))
+    fi
+  fi
+  [ "$did" -gt 0 ] || { printf 'không tìm thấy harness nào được hỗ trợ trên máy\n' >&2; return 1; }
+  printf 'xong. Mở một phiên mới rồi gõ /firstmate.\n'
+}
+
+cmd_uninstall() {
+  [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
+  [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
+  rm -rf "$DIST"
+  # Dọn cả những gì install.sh tạo ra, nếu không captain gỡ xong vẫn còn một
+  # lệnh chết trên PATH trỏ vào clone đã mồ côi.
+  local bin_link="${OFM_BIN_DIR:-$HOME/.local/bin}/orca-firstmate"
+  [ -L "$bin_link" ] && rm -f "$bin_link"
+  # KHÔNG xoá thư mục đang chứa chính script này: bash đọc script theo từng
+  # đoạn, xoá giữa lúc chạy là hành vi không xác định. In lệnh cho captain.
+  # Normalize home path for consistent comparison
+  local src
+  src="$(cd "$(ofm_home)" 2>/dev/null && pwd)" || src="$(ofm_home)"
+  src="$src/src"
+  case "$REPO_DIR/" in
+    "$src"/*|"$src/")
+      printf 'đã gỡ adapter, payload và symlink. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
+      printf 'còn lại source checkout (không tự xoá được vì lệnh này đang chạy từ đó):\n'
+      printf '  rm -rf %s\n' "$src"
+      return 0 ;;
+  esac
+  rm -rf "$src"
+  printf 'đã gỡ adapter, payload, symlink và clone. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
+}
+
+case "${1:-}" in
+  doctor)    shift; cmd_doctor "$@" ;;
+  install)   shift; cmd_install "$@" ;;
+  update)    shift; cmd_install "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  *) printf 'usage: orca-firstmate install [--harness claude|cursor]|doctor|update|uninstall\n' >&2; exit 2 ;;
+esac
