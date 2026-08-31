@@ -1603,14 +1603,17 @@ _default_hooks() { printf '%s/.cursor/hooks.json' "$HOME"; }
 
 # Theo symlink trước khi ghi. `mv tmp "$H"` vào một symlink sẽ THAY THẾ chính
 # symlink bằng một file thường — nội dung còn nhưng cấu trúc captain dựng thì mất.
-_resolve() {  # <path>
-  local p=$1 t
-  [ -L "$p" ] || { printf '%s' "$p"; return 0; }
-  t=$(readlink "$p") || { printf '%s' "$p"; return 0; }
-  case "$t" in
-    /*) printf '%s' "$t" ;;
-    *)  printf '%s/%s' "$(dirname "$p")" "$t" ;;
-  esac
+_resolve() {  # <path> — đi hết chuỗi link, không chỉ một tầng
+  local p=$1 t hops=0
+  while [ -L "$p" ] && [ "$hops" -lt 16 ]; do
+    t=$(readlink "$p") || break
+    case "$t" in
+      /*) p=$t ;;
+      *)  p="$(dirname "$p")/$t" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  printf '%s' "$p"
 }
 
 # Tên backup không được đụng nhau. `date +%S` chỉ phân giải tới giây, mà ba lần
@@ -1641,6 +1644,31 @@ _count_mine() {  # <hooks_json>
     [(.hooks.stop // [])[]
      | select(((.command? | type) == "string") and (.command | contains($m)))]
     | length' "$1" 2>/dev/null
+}
+
+# Quyết định "có mất bản cập nhật không". Tách ra thành hàm để test được bằng
+# số dựng sẵn: bản thân cuộc đua thì không tái hiện được trong một unit test,
+# nhưng LUẬT quyết định thì phải kiểm được. Một phép đếm rỗng (jq lỗi, file
+# không đọc được) tính là LỆCH, không tính là bằng nhau.
+_no_lost_update() {  # <others_before> <others_after> <mine_after>
+  case "$1$2$3" in *[!0-9]*|'') return 1 ;; esac
+  [ "$2" = "$1" ] && [ "$3" = "1" ]
+}
+
+# Áp entry của ta lên file hiện tại. Dùng cho cả lần merge đầu lẫn lần thử lại.
+_merge_ours() {  # <hooks_json> <cmd>
+  local H=$1 cmd=$2 tmp="$1.ofm.$$"
+  jq --arg cmd "$cmd" --arg m "$MARKER" '
+    .version = (.version // 1)
+    | .hooks = (.hooks // {})
+    | .hooks.stop = (
+        ((.hooks.stop // []) | map(select(
+           (((.command? | type) == "string") and (.command | contains($m))) | not)))
+        + [{type:"command", command:$cmd, timeout:28800, loop_limit:200}]
+      )
+  ' "$H" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$H" || { rm -f "$tmp"; return 1; }
 }
 
 # `.hooks.stop` phải là mảng, hoặc không tồn tại. Nếu nó là object thì jq sẽ
@@ -1679,30 +1707,22 @@ case "$action" in
       backup=""
     fi
     others_before=$(_count_others "$H")
-    tmp="$H.ofm.$$"
-    jq --arg cmd "$cmd" --arg m "$MARKER" '
-      .version = (.version // 1)
-      | .hooks = (.hooks // {})
-      | .hooks.stop = (
-          ((.hooks.stop // []) | map(select(
-             (((.command? | type) == "string") and (.command | contains($m))) | not)))
-          + [{type:"command", command:$cmd, timeout:28800, loop_limit:200}]
-        )
-    ' "$H" > "$tmp" 2>/dev/null || { rm -f "$tmp"; printf 'refused: merge thất bại\n' >&2; exit 1; }
-    jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; printf 'refused: merge sinh ra JSON hỏng\n' >&2; exit 1; }
-    mv "$tmp" "$H" || { rm -f "$tmp"; exit 1; }
+    _merge_ours "$H" "$cmd" || { printf 'refused: merge thất bại\n' >&2; exit 1; }
 
     # ĐỌC LẠI SAU KHI GHI. macOS không có `flock`, nên thay vì ngăn race ta PHÁT
-    # HIỆN nó: nếu số entry của tool khác đổi giữa lúc đọc và lúc ghi, ai đó đã
-    # ghi xen vào và một bên vừa mất bản cập nhật. Khôi phục từ backup rồi từ
-    # chối, thay vì âm thầm nuốt mất hook của Orca.
-    others_after=$(_count_others "$H")
-    mine_after=$(_count_mine "$H")
-    if [ "$others_after" != "$others_before" ] || [ "$mine_after" != "1" ]; then
-      [ -n "$backup" ] && cp "$backup" "$H" 2>/dev/null
-      printf 'refused: entry của tool khác đổi từ %s thành %s (của ta: %s) — đã khôi phục từ backup\n' \
-        "$others_before" "$others_after" "$mine_after" >&2
-      exit 1
+    # HIỆN nó. Nhưng KHÔNG auto-restore: backup là ảnh chụp TRƯỚC merge của ta,
+    # nên khôi phục nó sẽ xoá luôn thay đổi của writer đã ghi xen vào — đưa file
+    # về trạng thái cũ hơn cả hai bên, tệ hơn là cứ để yên. Thay vào đó: thử
+    # merge lại MỘT lần từ trạng thái hiện tại (đã chứa thay đổi của họ), rồi
+    # nếu vẫn lệch thì báo thật to và chỉ chỗ backup cho captain tự quyết.
+    if ! _no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+      _merge_ours "$H" "$cmd" || { printf 'refused: merge lại thất bại\n' >&2; exit 1; }
+      if ! _no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+        printf 'refused: có tiến trình khác ghi %s cùng lúc và ta không hoà giải được.\n' "$H" >&2
+        printf '  KHÔNG tự khôi phục vì backup cũ hơn thay đổi của họ. Backup ở: %s\n' "${backup:-<không có>}" >&2
+        printf '  Hãy kiểm tra file rồi chạy lại install.\n' >&2
+        exit 1
+      fi
     fi
     printf 'installed cursor adapter -> %s\n' "$H"
     printf 'note: Cursor KHÔNG chạy hook ở headless `cursor-agent -p`; phải dùng phiên tương tác.\n'
