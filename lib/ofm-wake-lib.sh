@@ -69,6 +69,13 @@ ofm_wait_any_run() {  # <timeout_ms>
     # dọn duy nhất cho cả ba lối ra bình thường, nên không còn chỗ nào phải
     # nhớ gọi cleanup bằng tay.
     trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT INT TERM HUP
+    # KHÔNG BAO GIỜ `set -m` ở đây. Bash không tạo process group mới cho job
+    # nền, nên mọi con `orca` ở lại trong process group mà HARNESS sở hữu — và
+    # đó chính là thứ làm cho việc harness kết thúc hook dọn sạch cả cụm
+    # (firstmate/bin/fm-claude-stop-autoarm.sh:35-37: "Claude owns the process
+    # group, so its timeout/session teardown kills arm and watcher together").
+    # Bật `set -m` sẽ đẩy con sang group MỚI và thoát khỏi cú dọn đó — đúng
+    # ngược điều ta muốn. Trap ở trên lo đường thoát êm; group lo đường bị cắt.
     while IFS= read -r run; do
       [ -n "$run" ] || continue
       i=$((i + 1))

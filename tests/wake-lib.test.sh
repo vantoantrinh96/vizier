@@ -55,14 +55,19 @@ rm -f "$(ofm_requests_dir)/crlf.md"
 s=$(ofm_summarize '{"type":"worker\ndone","run_id":"r\n1","body":"a\nb"}')
 assert_eq "$(printf '%s' "$s" | grep -c . )" "1" "tóm tắt luôn đúng một dòng dù mọi trường có newline"
 
-# Giết tiến trình chờ từ ngoài thì con `orca` phải chết theo, không để lại mồ côi
+# Giết CẢ PROCESS GROUP — đúng cách harness thật kết thúc hook. Giết riêng pid
+# của subshell ngoài KHÔNG lan tới subshell trong (đã đo: leaked=1), nên phép đo
+# đó không phản ánh production. `set -m` ở ĐÂY, trong test, để job nền thành
+# group leader; library thì tuyệt đối không được bật nó.
 printf -- '---\nrun_id: run_orphanprobe\nstatus: open\n---\nx\n' > "$(ofm_requests_dir)/orphan.md"
+set -m
 ( printf 'run_orphanprobe\n' | ofm_wait_any_run 30000 >/dev/null 2>&1 ) & waiter=$!
+set +m
 sleep 0.8
-kill "$waiter" 2>/dev/null || true
+kill -TERM -"$waiter" 2>/dev/null || kill -TERM "$waiter" 2>/dev/null || true
 sleep 0.8
 leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "$leaked" "0" "không để lại orca mồ côi sau khi tiến trình chờ bị giết"
+assert_eq "$leaked" "0" "giết process group thì không còn orca mồ côi"
 pkill -f 'run_orphanprobe' 2>/dev/null || true
 rm -f "$(ofm_requests_dir)/orphan.md"
 
