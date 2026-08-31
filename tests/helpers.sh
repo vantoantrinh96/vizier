@@ -9,6 +9,18 @@ ofm_test_setup() {
   export OFM_TEST_TMP
   export OFM_HOME="$OFM_TEST_TMP/home"
   mkdir -p "$OFM_HOME/requests" "$OFM_HOME/projects"
+  # LUẬT TUYỆT ĐỐI: không test nào được đọc/ghi ~/.claude/skills hay
+  # ~/.cursor/hooks.json THẬT. Đặt default ở ĐÂY, không ở từng file test, để
+  # một doctor/install call chạy TRƯỚC khi file test tự export biến của riêng
+  # nó vẫn không bao giờ rơi về $HOME thật.
+  export OFM_CLAUDE_SKILLS_DIR="$OFM_TEST_TMP/claude-skills"
+  export OFM_CURSOR_HOOKS_JSON="$OFM_TEST_TMP/cursor-hooks.json"
+  # Bộ chạy test này CÓ THỂ tự nó đang chạy dưới một phiên con/subagent (biến
+  # đã thật sự thấy set trong CI của chính dự án này) — nếu để lọt qua, mọi
+  # test activate sẽ ăn nhầm refusal của FIX 5 dù đang test một nhánh khác
+  # hẳn. Test env phải sạch biến harness thật của TIẾN TRÌNH CHẠY TEST, không
+  # phải của kịch bản đang được test.
+  unset CLAUDE_CODE_CHILD_SESSION
   export OFM_FAKE_ORCA_STATE="$OFM_TEST_TMP/fake-orca"
   mkdir -p "$OFM_FAKE_ORCA_STATE/queue"
   : > "$OFM_FAKE_ORCA_STATE/calls.log"
