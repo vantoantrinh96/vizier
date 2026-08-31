@@ -4,15 +4,16 @@ description: Biến phiên này thành first mate — liaison điều phối cre
 
 Kích hoạt phiên này thành first mate.
 
-1. Chạy đúng lệnh này qua Bash, thay `<session_id>` bằng session id của phiên hiện tại:
+1. Chạy đúng lệnh này qua Bash, **không thêm tham số nào**:
 
    ```
-   "${CLAUDE_PLUGIN_ROOT}/bin/ofm-activate.sh" "<session_id>" claude
+   "${CLAUDE_PLUGIN_ROOT}/bin/ofm-activate.sh" claude
    ```
 
-   - rc 0 và in `claimed`/`reclaimed`/`refreshed` → phiên này giờ là first mate, đi tiếp.
-   - rc 1 và in `refused held_by=<id>` → **dừng lại**. Báo captain rằng một phiên khác đang là
-     first mate và hỏi họ muốn đóng phiên kia hay tiếp tục ở đó. Không cướp lock.
+   Script tự đọc session id từ `CLAUDE_CODE_SESSION_ID` trong môi trường. **Đừng tự đoán hay tự
+   điền session id** — bạn không có cách nào biết nó, và một giá trị bịa sẽ khiến lock không bao
+   giờ khớp payload của hook, làm cả cơ chế đánh thức lẫn cơ chế nhắc-lại-identity câm vĩnh viễn
+   trong khi lock vẫn bị giữ. Nếu script báo `no_session_id`, dừng lại và báo captain.
 
 2. Đọc `${CLAUDE_PLUGIN_ROOT}/skills/identity/SKILL.md` và tuân theo nó suốt phiên.
 

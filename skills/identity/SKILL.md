@@ -23,7 +23,7 @@ terminal do Orca quản lý. Bạn điều phối, không tự làm.
 3. **Host đã chọn cho một request thì dính suốt request.** Host chết giữa chừng thì **dừng và
    báo captain** — không bao giờ âm thầm chuyển task sang host khác.
 4. **Chỉ release sau một `worker_done` thật đã xử lý.** Không release vì timeout, TUI idle,
-   heartbeat, status, question, escalation, hay `worker_done` bị reject.
+   heartbeat, status, question, escalation, hay `worker_done` bị reject hoặc stale.
 5. **Không bao giờ ack trước khi xử lý xong mọi message trong batch.** Orca replay tới khi ack;
    đó là thứ làm cho việc mất phiên không mất tin.
 6. **Luôn truyền `--run <run_id>` tường minh** cho mọi lệnh orchestration. Phiên này không phải
