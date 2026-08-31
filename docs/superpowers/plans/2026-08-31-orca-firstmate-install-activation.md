@@ -1131,6 +1131,15 @@ out=$(CLAUDE_CODE_SESSION_ID=from-env bash "$ACT" claude); rc=$?
 assert_rc "$rc" 0 "lấy được session id từ môi trường"
 assert_eq "$(ofm_lock_get session_id)" "from-env" "lock ghi đúng session id của môi trường"
 
+# Không xác định được pid harness thì TỪ CHỐI. Nhánh này trước đó KHÔNG có test
+# nào chạm tới, vì mọi lời gọi đều đọc CLAUDE_PID có thật của môi trường test.
+# Bỏ CLAUDE_PID và đặt một tên harness không thể có trong cây tiến trình.
+rm -f "$(ofm_lock_path)"
+out=$(env -u CLAUDE_PID bash "$ACT" no-such-harness-xyz 2>&1); rc=$?
+assert_rc "$rc" 2 "không tìm được pid harness thì rc 2"
+assert_contains "$out" "no_harness_pid" "nói rõ lý do"
+assert_eq "$(ofm_lock_get session_id)" "" "không ghi lock nào khi thiếu pid harness"
+
 # PostCompact: khớp lock thì in identity ra stderr, lệch thì câm
 HOOK="$OFM_TEST_REPO/hooks/reidentify-claude.sh"
 err=$(printf '{"session_id":"sess-a"}' | bash "$HOOK" 2>&1 >/dev/null); rc=$?
@@ -1177,8 +1186,6 @@ LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib 
 # shellcheck source=/dev/null
 . "$LIB/ofm-home.sh"
 
-mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
-
 # PID phải là tiến trình HARNESS sống lâu, không phải shell tạm đang gọi script.
 # $PPID là shell của Bash tool và có thể chết ngay sau đó, khiến `kill -0` coi
 # một first mate đang sống là đã chết và cho phiên khác cướp lock — đúng hỏng
@@ -1192,6 +1199,10 @@ case "$pid" in
     printf 'refused reason=no_harness_pid harness=%s\n' "$harness" >&2
     exit 2 ;;
 esac
+
+# Chỉ tạo home SAU khi mọi phép từ chối đã qua: một lần kích hoạt bị từ chối
+# không nên để lại thư mục nào mà lần kích hoạt thành công sau thấy lạ.
+mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
 
 ofm_lock_claim "$session_id" "$harness" "$pid"
 ```
@@ -1291,7 +1302,16 @@ Kích hoạt phiên này thành first mate.
    Script tự đọc session id từ `CLAUDE_CODE_SESSION_ID` trong môi trường. **Đừng tự đoán hay tự
    điền session id** — bạn không có cách nào biết nó, và một giá trị bịa sẽ khiến lock không bao
    giờ khớp payload của hook, làm cả cơ chế đánh thức lẫn cơ chế nhắc-lại-identity câm vĩnh viễn
-   trong khi lock vẫn bị giữ. Nếu script báo `no_session_id`, dừng lại và báo captain.
+   trong khi lock vẫn bị giữ.
+
+   Xử lý theo đúng mã trả về:
+
+   - **rc 0**, in `claimed` / `reclaimed` / `refreshed` → phiên này giờ là first mate, đi tiếp.
+   - **rc 1**, in `refused held_by=<id>` → **DỪNG LẠI.** Một phiên khác đang là first mate. Báo
+     captain phiên nào đang giữ, rồi hỏi họ muốn đóng phiên kia hay tiếp tục làm việc ở đó.
+     **Không cướp lock, không xoá file lock, không chạy lại script để thử ăn may.**
+   - **rc 2**, in `no_session_id` hoặc `no_harness_pid` → **DỪNG LẠI** và báo captain nguyên văn
+     dòng lý do. Đây là môi trường không xác định được phiên, không phải thứ để thử lại.
 
    - rc 0 và in `claimed`/`reclaimed`/`refreshed` → phiên này giờ là first mate, đi tiếp.
    - rc 1 và in `refused held_by=<id>` → **dừng lại**. Báo captain rằng một phiên khác đang là
