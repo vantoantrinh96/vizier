@@ -1472,6 +1472,9 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 ofm_test_setup
 CLI="$OFM_TEST_REPO/bin/orca-firstmate"
+# `gh auth status` chạm keychain thật, nên test sẽ xanh/đỏ tuỳ máy. Bỏ qua đúng
+# phép kiểm đó; doctor thật vẫn kiểm đầy đủ.
+export OFM_SKIP_GH_AUTH=1
 
 # doctor sạch khi fake-orca báo ready và mọi tool đều có
 out=$(bash "$CLI" doctor 2>&1); rc=$?
@@ -1516,7 +1519,22 @@ export OFM_BIN_DIR="$OFM_TEST_TMP/bin"; mkdir -p "$OFM_BIN_DIR" "$OFM_HOME/src"
 ln -sf /usr/bin/true "$OFM_BIN_DIR/orca-firstmate"
 bash "$CLI" uninstall >/dev/null 2>&1
 [ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 1 "uninstall gỡ symlink trên PATH"
-[ -d "$OFM_HOME/src" ]; assert_rc $? 1 "uninstall gỡ clone src"
+[ -d "$OFM_HOME/src" ]; assert_rc $? 1 "uninstall gỡ clone src khi không chạy từ đó"
+
+# install TỪ TRONG bản đã cài phải bị từ chối, không được tự huỷ
+bash "$CLI" install --harness claude >/dev/null 2>&1
+out=$(bash "$OFM_HOME/dist/bin/orca-firstmate" install --harness claude 2>&1); rc=$?
+assert_rc "$rc" 1 "install từ trong dist bị từ chối"
+assert_contains "$out" "refused" "nói rõ là từ chối"
+[ -f "$OFM_HOME/dist/bin/orca-firstmate" ]; assert_rc $? 0 "dist không bị xoá sau lần từ chối"
+
+# uninstall chạy TỪ TRONG src thì không xoá src, chỉ in lệnh
+mkdir -p "$OFM_HOME/src/bin" "$OFM_HOME/src/lib"
+cp "$OFM_TEST_REPO/bin/orca-firstmate" "$OFM_HOME/src/bin/"
+cp "$OFM_TEST_REPO/lib/ofm-home.sh" "$OFM_HOME/src/lib/"
+out=$(bash "$OFM_HOME/src/bin/orca-firstmate" uninstall 2>&1)
+[ -d "$OFM_HOME/src" ]; assert_rc $? 0 "không tự xoá thư mục đang chạy từ đó"
+assert_contains "$out" "rm -rf" "in lệnh xoá cho captain"
 
 ofm_test_teardown
 ofm_test_report
@@ -1547,6 +1565,14 @@ CLAUDE_SKILLS="${OFM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 CURSOR_HOOKS="${OFM_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
 
 _sync_dist() {
+  # TỪ CHỐI khi đang chạy từ chính bản đã cài: _sync_dist xoá $DIST rồi chép từ
+  # $REPO_DIR, mà khi chạy từ dist thì hai đường dẫn đó là một -> tự huỷ.
+  case "$REPO_DIR/" in
+    "$DIST"/*|"$DIST/")
+      printf 'refused: đang chạy từ bản đã cài (%s).\n' "$REPO_DIR" >&2
+      printf '  chạy install/update từ source checkout: %s/src/bin/orca-firstmate install\n' "$(ofm_home)" >&2
+      return 1 ;;
+  esac
   mkdir -p "$DIST" || return 1
   rm -rf "${DIST:?}/"*
   local item
@@ -1585,7 +1611,7 @@ cmd_doctor() {
          problems=$((problems + 1)) ;;
     esac
   fi
-  if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+  if [ -z "${OFM_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
     printf 'NOT_READY: gh chưa đăng nhập (fix: gh auth login)\n'
     problems=$((problems + 1))
   fi
@@ -1634,7 +1660,17 @@ cmd_uninstall() {
   # lệnh chết trên PATH trỏ vào clone đã mồ côi.
   local bin_link="${OFM_BIN_DIR:-$HOME/.local/bin}/orca-firstmate"
   [ -L "$bin_link" ] && rm -f "$bin_link"
-  rm -rf "$(ofm_home)/src"
+  # KHÔNG xoá thư mục đang chứa chính script này: bash đọc script theo từng
+  # đoạn, xoá giữa lúc chạy là hành vi không xác định. In lệnh cho captain.
+  local src="$(ofm_home)/src"
+  case "$REPO_DIR/" in
+    "$src"/*|"$src/")
+      printf 'đã gỡ adapter, payload và symlink. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
+      printf 'còn lại source checkout (không tự xoá được vì lệnh này đang chạy từ đó):\n'
+      printf '  rm -rf %s\n' "$src"
+      return 0 ;;
+  esac
+  rm -rf "$src"
   printf 'đã gỡ adapter, payload, symlink và clone. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
 }
 
@@ -1649,7 +1685,7 @@ esac
 
 - [ ] **Step 4: Chạy toàn bộ test cho pass**
 
-Run: `chmod +x bin/orca-firstmate && bash tests/run-all.sh`
+Run: `chmod +x bin/orca-firstmate && bash tests/cli.test.sh`
 Expected: PASS — mọi file test in `ok:`, kết thúc bằng `ALL TEST FILES PASSED`
 
 - [ ] **Step 5: Commit**
