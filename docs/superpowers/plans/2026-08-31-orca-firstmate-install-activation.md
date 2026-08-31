@@ -798,7 +798,7 @@ assert_eq "$out" "" "chạm trần thì không emit"
 
 # Park cũ hơn phải đứng im khi đã có park mới hơn
 printf '7\n' > "$OFM_HOME/park-owner"
-out=$(OFM_CURSOR_PARK_SEQ=3 payload sess-a 0 | bash "$HOOK" 2>/dev/null)
+out=$(payload sess-a 0 | OFM_CURSOR_PARK_SEQ=3 bash "$HOOK" 2>/dev/null)
 assert_eq "$out" "" "park cũ không emit khi đã bị thay"
 
 ofm_test_teardown
