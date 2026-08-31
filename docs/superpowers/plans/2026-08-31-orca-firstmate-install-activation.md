@@ -1313,10 +1313,6 @@ Kích hoạt phiên này thành first mate.
    - **rc 2**, in `no_session_id` hoặc `no_harness_pid` → **DỪNG LẠI** và báo captain nguyên văn
      dòng lý do. Đây là môi trường không xác định được phiên, không phải thứ để thử lại.
 
-   - rc 0 và in `claimed`/`reclaimed`/`refreshed` → phiên này giờ là first mate, đi tiếp.
-   - rc 1 và in `refused held_by=<id>` → **dừng lại**. Báo captain rằng một phiên khác đang là
-     first mate và hỏi họ muốn đóng phiên kia hay tiếp tục ở đó. Không cướp lock.
-
 2. Đọc `${CLAUDE_PLUGIN_ROOT}/skills/identity/SKILL.md` và tuân theo nó suốt phiên.
 
 3. Chạy `"${CLAUDE_PLUGIN_ROOT}/bin/orca-firstmate" doctor`. Có dòng nào không đạt thì báo
