@@ -3,8 +3,6 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 ofm_test_setup
 CLI="$OFM_TEST_REPO/bin/orca-firstmate"
-# `gh auth status` chạm keychain thật, nên test sẽ xanh/đỏ tuỳ máy. Bỏ qua đúng
-# phép kiểm đó; doctor thật vẫn kiểm đầy đủ.
 export OFM_SKIP_GH_AUTH=1
 
 # doctor sạch khi fake-orca báo ready và mọi tool đều có
@@ -68,9 +66,6 @@ out=$(bash "$OFM_HOME/src/bin/orca-firstmate" uninstall 2>&1)
 assert_contains "$out" "rm -rf" "in lệnh xoá cho captain"
 
 # Gọi qua SYMLINK — đúng cách install.sh cài CLI, và là đường gọi thật duy nhất.
-# Ca này từng để lọt một lỗi xoá nhầm thư mục: $0 là symlink nên dirname "$0"
-# không phải nơi script nằm, lib không source được, và guard trỏ vào thư mục
-# hiện hành của người gọi.
 LINKDIR="$OFM_TEST_TMP/pathbin"; mkdir -p "$LINKDIR"
 ln -sf "$OFM_TEST_REPO/bin/orca-firstmate" "$LINKDIR/orca-firstmate"
 DECOY="$OFM_TEST_TMP/decoy"; mkdir -p "$DECOY/dist" "$DECOY/src"
@@ -87,6 +82,29 @@ out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "capability v10 KHÔNG được tính là v1"
 assert_contains "$out" "orchestration.contract.v1" "nêu capability còn thiếu"
 unset OFM_FAKE_ORCA_STATUS
+
+# Chuỗi symlink sâu quá trần phải BÁO LỖI, không âm thầm dùng đường dẫn giải dở
+# Test: tạo ĐỦ symlink để vượt trần 16 hop mà vẫn bash được execute
+# Vận dụng: nếu không có check thì sẽ source lib từ đường dẫn sai, fail với không đọc được lib
+DEEP="$OFM_TEST_TMP/deep"; rm -rf "$DEEP"
+mkdir -p "$DEEP"
+cp "$OFM_TEST_REPO/bin/orca-firstmate" "$DEEP/script"
+# Tạo symlink chain: d0/link -> script, d1/link -> ../d0/link, d2/link -> ../d1/link, ...
+# Mỗi level thêm một hop để readlink phải tuần tự đi qua
+i=0
+while [ "$i" -lt 20 ]; do
+  mkdir -p "$DEEP/d$i"
+  if [ "$i" -eq 0 ]; then
+    ln -sf ../script "$DEEP/d$i/link"
+  else
+    ln -sf "../d$((i-1))/link" "$DEEP/d$i/link"
+  fi
+  i=$((i + 1))
+done
+# d19/link -> d18/link -> ... -> d0/link -> script (20 hops)
+out=$(OFM_SKIP_GH_AUTH=1 bash "$DEEP/d19/link" doctor 2>&1); rc=$?
+assert_rc "$rc" 2 "chuỗi symlink quá sâu thì rc 2"
+assert_contains "$out" "symlink" "nói rõ lý do là chuỗi symlink"
 
 ofm_test_teardown
 ofm_test_report
