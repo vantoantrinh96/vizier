@@ -2365,6 +2365,15 @@ Headless không dùng được: cursor-agent -p không chạy hook nào cả
 (docs/verification/2026-08-31-plugin-wake.md). Và gõ chữ với Enter phải TÁCH
 RỜI — gửi liền một mạch thì Cursor nhận chữ nhưng không submit.
 
+CẢNH BÁO VỀ LOCAL ECHO: pty vọng lại chính những gì ta ghi vào, nên `--expect`
+sẽ khớp cả text của `--send`. Đã đo: chạy driver với `sleep 30` — một chương
+trình không đọc stdin bao giờ — mà `--send hello --expect hello` vẫn PASS. Vì
+vậy `--expect` PHẢI là chuỗi do agent SINH RA, không phải chuỗi ta gửi đi. Với
+smoke Cursor, đó là `orca-firstmate:` trong follow-up của hook.
+
+Tổng thời gian chạy là --wait CỘNG khoảng 10 giây cố định (8s chờ TUI dựng, 2s
+bơm sau khi gửi, 0.4s tắt máy). Có chặn trên, không treo vô hạn.
+
 Dùng: pty-drive.py <cmd> [args...] --send <text> --expect <marker> --wait <sec>
 """
 import os, pty, re, select, signal, struct, sys, termios, fcntl, time
@@ -2406,15 +2415,52 @@ def main():
                 return "found"
         return True
 
-    pump(8)                                  # để TUI dựng xong
-    os.write(fd, send.encode()); pump(2)     # gõ chữ
-    os.write(fd, b"\r")                      # Enter RIÊNG
-    found = pump(wait)
+    def shutdown():
+        # Ctrl-C qua pty trước (đường lịch sự với một TUI), rồi leo thang tín
+        # hiệu và REAP. Không có bước reap + SIGKILL thì một agent tự đặt
+        # handler cho TERM/INT/HUP sẽ sống sót và thành mồ côi — đã tái hiện
+        # được, và đúng loại rò tiến trình dự án này đã sửa một lần trong wake
+        # library. Một driver để sót cursor-agent sống mỗi lần gọi là thứ không
+        # được phép giao cho captain.
+        try:
+            os.write(fd, b"\x03"); time.sleep(0.2); os.write(fd, b"\x03")
+        except OSError:
+            pass
+        for sig, grace in ((signal.SIGTERM, 0.5), (signal.SIGKILL, 0.5)):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            deadline = time.time() + grace
+            while time.time() < deadline:
+                try:
+                    done, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    return
+                if done == pid:
+                    return
+                time.sleep(0.05)
+        try:
+            os.waitpid(pid, 0)
+        except (ChildProcessError, OSError):
+            pass
 
     try:
-        os.write(fd, b"\x03"); time.sleep(0.4); os.write(fd, b"\x03")
-        os.kill(pid, signal.SIGTERM)
-    except Exception:
+        pump(8)                                  # để TUI dựng xong
+        # Ghi có thể nổ OSError nếu con đã chết (Errno 5 trên pty). Không bọc
+        # thì traceback nhảy qua cả đường FAIL lẫn đường tắt máy.
+        os.write(fd, send.encode()); pump(2)     # gõ chữ
+        os.write(fd, b"\r")                      # Enter RIÊNG
+        found = pump(wait)
+    except OSError as e:
+        shutdown(); os.close(fd)
+        print(f"FAIL: không ghi được vào pty ({e})", file=sys.stderr)
+        return 1
+
+    shutdown()
+    try:
+        os.close(fd)
+    except OSError:
         pass
 
     if found == "found":
@@ -2426,6 +2472,19 @@ def main():
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
+
+> **Kiểm chứng driver KHÔNG được dùng `--expect` trùng `--send`.** pty vọng lại
+> chính input, nên một bài kiểm như `pty-drive.py cat --send hello --expect hello`
+> PASS ngay cả với `sleep 30` — một chương trình không đọc stdin bao giờ. Bài
+> kiểm đúng phải bắt con BIẾN ĐỔI input, ví dụ:
+>
+> ```bash
+> python3 tests/smoke/pty-drive.py tr 'a-z' 'A-Z' --send "hello" --expect "HELLO" --wait 5
+> ```
+>
+> `HELLO` chỉ xuất hiện nếu tiến trình con thật sự đọc được input và ghi ra —
+> local echo không tạo ra nó. Thêm một bài đối chứng ÂM: cùng lệnh đó với
+> `sleep 5` làm con phải FAIL.
 
 - [ ] **Step 2: Chạy smoke Claude Code bằng tay**
 
