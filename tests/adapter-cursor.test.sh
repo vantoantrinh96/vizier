@@ -103,6 +103,53 @@ bash "$AD" install "$DIST" "$L2" >/dev/null 2>&1; assert_rc $? 0 "cài qua chu�
 [ -L "$L2" ] && [ -L "$L1" ]; assert_rc $? 0 "cả hai link còn nguyên là link"
 assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select((.command|type)=="string" and (.command|contains($m)))] | length' "$R2")" "1" "nội dung tới đúng file thật cuối chuỗi"
 
+# FIX 3 — cổng đọc-lại-sau-retry TRƯỚC ĐÂY LÀ TAUTOLOGY: nó gọi
+# `ofm_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" …`, hai
+# lần đọc CÙNG một file NGAY SAU KHI retry vừa ghi xong, nên luôn ra cùng một
+# số — cổng đó không bao giờ có thể phát hiện lost update ở LẦN RETRY, bất kể
+# chuyện gì thật sự xảy ra. Bản thân một cuộc đua file thật không dựng lại
+# được trong unit test (đã ghi ở dưới), nhưng ta có thể mô phỏng NÓ MỘT CÁCH
+# TẤT ĐỊNH bằng cách thay `mv` trên PATH: mỗi lần `_merge_ours` gọi đúng
+# `mv "$tmp" "$H"`, sau khi mv thật chạy xong, wrapper CHÈN THÊM một entry lạ
+# vào $H — y hệt một tiến trình khác vừa `mv` đè lên ngay sau ta. Không cần
+# đợi wall-clock nào cả vì mọi thứ tuần tự trong cùng một lời gọi hàm.
+AD_MV_DIR="$OFM_TEST_TMP/mvshadow"; mkdir -p "$AD_MV_DIR"
+HRACE="$OFM_TEST_TMP/race-hooks.json"
+cat > "$HRACE" <<'JSON'
+{"version":1,"hooks":{"stop":[{"type":"command","command":"/Users/x/.orca/agent-hooks/cursor-hook.sh","timeout":10}]}}
+JSON
+cat > "$AD_MV_DIR/mv" <<'SH'
+#!/usr/bin/env bash
+set -u
+target="${OFM_TEST_MV_TARGET:-}"
+match=0
+if [ "$#" -eq 2 ] && [ -n "$target" ] && [ "$2" = "$target" ]; then
+  case "$1" in *.ofm.*) match=1 ;; esac
+fi
+if [ "$match" != 1 ]; then exec /bin/mv "$@"; fi
+n_file="${OFM_TEST_MV_STATE:?}"
+n=$(( $(cat "$n_file" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" > "$n_file"
+/bin/mv "$1" "$2"
+# "Writer khác" mv đè lên NGAY SAU ta: thêm một entry lạ, phân biệt theo n.
+t=$(mktemp "$2.race.XXXXXX")
+jq --arg cmd "race-writer-$n" '.hooks.stop += [{type:"command",command:$cmd,timeout:10}]' "$2" > "$t" \
+  && /bin/mv "$t" "$2"
+exit 0
+SH
+chmod +x "$AD_MV_DIR/mv"
+export OFM_TEST_MV_TARGET="$HRACE"
+export OFM_TEST_MV_STATE="$OFM_TEST_TMP/mv-race-n"
+rm -f "$OFM_TEST_MV_STATE"
+out=$(PATH="$AD_MV_DIR:$PATH" bash "$AD" install "$DIST" "$HRACE" 2>&1); rc=$?
+assert_rc "$rc" 1 "FIX 3: một race THẬT xảy ra lại ở retry thì bị PHÁT HIỆN và từ chối"
+assert_contains "$out" "refused" "nói rõ là từ chối"
+assert_eq "$(cat "$OFM_TEST_MV_STATE")" "2" "cả merge đầu lẫn retry đều chạy (retry thật sự được kích hoạt)"
+# Cổng CŨ (tautology) sẽ không bao giờ vào được nhánh refused này: nó luôn tự
+# so `_count_others "$H"` với chính nó SAU KHI race-writer-2 đã ghi xong, nên
+# luôn thấy "khớp" và báo cài thành công — đúng bug mà FIX 3 sửa.
+unset OFM_TEST_MV_TARGET OFM_TEST_MV_STATE
+
 # Luật quyết định mất-bản-cập-nhật, kiểm bằng số dựng sẵn. Bản thân cuộc đua
 # không tái hiện được trong unit test, nhưng LUẬT thì phải kiểm được.
 . "$OFM_TEST_REPO/lib/ofm-merge-lib.sh"

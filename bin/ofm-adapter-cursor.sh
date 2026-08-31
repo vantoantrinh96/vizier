@@ -132,8 +132,17 @@ case "$action" in
     # merge lại MỘT lần từ trạng thái hiện tại (đã chứa thay đổi của họ), rồi
     # nếu vẫn lệch thì báo thật to và chỉ chỗ backup cho captain tự quyết.
     if ! ofm_no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+      # FIX 3 — TRƯỚC ĐÂY LÀ MỘT PHÉP SO SÁNH VỚI CHÍNH NÓ. Bản cũ gọi
+      # `ofm_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" …`
+      # — hai lệnh `$(_count_others "$H")` cùng đọc file NGAY SAU khi re-merge
+      # đã ghi xong, nên luôn ra cùng một số: phép kiểm không bao giờ phát
+      # hiện được lost update ở vòng thứ hai, dù ai đó vừa ghi xen vào đúng
+      # lúc `_merge_ours` đang chạy. Phải CHỤP số "trước" TRƯỚC KHI re-merge,
+      # y hệt cách `others_before` được chụp trước lần merge thứ nhất, rồi so
+      # nó với số đọc LẠI sau khi re-merge xong.
+      others_before_retry=$(_count_others "$H")
       _merge_ours "$H" "$cmd" || { printf 'refused: merge lại thất bại\n' >&2; exit 1; }
-      if ! ofm_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+      if ! ofm_no_lost_update "$others_before_retry" "$(_count_others "$H")" "$(_count_mine "$H")"; then
         printf 'refused: có tiến trình khác ghi %s cùng lúc và ta không hoà giải được.\n' "$H" >&2
         printf '  KHÔNG tự khôi phục vì backup cũ hơn thay đổi của họ. Backup ở: %s\n' "${backup:-<không có>}" >&2
         printf '  Hãy kiểm tra file rồi chạy lại install.\n' >&2
@@ -143,6 +152,13 @@ case "$action" in
     printf 'installed cursor adapter -> %s\n' "$H"
     printf 'note: Cursor KHÔNG chạy hook ở headless `cursor-agent -p`; phải dùng phiên tương tác.\n'
     printf 'note: Cursor đòi trust theo từng thư mục workspace, nên mỗi thư mục mới cần một lần trust.\n'
+    # FIX 9 — nói thẳng NGAY LÚC CÀI, không để captain phát hiện sau ba ngày:
+    # wake của Cursor giờ đã chạy đủ vòng, nhưng KÍCH HOẠT (`/firstmate`) thì
+    # chưa. `ofm-activate.sh` đọc CLAUDE_CODE_SESSION_ID, biến chỉ Claude Code
+    # có; Cursor không có đường tương đương nào để lấy session id của chính
+    # nó. Cài xong entry này chỉ để hook sẵn sàng cho khi đường kích hoạt tới,
+    # không phải để dùng ngay.
+    printf 'note: Cursor CHƯA có đường kích hoạt — /firstmate chưa hoạt động ở Cursor, entry này chỉ chờ sẵn.\n'
     exit 0 ;;
 
   uninstall)

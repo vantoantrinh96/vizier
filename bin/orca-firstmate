@@ -116,6 +116,27 @@ cmd_doctor() {
     printf 'NOT_READY: gh chưa đăng nhập (fix: gh auth login)\n'
     problems=$((problems + 1))
   fi
+  # FIX 6 — doctor TRƯỚC ĐÂY CHỈ KIỂM TOOLCHAIN, chưa từng hỏi "có gì được cài
+  # chưa". Một máy đã qua doctor+install từ lâu mà bản Claude bị gỡ tay (hoặc
+  # chưa từng cài) vẫn báo "ok" ở đây trong khi /firstmate không tồn tại. Đây
+  # là NOTE, KHÔNG PHẢI problem: không cộng vào `problems`, không kéo rc xuống
+  # 1 — một máy chỉ dùng MỘT trong hai harness là hợp lệ (report, không refuse).
+  if [ ! -d "$CLAUDE_SKILLS/orca-firstmate" ]; then
+    printf 'NOTE: chưa cài adapter Claude ở %s (fix: orca-firstmate install --harness claude)\n' "$CLAUDE_SKILLS"
+  fi
+  # `verify` của adapter Cursor trước đây là dead code: không nơi nào gọi nó
+  # ngoài test. Gọi nó ở đây khi cursor-agent CÓ MẶT trên máy — đó là dấu hiệu
+  # một entry Cursor ĐƯỢC MONG ĐỢI tồn tại đúng hình dạng, không phải ép buộc
+  # phải cài Cursor (máy không có cursor-agent thì không kiểm gì cả, im lặng
+  # hợp lệ). Chạy adapter từ REPO_DIR (luôn có sẵn cạnh CLI này), không từ
+  # $DIST: doctor không gọi _sync_dist nên $DIST/bin có thể chưa tồn tại lần
+  # đầu chạy, còn logic verify chỉ so sánh CHUỖI đường dẫn $DIST kỳ vọng, nên
+  # không cần $DIST thật sự có mặt trên đĩa.
+  if command -v cursor-agent >/dev/null 2>&1; then
+    if ! bash "$REPO_DIR/bin/ofm-adapter-cursor.sh" verify "$DIST" "$CURSOR_HOOKS" >/dev/null 2>&1; then
+      printf 'NOTE: cursor-agent có trên máy nhưng entry Cursor ở %s thiếu hoặc sai hình dạng (fix: orca-firstmate install --harness cursor)\n' "$CURSOR_HOOKS"
+    fi
+  fi
   if [ "$problems" -eq 0 ]; then
     printf 'doctor: ok — orca ready, jq/git/gh sẵn sàng\n'
     return 0
@@ -123,34 +144,91 @@ cmd_doctor() {
   return 1
 }
 
+# FIX 9 — MỘT `install` TRẦN KHÔNG ĐƯỢC ĐỤNG CURSOR. Nửa Cursor CHƯA CÓ đường
+# kích hoạt: `ofm-activate.sh` đọc CLAUDE_CODE_SESSION_ID, một biến chỉ Claude
+# Code có, nên một entry Cursor cài "mặc định kèm theo" chỉ đọc lock rồi
+# exit 0 mãi mãi — KHÔNG CHỨC NĂNG — trong khi vẫn nhận trọn rủi ro lớn nhất
+# của distro: ghi vào ~/.cursor/hooks.json, file Orca đang dùng chung. Bản cũ
+# coi "cài cả hai nếu cả hai có mặt" là default (`want=all`); giờ default
+# CHỈ LÀ claude. Muốn Cursor phải xin tường minh bằng `--harness cursor`.
 cmd_install() {
-  local want=all
+  local want=claude explicit=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --harness) want=${2:?--harness cần giá trị}; shift 2 ;;
+      --harness) want=${2:?--harness cần giá trị}; explicit=1; shift 2 ;;
       *) printf 'unknown flag: %s\n' "$1" >&2; return 2 ;;
     esac
   done
   case "$want" in
-    all|claude|cursor) ;;
+    claude|cursor) ;;
     *) printf 'error: harness "%s" chưa hỗ trợ. v1 chỉ có claude và cursor.\n' "$want" >&2; return 1 ;;
   esac
   _sync_dist || return 1
   local did=0
-  if [ "$want" = all ] || [ "$want" = claude ]; then
-    if bash "$DIST/bin/ofm-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$want" = claude ]; then
+  if [ "$want" = claude ]; then
+    # Không ép cài khi bare install (explicit=0) và máy không có `claude`:
+    # gate bằng detect y như bản cũ. `--harness claude` tường minh thì vẫn ép,
+    # để captain thấy lỗi thật của adapter thay vì bị detect nuốt mất.
+    if bash "$DIST/bin/ofm-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$explicit" -eq 1 ]; then
       bash "$DIST/bin/ofm-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
       did=$((did + 1))
+      [ "$explicit" -eq 1 ] || \
+        printf 'lưu ý: bỏ qua Cursor — install trần chỉ cài Claude. Muốn cài Cursor: orca-firstmate install --harness cursor\n'
     fi
   fi
-  if [ "$want" = all ] || [ "$want" = cursor ]; then
-    if bash "$DIST/bin/ofm-adapter-cursor.sh" detect >/dev/null 2>&1 || [ "$want" = cursor ]; then
-      bash "$DIST/bin/ofm-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
-      did=$((did + 1))
-    fi
+  if [ "$want" = cursor ]; then
+    bash "$DIST/bin/ofm-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
+    did=$((did + 1))
   fi
   [ "$did" -gt 0 ] || { printf 'không tìm thấy harness nào được hỗ trợ trên máy\n' >&2; return 1; }
   printf 'xong. Mở một phiên mới rồi gõ /firstmate.\n'
+}
+
+cmd_unlock() {
+  # FIX 4 — KHÔNG CÓ LỐI THOÁT KHỎI MỘT LOCK KẸT-NHƯNG-SỐNG. `CLAUDE_PID` là
+  # pid của TIẾN TRÌNH `claude`, không phải của phiên: sau `/clear` hoặc resume,
+  # pid đó vẫn còn sống nhưng session_id bên trong nó đã đổi, nên
+  # `ofm_lock_matches` không bao giờ khớp lại và `ofm_lock_claim` từ chối vĩnh
+  # viễn (đúng thiết kế: "CHỈ liveness quyết định", không đoán chết). Command
+  # brief cấm agent tự xoá file lock. Vậy phải có MỘT cửa thoát tường minh, do
+  # captain tự gọi khi họ biết chắc phiên cũ đã xong việc — không đoán hộ, chỉ
+  # thực hiện đúng việc captain yêu cầu. Không cần tham số: luôn gỡ lock hiện
+  # tại, bất kể ai đang giữ.
+  local holder pid
+  holder=$(ofm_lock_get session_id)
+  if [ -z "$holder" ]; then
+    printf 'không có lock nào đang giữ\n'
+    return 0
+  fi
+  pid=$(ofm_lock_get pid)
+  rm -f "$(ofm_lock_path)"
+  printf 'đã gỡ lock: session_id=%s pid=%s\n' "$holder" "$pid"
+}
+
+cmd_update() {
+  # FIX 7 — `update` TRƯỚC ĐÂY CHỈ LÀ BÍ DANH CỦA `install`: nó chép lại đúng
+  # payload đang có trong SRC checkout hiện tại rồi báo "xong", không hề kéo
+  # gì mới từ remote. Captain gõ `orca-firstmate update` tưởng đang lên bản
+  # mới nhất, nhưng thực ra chỉ đang cài lại y hệt bản cũ — im lặng sai, đúng
+  # kiểu lỗi tệ nhất. `git fetch` + `reset --hard origin/HEAD` TRƯỚC khi
+  # `_sync_dist` (bên trong cmd_install) chép từ REPO_DIR: chạy qua symlink
+  # bootstrap, REPO_DIR ở đây LÀ `$OFM_HOME_DIR/src` (xem chú thích $0 CÓ THỂ
+  # LÀ SYMLINK phía trên), nên reset xong rồi mới sync là kéo đúng bản mới vào
+  # dist. Cùng công thức với install.sh (POSIX sh) dùng lúc bootstrap — không
+  # bịa cách khác cho CLI này.
+  local src
+  src="$OFM_HOME_DIR/src"
+  if [ -d "$src/.git" ]; then
+    git -C "$src" fetch --quiet origin || { printf 'error: fetch thất bại tại %s\n' "$src" >&2; return 1; }
+    # origin/HEAD có thể chưa được đặt (clone cũ) — hỏi lại remote, lỗi ở đây
+    # không chặn, y hệt install.sh.
+    git -C "$src" remote set-head origin -a >/dev/null 2>&1 || true
+    git -C "$src" reset --quiet --hard origin/HEAD || { printf 'error: reset thất bại tại %s\n' "$src" >&2; return 1; }
+  else
+    printf 'error: %s không phải git repo, không update được (chạy lại install.sh để bootstrap)\n' "$src" >&2
+    return 1
+  fi
+  cmd_install "$@"
 }
 
 cmd_uninstall() {
@@ -180,7 +258,8 @@ cmd_uninstall() {
 case "${1:-}" in
   doctor)    shift; cmd_doctor "$@" ;;
   install)   shift; cmd_install "$@" ;;
-  update)    shift; cmd_install "$@" ;;
+  update)    shift; cmd_update "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
-  *) printf 'usage: orca-firstmate install [--harness claude|cursor]|doctor|update|uninstall\n' >&2; exit 2 ;;
+  unlock)    shift; cmd_unlock "$@" ;;
+  *) printf 'usage: orca-firstmate install [--harness claude|cursor]|doctor|update|uninstall|unlock\n' >&2; exit 2 ;;
 esac

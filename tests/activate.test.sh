@@ -19,6 +19,21 @@ out=$(bash "$ACT" claude sess-b); rc=$?
 assert_rc "$rc" 1 "phiên thứ hai bị từ chối"
 assert_contains "$out" "held_by=sess-a" "nói rõ ai đang giữ"
 
+# FIX 4 — refusal held_by= phải kèm gợi ý đường thoát `orca-firstmate unlock`,
+# để captain không phải lục docs khi va phải lock kẹt-nhưng-sống.
+err=$(bash "$ACT" claude sess-b 2>&1 >/dev/null)
+assert_contains "$err" "orca-firstmate unlock" "gợi ý lệnh unlock trong refusal held_by="
+
+# FIX 5 — phiên con/subagent (CLAUDE_CODE_CHILD_SESSION đặt) kích hoạt là hỏng
+# im lặng toàn phần: session id của nó không khớp payload hook Stop nhận cho
+# phiên cha, nên lock ghi từ đây không bao giờ tự khớp lại được. Phải từ chối
+# tường minh, không bao giờ được để lọt qua để ghi lock.
+rm -f "$(ofm_lock_path)"
+out=$(CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=sess-child bash "$ACT" claude 2>&1); rc=$?
+assert_rc "$rc" 2 "FIX 5: phiên con thì rc 2, không được kích hoạt"
+assert_contains "$out" "child_session" "nói rõ lý do là phiên con"
+assert_eq "$(ofm_lock_get session_id)" "" "FIX 5: không ghi lock nào khi là phiên con"
+
 # Không có session id từ môi trường thì TỪ CHỐI, không bịa một giá trị
 rm -f "$(ofm_lock_path)"
 out=$(env -u CLAUDE_CODE_SESSION_ID bash "$ACT" claude 2>&1); rc=$?

@@ -20,7 +20,11 @@ Kích hoạt phiên này thành first mate.
    - **rc 0**, in `claimed` / `reclaimed` / `refreshed` → phiên này giờ là first mate, đi tiếp.
    - **rc 1**, in `refused held_by=<id>` → **DỪNG LẠI.** Một phiên khác đang là first mate. Báo
      captain phiên nào đang giữ, rồi hỏi họ muốn đóng phiên kia hay tiếp tục làm việc ở đó.
-     **Không cướp lock, không xoá file lock, không chạy lại script để thử ăn may.**
+     **Không tự cướp lock, không tự xoá file lock, không chạy lại script để thử ăn may.** Nếu
+     captain xác nhận phiên cũ đã chết (ví dụ sau `/clear` hoặc resume — pid vẫn sống nhưng
+     session id đã đổi, nên lock không bao giờ tự khớp lại), đường thoát đúng là chạy
+     `orca-firstmate unlock` (in ra chủ hiện tại rồi gỡ lock, không cần tham số) — KHÔNG xoá file
+     lock bằng tay.
    - **rc 2**, in `no_session_id` hoặc `no_harness_pid` → **DỪNG LẠI** và báo captain nguyên văn
      dòng lý do. Đây là môi trường không xác định được phiên, không phải thứ để thử lại.
 

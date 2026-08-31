@@ -2,6 +2,7 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 ofm_test_setup
+. "$OFM_TEST_REPO/lib/ofm-home.sh"
 CLI="$OFM_TEST_REPO/bin/orca-firstmate"
 export OFM_SKIP_GH_AUTH=1
 
@@ -36,6 +37,16 @@ assert_rc "$rc" 0 "install claude thành công"
 out=$(bash "$CLI" install --harness codex 2>&1); rc=$?
 assert_rc "$rc" 1 "harness lạ thì rc 1"
 assert_contains "$out" "chưa hỗ trợ" "nói thẳng là chưa hỗ trợ"
+
+# FIX 9 — install TRẦN (không --harness) không được đụng Cursor. File đích
+# Cursor phải hoàn toàn không tồn tại/không bị sửa sau một install trần, kể cả
+# khi cursor-agent có mặt trên máy test này.
+rm -rf "$OFM_HOME/dist" "$OFM_CLAUDE_SKILLS_DIR" "$OFM_CURSOR_HOOKS_JSON"
+out=$(bash "$CLI" install 2>&1); rc=$?
+assert_rc "$rc" 0 "install trần thành công (chỉ cài Claude)"
+[ -f "$OFM_CLAUDE_SKILLS_DIR/orca-firstmate/hooks/hooks.json" ]; assert_rc $? 0 "install trần vẫn cài Claude"
+[ -e "$OFM_CURSOR_HOOKS_JSON" ]; assert_rc $? 1 "FIX 9: install trần KHÔNG đụng tới file đích Cursor"
+assert_contains "$out" "bỏ qua Cursor" "install trần nói rõ đã bỏ qua Cursor và cách xin cài nó"
 
 # uninstall giữ nguyên state
 mkdir -p "$OFM_HOME/requests"; printf 'x\n' > "$OFM_HOME/requests/keep.md"
@@ -105,6 +116,21 @@ done
 out=$(OFM_SKIP_GH_AUTH=1 bash "$DEEP/d19/link" doctor 2>&1); rc=$?
 assert_rc "$rc" 2 "chuỗi symlink quá sâu thì rc 2"
 assert_contains "$out" "symlink" "nói rõ lý do là chuỗi symlink"
+
+# FIX 4 — `unlock` là đường thoát tường minh khỏi một lock kẹt-nhưng-sống
+# (CLAUDE_PID sống nhưng session id đã đổi sau /clear hoặc resume). Không cần
+# tham số: in ra chủ hiện tại rồi gỡ, để captain tự gọi khi họ chắc phiên cũ
+# đã xong.
+printf 'session_id=sess-stuck\nharness=claude\npid=999999\nsince=1\n' > "$(ofm_lock_path)"
+out=$(bash "$CLI" unlock 2>&1); rc=$?
+assert_rc "$rc" 0 "unlock thành công"
+assert_contains "$out" "sess-stuck" "unlock báo đúng session_id đang giữ"
+assert_contains "$out" "999999" "unlock báo đúng pid đang giữ"
+assert_eq "$(ofm_lock_get session_id)" "" "unlock thật sự xoá lock"
+# Gọi lại khi không còn lock: không nổ, báo rõ không có gì để gỡ
+out=$(bash "$CLI" unlock 2>&1); rc=$?
+assert_rc "$rc" 0 "unlock khi không có lock vẫn rc 0"
+assert_contains "$out" "không có lock" "nói rõ không có lock nào"
 
 ofm_test_teardown
 ofm_test_report
