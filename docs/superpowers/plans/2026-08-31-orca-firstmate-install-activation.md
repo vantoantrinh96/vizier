@@ -2203,6 +2203,35 @@ case "$default_url" in *git@*) assert_eq "ssh" "https" "mặc định KHÔNG đ�
 assert_contains "$default_url" "orca-firstmate" "mặc định trỏ đúng repo"
 case "$default_url" in *git@*) assert_eq "ssh" "https" "mặc định KHÔNG được là dạng SSH" ;; esac
 
+# Đích trên PATH đã là THƯ MỤC: phải TỪ CHỐI, không được báo thành công.
+# Trên BSD ln của macOS, `-f` không thay thế thư mục mà tạo link BÊN TRONG nó
+# rồi exit 0 — báo cài xong trong khi thứ trên PATH không chạy được.
+mkdir -p "$OFM_BIN_DIR/orca-firstmate"
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "đích là thư mục thì rc 1"
+assert_contains "$out" "không phải symlink" "nói rõ lý do"
+rmdir "$OFM_BIN_DIR/orca-firstmate"
+
+# $SRC tồn tại nhưng không phải git repo: báo rõ và đưa lệnh xoá, KHÔNG tự xoá
+rm -rf "$OFM_HOME/src"; mkdir -p "$OFM_HOME/src"; printf 'junk\n' > "$OFM_HOME/src/junk"
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "src không phải git repo thì rc 1"
+assert_contains "$out" "rm -rf" "in lệnh xoá cho captain"
+rm -rf "$OFM_HOME/src"
+
+# Thiếu origin/HEAD thì lần chạy sau vẫn phải cập nhật được.
+# Phải xoá ref CỤC BỘ `refs/remotes/origin/HEAD` trong $SRC — đó chính là thứ
+# `reset --hard origin/HEAD` phân giải. Bản trước xoá `HEAD` trên bare repo,
+# nhưng git hiện đại TỪ CHỐI thao tác đó ("deleting 'HEAD' is not allowed") và
+# lỗi bị nuốt, nên điều kiện chưa từng được tạo ra: test xanh kể cả khi bỏ hẳn
+# fix. Đây là kiểu test-đo-nhầm-thứ đã lặp lại nhiều lần trong dự án này, nên
+# có thêm một assertion khẳng định điều kiện ĐÃ được dựng trước khi dựa vào nó.
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1
+git -C "$OFM_HOME/src" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+git -C "$OFM_HOME/src" symbolic-ref refs/remotes/origin/HEAD >/dev/null 2>&1
+assert_rc $? 1 "đã thực sự xoá được origin/HEAD cục bộ (nếu không, ca dưới vô nghĩa)"
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "thiếu origin/HEAD vẫn cập nhật được"
+
 # URL hỏng thì fail rõ ràng, không để lại symlink chết
 export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
 rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
