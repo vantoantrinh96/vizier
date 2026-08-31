@@ -43,9 +43,13 @@ _ofm_lock_write() {  # <session_id> <harness> <pid>
   local f tmp
   f=$(ofm_lock_path)
   mkdir -p "$(ofm_home)" || return 1
-  tmp="$f.$$"
-  printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || return 1
-  mv "$tmp" "$f"
+  # mktemp, KHÔNG "$f.$$": trong bash, `$$` bên trong subshell là pid của shell
+  # CHA, nên nhiều subshell cùng cha dùng chung một tên tmp, ghi đè lẫn nhau và
+  # làm `mv` thất bại. Test race chính là ca đó, và nó từng đo sai vì lỗi này —
+  # báo "không ai giành được lock" khi thực ra chỉ là va chạm tên file tạm.
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
 # Đọc LẠI lock sau khi ghi, và chỉ báo thành công khi ta thực sự là chủ.
@@ -67,6 +71,14 @@ _ofm_lock_confirm() {  # <session_id> <verb> <detail>
 
 ofm_lock_claim() {  # <session_id> <harness> <pid>
   local sid=$1 harness=$2 pid=$3 owner owner_pid
+  # Lock file là key=value theo dòng và đọc bằng sed, nên một session_id chứa
+  # newline sẽ ghi ra file mà chính ta không đọc lại được -> claimant đơn lẻ bị
+  # refused một cách bí ẩn. Chặn ngay ở cửa, nói rõ lý do.
+  case "$sid" in '') printf 'refused reason=empty_session_id\n'; return 1 ;; esac
+  if [ "$(printf '%s' "$sid" | tr -cd '\n' | wc -c | tr -d ' ')" != "0" ]; then
+    printf 'refused reason=session_id_has_newline\n'
+    return 1
+  fi
   owner=$(ofm_lock_get session_id)
   if [ -n "$owner" ]; then
     if [ "$owner" = "$sid" ]; then

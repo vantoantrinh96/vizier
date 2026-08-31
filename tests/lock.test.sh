@@ -51,10 +51,22 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   ( ofm_lock_claim "race-$i" claude $$ > "$race/$i.out" 2>&1 ) &
 done
 wait
+# ĐÚNG MỘT, không phải "không quá một": kẻ `mv` thành công cuối cùng, theo định
+# nghĩa, không có ai ghi sau nó, nên lần đọc lại của nó phải thấy chính nó. Bản
+# trước assert <=1 và đo ra 0 — nhưng đó là va chạm tên tmp, không phải race.
 wins=$(grep -l '^claimed' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
-[ "$wins" -le 1 ]; assert_rc $? 0 "không quá một phiên tin mình giành được lock (thấy $wins)"
-owners=$(sed -n 's/^session_id=//p' "$(ofm_lock_path)" | wc -l | tr -d ' ')
-assert_eq "$owners" "1" "lock cuối cùng chỉ ghi tên một phiên"
+assert_eq "$wins" "1" "đúng một phiên giành được lock trống"
+losers=$(grep -l '^refused' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$losers" "9" "chín phiên còn lại đều bị từ chối, không ai lỗi ghi"
+
+# session_id chứa newline phá lock file, phải bị chặn ngay ở cửa
+rm -f "$(ofm_lock_path)"
+out=$(ofm_lock_claim "$(printf 'a\nb')" claude $$); rc=$?
+assert_rc "$rc" 1 "session_id chứa newline bị từ chối"
+assert_contains "$out" "newline" "nói rõ lý do"
+assert_eq "$(ofm_lock_get session_id)" "" "không ghi lock nào khi session_id xấu"
+out=$(ofm_lock_claim "" claude $$); rc=$?
+assert_rc "$rc" 1 "session_id rỗng bị từ chối"
 
 # Release chỉ có tác dụng với đúng chủ
 printf 'session_id=sess-e\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
