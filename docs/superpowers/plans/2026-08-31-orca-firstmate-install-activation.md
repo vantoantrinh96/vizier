@@ -354,7 +354,8 @@ ofm_pid_is_harness() {  # <pid> <harness>
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
   [ -n "$comm" ] || return 1
   case "$comm" in *"$want"*) return 0 ;; esac
-  # Một pid sống nhưng tên lệnh khác là pid bị dùng lại; coi như đã chết.
+  # Tên lệnh khác nghĩa là "chưa chứng minh được đây là harness đó" — KHÔNG
+  # phải "đã chết". Quyết định cướp lock chỉ dựa vào liveness, xem ofm_lock_claim.
   return 1
 }
 
@@ -396,11 +397,6 @@ ofm_lock_claim() {  # <session_id> <harness> <pid>
       return 0
     fi
     owner_pid=$(ofm_lock_get pid)
-    owner_harness=$(ofm_lock_get harness)
-    if ofm_pid_is_harness "$owner_pid" "${owner_harness:-$harness}"; then
-      printf 'refused held_by=%s pid=%s\n' "$owner" "$owner_pid"
-      return 1
-    fi
     case "$owner_pid" in
       ''|*[!0-9]*)
         # Không phân giải được chủ cũ: từ chối thay vì cướp.
@@ -408,6 +404,14 @@ ofm_lock_claim() {  # <session_id> <harness> <pid>
         return 1
         ;;
     esac
+    # CHỈ liveness quyết định. Một pid còn sống không bao giờ bị cướp lock, kể
+    # cả khi `ps -o comm=` không khớp harness: tên lệnh không khớp là bằng chứng
+    # yếu về "không phải harness đó", không phải bằng chứng về "đã chết". Cướp
+    # lock của một first mate còn sống thì hai phiên cùng ghi requests/.
+    if kill -0 "$owner_pid" 2>/dev/null; then
+      printf 'refused held_by=%s pid=%s\n' "$owner" "$owner_pid"
+      return 1
+    fi
     _ofm_lock_write "$sid" "$harness" "$pid" || return 1
     printf 'reclaimed from=%s dead_pid=%s\n' "$owner" "$owner_pid"
     return 0
