@@ -1,7 +1,7 @@
 # orca-firstmate — Design
 
 Ngày: 2026-08-30
-Cập nhật: 2026-08-31 — bổ sung Delivery mode/no-mistakes; đổi entry point sang Claude Code plugin
+Cập nhật: 2026-08-31 — bổ sung Delivery mode/no-mistakes; entry point thành plugin đa harness + CLI cài đặt
 Trạng thái: đã duyệt design trong chat, chờ duyệt spec
 
 ## Tóm tắt
@@ -96,7 +96,14 @@ Home tách khỏi plugin có chủ đích: gỡ hoặc nâng cấp plugin không
 
 ## Entry point và kích hoạt
 
-**Cài một lần, dùng mọi nơi.** Plugin cài qua marketplace hoặc thả vào `~/.claude/skills/<name>/` (auto-load dạng `<name>@skills-dir`). Sau đó mọi phiên Claude Code, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
+**Cài một lần, dùng mọi nơi.** Một lệnh:
+
+```sh
+curl -fsSL https://<host>/orca-firstmate/install.sh | sh
+orca-firstmate install
+```
+
+Lệnh đầu đặt CLI lên PATH và tải payload về `~/.orca-firstmate/dist/`. Lệnh sau dò harness nào có trên máy rồi chép payload vào thư mục skill của từng cái (`~/.claude/skills/`, `~/.cursor/skills/`). Sau đó mọi phiên của harness đó, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
 
 **`/firstmate` là công tắc.** Gõ nó thì phiên đó:
 
@@ -111,6 +118,66 @@ Phiên không gõ `/firstmate` thì không giữ lock, nên hook câm và không
 **Không dùng `CLAUDE.md` của plugin** cho identity — file đó nạp vào *mọi* phiên, kể cả phiên bạn chỉ muốn sửa code. Identity phải là thứ được kích hoạt, không phải thứ luôn bật.
 
 **Truy cập home.** Phiên first mate có cwd bất kỳ, còn state ở `~/.orca-firstmate/`. First mate đọc/ghi home qua Bash. Nếu captain chạy permission mode chặt, thêm `--add-dir ~/.orca-firstmate` khi mở phiên.
+
+## CLI cài đặt và adapter harness
+
+**Luật cứng: CLI chỉ tồn tại lúc cài và lúc chẩn đoán, không bao giờ nằm trên đường chạy.** Cài xong, first mate nói chuyện thẳng với `orca`; không đường runtime nào gọi `orca-firstmate`. Bỏ luật này là xây lại 162 script của firstmate dưới cái tên đẹp hơn.
+
+Bốn lệnh: `install [--harness …]`, `doctor` (preflight ở mục Entry point), `update` (kéo payload mới rồi chép lại), `uninstall` (gỡ payload, **giữ nguyên** `requests/` và `projects/`). Viết bằng bash: CLI này chỉ chép file và kiểm vài thứ, Orca lại chỉ chạy macOS, nên một binary Go cho ~200 dòng là nghi lễ thừa.
+
+### Một repo, nhiều manifest
+
+Mô hình đã được `superpowers` chứng minh và đang chạy trên máy captain — cùng một payload nằm trong cả `~/.claude/skills/` lẫn `~/.cursor/skills/`, mỗi harness một manifest nhỏ cạnh nhau:
+
+```
+orca-firstmate/
+  .claude-plugin/plugin.json   # manifest Claude Code
+  .cursor-plugin/plugin.json   # manifest Cursor
+  commands/firstmate.md        # dùng chung
+  skills/                      # dùng chung: identity, brief, routing, supervise, delivery
+  hooks/
+    hooks.json                 # schema Claude: Stop (asyncRewake) + PostCompact
+    hooks-cursor.json          # schema Cursor: version 1, stop, loop_limit
+    wake-claude.sh
+    wake-cursor.sh
+  install.sh
+  bin/orca-firstmate
+```
+
+**Skill portable gần như miễn phí; wake thì mỗi harness một lần làm.** Đó là toàn bộ chi phí của đa harness, và nó nằm gọn trong hai file `wake-*.sh`.
+
+`install` chép chứ không symlink: một symlink nằm trong thư mục plugin là loại thứ hỏng âm thầm.
+
+### Hợp đồng adapter — ba câu
+
+Mỗi harness phải trả lời được, và câu 3 là câu giết:
+
+1. Nạp skill ở thư mục nào, format nào?
+2. Đăng ký turn-end hook bằng schema nào?
+3. Cơ chế "chạy nền lâu rồi đánh thức phiên đang idle" là gì?
+
+Hai adapter của v1 trả lời **khác hẳn nhau**, nên đừng viết chung:
+
+| | Claude Code | Cursor |
+|---|---|---|
+| Event | `Stop` | `stop` |
+| Cách chạy | nền, không chặn (`asyncRewake: true`) | **đồng bộ, park giữ turn boundary mở** |
+| Kênh đánh thức | `exit 2` + stderr | **`{"followup_message":…}` ra stdout, exit 0** |
+| `exit 2` | đánh thức | **no-op im lặng** |
+| Chặn vòng lặp | `stop_hook_active` | `loop_count` + `loop_limit` khai trong hooks |
+| Tranh chấp | không — async, mỗi Stop một lần bắn | **cần park-owner**: tin captain gõ lúc đang park không giết hook, hai park cùng thấy một message sẽ báo trùng |
+| Headless `-p` | fire | **không fire turn-end** |
+| Token khi chờ | 0 | 0 |
+
+Hệ quả cho Cursor: cần thêm `~/.orca-firstmate/park-owner` (seq tăng dần); trước khi phát follow-up, park phải xác nhận mình còn là chủ mới nhất, không thì im lặng exit 0. Và `loop_limit` khai trong hooks phải cao hơn trần tự chặn của ta, để bound của ta cắn trước và còn kịp báo một câu.
+
+### Tuyên bố giảm cấp
+
+`install` phải **in ra giới hạn của từng harness** ngay lúc cài, không để captain phát hiện sau ba ngày:
+
+- Cursor: không dùng được ở headless `cursor-agent -p` (không có turn-end hook); phải chạy phiên tương tác.
+- Harness chưa có adapter: `install` báo thẳng "chưa hỗ trợ", không im lặng bỏ qua.
+- Harness không trả lời được câu 3 — Codex là ca đã biết, cơ chế của nó là "bounded foreground checkpoints" nên **không đánh thức được phiên idle** — thì adapter đó phải nói rõ orca-firstmate ở đó chạy giảm cấp: vẫn dispatch, vẫn brief, nhưng captain phải tự hỏi "xong chưa".
 
 ## Khái niệm Request (đơn vị điều phối)
 
@@ -249,7 +316,7 @@ Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
 | Thứ | Bắt buộc | Vì sao |
 |---|---|---|
 | Orca app + `orca` CLI | luôn | worktree, terminal, Run/Task/Dispatch, mailbox, federation |
-| Claude Code | luôn | harness của first mate; Stop hook `asyncRewake` là cơ chế đánh thức |
+| Claude Code **hoặc** Cursor | luôn | harness của first mate; mỗi cái một cơ chế đánh thức, xem mục CLI cài đặt |
 | `git`, `gh` | luôn | worker push nhánh và mở PR |
 | `no-mistakes` | chỉ khi task mode `no-mistakes` | chạy validation pipeline; xem mục Delivery mode |
 
@@ -286,6 +353,7 @@ Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
 
 - **Gắn chặt schema orchestration của Orca**: Orca không có version marker ổn định; đổi contract sẽ lộ lúc runtime. Giảm nhẹ: kiểm `orchestration.contract.v1` trong capabilities lúc session start; fake-orca fixtures ghi rõ version app đã đối chiếu.
 - **Stop hook `asyncRewake` là hành vi của Claude Code**, đổi harness là mất cơ chế wake — chấp nhận: distro này chọn Claude Code làm harness duy nhất của v1. Đã kiểm chứng trên 2.1.236 ở dạng plugin (`docs/verification/2026-08-31-plugin-wake.md`); docs Claude Code có ghi field này cho command hook nhưng **không** nói plugin hook honor nó, nên đây là hành vi cần đo lại khi lên version mới.
+- **Cursor cấp user chưa kiểm chứng.** Mọi thứ về `stop` của Cursor (đồng bộ, exit 2 vô hiệu, `followup_message` là kênh duy nhất) lấy từ implementation đã verify của firstmate ở đúng version `2026.08.11-e8db854` — nhưng firstmate dùng `.cursor/hooks.json` **cấp project** với `--trust`, còn ta cài **cấp user**. Chưa đo được vì phép đo bắt buộc phải chạy phiên tương tác. Phải đo trước khi implement adapter Cursor.
 - **Plugin hook chạy trong mọi phiên Claude Code trên máy.** Một `wake.sh` lỗi là lỗi toàn máy, không chỉ lỗi first mate. Giảm nhẹ: cổng lock đứng trước mọi thứ khác và mọi nhánh không chắc chắn đều exit 0.
 - App Orca phải đang chạy — `orca open` ở session start nếu chưa.
 - **Phụ thuộc thêm vào `no-mistakes`** cho mode cùng tên: tên outcome và tên lệnh `axi` có thể đổi giữa các version. Giảm nhẹ có sẵn trong thiết kế: distro **không bao giờ parse output TOON của axi** — worker lái pipeline và tự khai outcome trong `worker_done`, nên bề mặt gắn kết chỉ là bốn tên outcome terminal, không phải cả schema.
