@@ -41,24 +41,28 @@ runs=$(ofm_open_run_ids)
 [ -n "$runs" ] || exit 0
 
 # Giành quyền park trước khi chờ.
+#
+# HỢP ĐỒNG LÀ "AI GHI SAU CÙNG THÔI ĐƯ", không phải "số lớn hơn thì được
+# nói". Bản trước đọc số cũ rồi cộng một rồi ghi — không nguyên tử, nên hai park
+# cùng lúc chọn CÙNG một số và cả hai đều tưởng mình mới nhất: đúng cú báo trùng
+# mà cơ chế này sinh ra để chặn. Thêm một mã duy nhất vào claim rồi ĐỌC LẠI
+# trước khi phát thì kẻ ghi sau cùng thắng và mọi kẻ khác im, không cần nguyên
+# tử ở đâu cả. Bất biến: KHÔNG BAO GIỜ có quá một park phát.
+#
+# Nó cũng sửa luôn hướng thất bại: file không đọc được thì `current` không khớp
+# `my_claim` nên ta IM. Bản trước mặc định `current=$my_seq` khi file rác, tức
+# mọi park đều tự nhận là chủ và tất cả đều phát — sai hướng, và tệ hơn cả race.
 owner_file="$(ofm_home)/park-owner"
-if [ -n "${OFM_CURSOR_PARK_SEQ:-}" ]; then
-  my_seq=$OFM_CURSOR_PARK_SEQ
-else
-  prev=$(cat "$owner_file" 2>/dev/null | tr -d ' ')
-  case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
-  my_seq=$((prev + 1))
-  printf '%s\n' "$my_seq" > "$owner_file" 2>/dev/null || exit 0
-fi
+my_claim="${OFM_CURSOR_PARK_CLAIM:-$$.$(date +%s).${RANDOM:-0}}"
+printf '%s\n' "$my_claim" > "$owner_file" 2>/dev/null || exit 0
 
 summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
 [ -n "$summary" ] || exit 0
 
-# Còn là park mới nhất không? Nếu không, đứng im: park mới sẽ thấy cùng
+# Ta còn là kẻ ghi sau cùng không? Nếu không, đứng im: park mới sẽ thấy cùng
 # message đó vì chưa ai ack.
-current=$(cat "$owner_file" 2>/dev/null | tr -d ' ')
-case "$current" in ''|*[!0-9]*) current=$my_seq ;; esac
-[ "$current" = "$my_seq" ] || exit 0
+current=$(cat "$owner_file" 2>/dev/null)
+[ "$current" = "$my_claim" ] || exit 0
 
 jq -cn --arg m "orca-firstmate: $summary" '{followup_message:$m}'
 exit 0

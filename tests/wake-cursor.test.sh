@@ -38,10 +38,31 @@ out=$(payload sess-a 5 | bash "$HOOK" 2>/dev/null); rc=$?
 assert_rc "$rc" 0 "chạm trần thì exit 0"
 assert_eq "$out" "" "chạm trần thì không emit"
 
-# Park cũ hơn phải đứng im khi đã có park mới hơn
-printf '7\n' > "$OFM_HOME/park-owner"
-out=$(payload sess-a 0 | OFM_CURSOR_PARK_SEQ=3 bash "$HOOK" 2>/dev/null)
-assert_eq "$out" "" "park cũ không emit khi đã bị thay"
+# Park bị thay thì đứng im — kiểm bằng claim tường minh
+printf 'someone-else\n' > "$OFM_HOME/park-owner"
+out=$(payload sess-a 0 | OFM_CURSOR_PARK_CLAIM=mine bash "$HOOK" 2>/dev/null)
+# Hook tự ghi claim của nó lúc bắt đầu, nên nó SẼ là chủ; ca này chỉ khẳng định
+# claim tường minh không làm hook vỡ. Ca thật nằm ở khối đồng thời dưới đây.
+printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
+assert_rc $? 0 "claim tường minh vẫn phát bình thường khi không bị thay"
+
+# HAI PARK THẬT chạy chồng nhau, cùng thấy một message: chỉ MỘT được phát.
+: > "$OFM_FAKE_ORCA_STATE/queue/run_a"
+rm -f "$OFM_HOME/park-owner"
+( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p1.out" 2>/dev/null ) & p1=$!
+( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p2.out" 2>/dev/null ) & p2=$!
+sleep 0.15
+fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+wait "$p1" 2>/dev/null || true
+wait "$p2" 2>/dev/null || true
+emitters=$(grep -l followup_message "$OFM_TEST_TMP/p1.out" "$OFM_TEST_TMP/p2.out" 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$emitters" "1" "hai park chồng nhau thì đúng một cái phát"
+
+# owner_file không ghi được phải cho ra IM LẶNG
+chmod 000 "$OFM_HOME/park-owner" 2>/dev/null || true
+out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null)
+assert_eq "$out" "" "owner_file không ghi/đọc được thì im lặng"
+chmod 644 "$OFM_HOME/park-owner" 2>/dev/null || true
 
 ofm_test_teardown
 ofm_test_report
