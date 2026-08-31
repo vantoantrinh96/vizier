@@ -99,3 +99,60 @@ phép đo (sha256 khớp: `ba94bfa2…5c7e35c7`).
 
 `~/.cursor/skills/ofm-probe/` — đã gate theo cwd nên câm ở mọi phiên khác. Xoá bằng
 `rm -rf ~/.cursor/skills/ofm-probe`.
+
+## Đo lại bằng phiên tương tác (pty)
+
+Headless không đo được thì lái phiên TUI thật qua `pty.fork()`: gõ text, gửi Enter tách rời
+(gõ và Enter cùng lúc thì Cursor nhận chữ nhưng **không** submit), rồi đọc terminal có đóng dấu
+thời gian. cursor-agent TUI báo version **2026.08.25-3e8eec8**, mới hơn con số `--version` in ra
+(`2026.08.11-e8db854`) và mới hơn version firstmate verify.
+
+### Kết quả 1 — plugin cấp user KHÔNG nạp hook
+
+Cùng một hook probe đặt tại `~/.cursor/skills/ofm-probe/` với `.cursor-plugin/plugin.json` khai
+`"hooks": "./hooks/hooks-cursor.json"`: một lượt tương tác đầy đủ chạy xong (agent trả lời,
+spinner tắt, composer về idle, ngồi im 75s) và **không hook nào fire**. `--plugin-dir` tường minh
+cũng không.
+
+### Kết quả 2 — `~/.cursor/hooks.json` cấp user CHẠY, đủ cả vòng đánh thức
+
+Cùng probe đó khai trong `~/.cursor/hooks.json`:
+
+```
+530.3  stop fire (lượt 1 kết thúc)
+538.4  WOKE sau 8s park          <- hook chặn, phiên chờ
+538.5  EMIT {"followup_message": ...}
+       TUI hiện "Working" -> model chạy lượt mới -> in "PROBEWAKE"
+541.2  stop fire lại (lượt 2 kết thúc)
+549.3  WOKE, KHÔNG emit          <- guard chặn, vòng lặp có đáy
+```
+
+`beforeSubmitPrompt`, `stop`, `afterAgentResponse` đều fire. Payload `stop` mang:
+`session_id`, `workspace_roots`, `loop_count`, `conversation_id`, `generation_id`,
+`cursor_version`, `transcript_path`, `model`, `status`, `user_email`, và bộ đếm token.
+
+Xác nhận đúng những gì firstmate mô tả: hook chạy đồng bộ và park, kênh duy nhất là một
+`{"followup_message": ...}` trên stdout với exit 0, `loop_count` là bản Cursor của
+`stop_hook_active`.
+
+`~/.cursor/hooks.json` được sao lưu và khôi phục byte-exact sau **mỗi** lần đo
+(sha256 `ba94bfa2…5c7e35c7` khớp cả hai lần).
+
+## Hệ quả bắt buộc cho thiết kế
+
+**Adapter Cursor không thể là plugin.** Nó buộc phải ghi vào `~/.cursor/hooks.json` — chính file
+mà Orca đã có 8 entry trong đó. Nên `install` cho Cursor phải là **merge phẫu thuật, idempotent**:
+thêm đúng entry của mình, không đụng entry của ai khác, chạy lại không nhân bản; `uninstall` gỡ
+đúng entry của mình. Đây là ngoại lệ có bằng chứng của nguyên tắc "không sửa file config của tool
+khác", không phải sự tuỳ tiện.
+
+Hai adapter vì thế khác nhau ở cả *nơi cài*, không chỉ ở cơ chế wake:
+
+| | Claude Code | Cursor |
+|---|---|---|
+| Cài vào | plugin riêng, `~/.claude/skills/<name>/` | **merge vào `~/.cursor/hooks.json` dùng chung** |
+| Gỡ | xoá thư mục | gỡ đúng entry của mình |
+| Rủi ro cài | không | ghi đè config người khác nếu merge sai |
+
+Chưa kiểm: Cursor có nạp `skills/` từ `~/.cursor/skills/` hay không (superpowers nằm ở đó nên
+nhiều khả năng có, nhưng chưa đo).
