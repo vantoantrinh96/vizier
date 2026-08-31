@@ -61,6 +61,24 @@ assert_rc "$rc" 1 "đích là thư mục thì rc 1"
 assert_contains "$out" "không phải symlink" "nói rõ lý do"
 rmdir "$OFM_BIN_DIR/orca-firstmate"
 
+# FIX 10 (ca đã tái hiện) — Đích trên PATH là một SYMLINK TRỎ TỚI MỘT THƯ MỤC
+# (khác ca trên: ở đây $LINK VẪN LÀ symlink, chỉ đích của nó là thư mục nên
+# guard `[ ! -L ]` không nổ). Guard cũ + `ln -sf` (không `-n`) sẽ tạo link MỚI
+# NẰM BÊN TRONG thư mục đó, để lại symlink GỐC trỏ sai chỗ, mà hậu-kiểm cũ
+# `[ -L "$LINK" ]` vẫn pass — báo "đã cài" trong khi PATH không chạy được.
+rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
+mkdir -p "$OFM_TEST_TMP/old-target-dir"
+ln -sf "$OFM_TEST_TMP/old-target-dir" "$OFM_BIN_DIR/orca-firstmate"
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 0 "FIX 10: symlink-tới-thư-mục vẫn cài thành công (ln -sfn thay thế đúng)"
+[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 0 "vẫn là symlink sau khi cài"
+assert_eq "$(readlink "$OFM_BIN_DIR/orca-firstmate")" "$OFM_HOME/src/bin/orca-firstmate" \
+  "FIX 10: symlink trỏ ĐÚNG ĐÍCH mới, không nằm lọt vào bên trong thư mục cũ"
+assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "FIX 10: CLI chạy được qua symlink đã thay thế"
+[ -d "$OFM_TEST_TMP/old-target-dir" ]; assert_rc $? 0 "thư mục cũ không bị xoá, chỉ symlink bị thay thế"
+[ -e "$OFM_TEST_TMP/old-target-dir/orca-firstmate" ]; assert_rc $? 1 \
+  "FIX 10: KHÔNG có link lạc bên trong thư mục cũ (đúng ca bug cũ tạo ra)"
+
 # $SRC tồn tại nhưng không phải git repo: báo rõ và đưa lệnh xoá
 rm -rf "$OFM_HOME/src"; mkdir -p "$OFM_HOME/src"; printf 'junk\n' > "$OFM_HOME/src/junk"
 out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?

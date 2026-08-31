@@ -60,8 +60,22 @@ if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
   echo "error: $LINK đã tồn tại và không phải symlink; dời nó đi rồi chạy lại" >&2
   exit 1
 fi
-ln -sf "$SRC/bin/orca-firstmate" "$LINK" || { echo "error: không tạo được symlink $LINK" >&2; exit 1; }
+# FIX 10 (ca đã tái hiện) — GUARD TRÊN KHÔNG BẮT ĐƯỢC khi $LINK VỐN ĐÃ LÀ MỘT
+# SYMLINK TRỎ TỚI MỘT THƯ MỤC (ví dụ dư lại từ một lần cài hỏng trước). Khi đó
+# `[ -e "$LINK" ]` đúng (đi theo link, tới được thư mục) nhưng `[ ! -L "$LINK" ]`
+# SAI — $LINK VẪN LÀ MỘT SYMLINK, chỉ đích của nó là thư mục — nên guard trên
+# không nổ. Rồi `ln -sf` (không `-n`) coi $LINK như đích thư mục đó và tạo
+# link MỚI NẰM BÊN TRONG nó, không thay thế $LINK; hậu-kiểm cũ `[ -L "$LINK" ]`
+# vẫn đúng (symlink GỐC còn nguyên, chẳng liên quan gì) nên script báo "đã cài"
+# trong khi PATH vẫn trỏ vào chỗ cũ/hỏng. `-n` buộc ln coi $LINK như một entry
+# CẦN THAY THẾ, không đi theo nó dù đích là thư mục.
+ln -sfn "$SRC/bin/orca-firstmate" "$LINK" || { echo "error: không tạo được symlink $LINK" >&2; exit 1; }
+# Hậu-kiểm CŨ chỉ hỏi "$LINK có phải symlink không" — không đủ, vì đúng ca lỗi
+# trên vẫn để lại MỘT symlink (chỉ là symlink gốc, trỏ sai chỗ). Hỏi thêm: nó
+# có GIẢI RA một file thường, thực thi được, hay không.
 [ -L "$LINK" ] || { echo "error: $LINK không phải symlink sau khi cài" >&2; exit 1; }
+[ -f "$LINK" ] && [ -x "$LINK" ] || {
+  echo "error: $LINK không giải ra một file thực thi được sau khi cài" >&2; exit 1; }
 
 echo "đã cài orca-firstmate -> $LINK"
 case ":$PATH:" in
