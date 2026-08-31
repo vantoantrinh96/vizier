@@ -5,26 +5,66 @@
 # nào được gọi nó. Sau khi cài, first mate nói chuyện thẳng với `orca`.
 set -u
 
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
+# $0 CÓ THỂ LÀ SYMLINK. `install.sh` cài CLI này đúng bằng một symlink trên
+# PATH, nên đó là đường gọi thật duy nhất — và khi đó `dirname "$0"` trỏ vào
+# thư mục bin trên PATH, không phải nơi script thật nằm. Hậu quả đã tái hiện
+# được: REPO_DIR sai -> source lib thất bại -> `ofm_home` không tồn tại ->
+# `$(ofm_home)` rỗng -> mọi đường dẫn suy ra từ nó trỏ sai, và guard chống tự
+# huỷ quay sang thao tác trên thư mục hiện hành của người gọi. Đi hết chuỗi
+# link TRƯỚC khi suy ra bất cứ đường dẫn nào.
+_self=$0
+_hops=0
+while [ -L "$_self" ] && [ "$_hops" -lt 16 ]; do
+  _t=$(readlink "$_self") || break
+  case "$_t" in
+    /*) _self=$_t ;;
+    *)  _self="$(dirname "$_self")/$_t" ;;
+  esac
+  _hops=$((_hops + 1))
+done
+SELF_DIR="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)" || {
+  printf 'error: không xác định được thư mục của script\n' >&2; exit 2; }
+REPO_DIR="$(cd "$SELF_DIR/.." 2>/dev/null && pwd)" || {
+  printf 'error: không xác định được thư mục gốc\n' >&2; exit 2; }
+
+# Source THẤT BẠI PHẢI CHẾT. Bash chỉ in cảnh báo rồi chạy tiếp, và `set -u`
+# không bắt hàm không tồn tại — đó chính là cách một `ofm_home` khuyết biến
+# thành đường dẫn rỗng và guard trỏ sai chỗ.
+[ -r "$REPO_DIR/lib/ofm-home.sh" ] || {
+  printf 'error: không đọc được %s/lib/ofm-home.sh\n' "$REPO_DIR" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$REPO_DIR/lib/ofm-home.sh"
 
-# Normalize home path to ensure consistent path comparisons (no double slashes)
-HOME_NORMALIZED="$(cd "$(ofm_home)" 2>/dev/null && pwd)" || HOME_NORMALIZED="$(ofm_home)"
-DIST="$HOME_NORMALIZED/dist"
+OFM_HOME_DIR=$(ofm_home)
+[ -n "$OFM_HOME_DIR" ] || { printf 'error: home rỗng\n' >&2; exit 2; }
+
+# Đường dẫn chuẩn hoá CHỈ khi thư mục thật sự tồn tại. `cd ""` là no-op im lặng
+# trong bash và trả về thư mục hiện hành — đúng cái đã biến guard thành mìn.
+_canon() {  # <path> -> đường dẫn chuẩn nếu tồn tại, rỗng nếu không
+  [ -n "$1" ] && [ -d "$1" ] || return 0
+  (cd "$1" 2>/dev/null && pwd)
+}
+
+DIST="$OFM_HOME_DIR/dist"
 CLAUDE_SKILLS="${OFM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 CURSOR_HOOKS="${OFM_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
 
 _sync_dist() {
   # TỪ CHỐI khi đang chạy từ chính bản đã cài: _sync_dist xoá $DIST rồi chép từ
   # $REPO_DIR, mà khi chạy từ dist thì hai đường dẫn đó là một -> tự huỷ.
-  case "$REPO_DIR/" in
-    "$DIST"/*|"$DIST/")
-      printf 'refused: đang chạy từ bản đã cài (%s).\n' "$REPO_DIR" >&2
-      printf '  chạy install/update từ source checkout: %s/src/bin/orca-firstmate install\n' "$(ofm_home)" >&2
-      return 1 ;;
-  esac
+  # So sánh trên đường dẫn CHUẨN của thư mục CÓ THẬT. Nếu dist chưa tồn tại thì
+  # REPO_DIR không thể nằm trong nó, nên guard không cần nổ — và quan trọng hơn,
+  # không có nhánh nào để một giá trị rỗng lọt vào phép so.
+  local dist_canon
+  dist_canon=$(_canon "$DIST")
+  if [ -n "$dist_canon" ]; then
+    case "$REPO_DIR/" in
+      "$dist_canon"/*|"$dist_canon/")
+        printf 'refused: đang chạy từ bản đã cài (%s).\n' "$REPO_DIR" >&2
+        printf '  chạy install/update từ source checkout: %s/src/bin/orca-firstmate install\n' "$OFM_HOME_DIR" >&2
+        return 1 ;;
+    esac
+  fi
   mkdir -p "$DIST" || return 1
   rm -rf "${DIST:?}/"*
   local item
@@ -57,11 +97,14 @@ cmd_doctor() {
       printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, rồi chờ app sẵn sàng)\n' "$reachable" "$state"
       problems=$((problems + 1))
     fi
-    case "$caps" in
-      *orchestration.contract.v1*) ;;
-      *) printf 'NOT_READY: Orca thiếu capability orchestration.contract.v1 (fix: cập nhật app Orca)\n'
-         problems=$((problems + 1)) ;;
-    esac
+    # Membership CHÍNH XÁC, không phải substring: `*orchestration.contract.v1*`
+    # sẽ khớp cả `orchestration.contract.v10` và `x-orchestration.contract.v1`,
+    # tức báo đạt trong khi capability thật vắng mặt.
+    if ! printf '%s' "$status" | jq -e --arg c orchestration.contract.v1 \
+         '((.result.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
+      printf 'NOT_READY: Orca thiếu capability orchestration.contract.v1 (fix: cập nhật app Orca)\n'
+      problems=$((problems + 1))
+    fi
   fi
   if [ -z "${OFM_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
     printf 'NOT_READY: gh chưa đăng nhập (fix: gh auth login)\n'
@@ -114,12 +157,11 @@ cmd_uninstall() {
   [ -L "$bin_link" ] && rm -f "$bin_link"
   # KHÔNG xoá thư mục đang chứa chính script này: bash đọc script theo từng
   # đoạn, xoá giữa lúc chạy là hành vi không xác định. In lệnh cho captain.
-  # Normalize home path for consistent comparison
-  local src
-  src="$(cd "$(ofm_home)" 2>/dev/null && pwd)" || src="$(ofm_home)"
-  src="$src/src"
+  local src src_canon
+  src="$OFM_HOME_DIR/src"
+  src_canon=$(_canon "$src")
   case "$REPO_DIR/" in
-    "$src"/*|"$src/")
+    "${src_canon:-$src}"/*|"${src_canon:-$src}/")
       printf 'đã gỡ adapter, payload và symlink. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
       printf 'còn lại source checkout (không tự xoá được vì lệnh này đang chạy từ đó):\n'
       printf '  rm -rf %s\n' "$src"
