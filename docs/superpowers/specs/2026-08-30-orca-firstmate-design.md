@@ -131,15 +131,15 @@ Mô hình đã được `superpowers` chứng minh và đang chạy trên máy c
 
 ```
 orca-firstmate/
-  .claude-plugin/plugin.json   # manifest Claude Code
-  .cursor-plugin/plugin.json   # manifest Cursor
+  .claude-plugin/plugin.json   # manifest Claude Code (Cursor không dùng manifest:
+                               # plugin Cursor không nạp hook, đã đo)
   commands/firstmate.md        # dùng chung
   skills/                      # dùng chung: identity, brief, routing, supervise, delivery
   hooks/
     hooks.json                 # schema Claude: Stop (asyncRewake) + PostCompact
-    hooks-cursor.json          # schema Cursor: version 1, stop, loop_limit
     wake-claude.sh
-    wake-cursor.sh
+    wake-cursor.sh             # KHÔNG khai trong manifest nào: adapter Cursor
+                               # merge nó vào ~/.cursor/hooks.json lúc install
   install.sh
   bin/orca-firstmate
 ```
@@ -328,6 +328,7 @@ Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
 | Orca app + `orca` CLI | luôn | worktree, terminal, Run/Task/Dispatch, mailbox, federation |
 | Claude Code **hoặc** Cursor | luôn | harness của first mate; mỗi cái một cơ chế đánh thức, xem mục CLI cài đặt |
 | `git`, `gh` | luôn | worker push nhánh và mở PR |
+| `jq` | luôn | hook parse payload JSON trên stdin và adapter Cursor merge JSON |
 | `no-mistakes` | chỉ khi task mode `no-mistakes` | chạy validation pipeline; xem mục Delivery mode |
 
 **Không dùng wrapper CLI của bên thứ ba.** firstmate bơm `gh-axi`, `chrome-devtools-axi`, `lavish-axi`, `tasks-axi`, `quota-axi` vào mọi brief và mọi lần bootstrap; orca-firstmate không. Lý do: phần lớn trong số đó tồn tại để dựng lại thứ Orca đã có (`tasks-axi` là sổ backlog tự chế — ở đây là `requests/` + Orca Run; `lavish-axi` board là fleet view tự chế — ở đây là `worktree ps --json`), còn phần còn lại chỉ là lớp mỏng trên CLI chính chủ. Đổi lại: worker parse JSON của `gh` tốn token hơn TOON, chấp nhận được.
