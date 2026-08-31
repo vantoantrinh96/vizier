@@ -68,11 +68,19 @@ assert_rc "$rc" 1 "src không phải git repo thì rc 1"
 assert_contains "$out" "rm -rf" "in lệnh xoá cho captain"
 rm -rf "$OFM_HOME/src"
 
-# origin/HEAD bị xoá trên bare repo: lần chạy sau vẫn phải cập nhật được
+# Thiếu origin/HEAD thì lần chạy sau vẫn phải cập nhật được.
+# Phải xoá ref CỤC BỘ `refs/remotes/origin/HEAD` trong $SRC — đó chính là thứ
+# `reset --hard origin/HEAD` phân giải. Bản trước xoá `HEAD` trên bare repo,
+# nhưng git hiện đại TỪ CHỐI thao tác đó ("deleting 'HEAD' is not allowed") và
+# lỗi bị nuốt, nên điều kiện chưa từng được tạo ra: test xanh kể cả khi bỏ hẳn
+# fix. Đây là kiểu test-đo-nhầm-thứ đã lặp lại nhiều lần trong dự án này, nên
+# có thêm một assertion khẳng định điều kiện ĐÃ được dựng trước khi dựa vào nó.
 sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1
-git -C "$ORIGIN" symbolic-ref --delete HEAD 2>/dev/null || true
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1  # Run twice to trigger update path where set-head runs
+git -C "$OFM_HOME/src" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+git -C "$OFM_HOME/src" show-ref refs/remotes/origin/HEAD >/dev/null 2>&1
+assert_rc $? 1 "đã thực sự xoá được origin/HEAD cục bộ (nếu không, ca dưới vô nghĩa)"
 sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "thiếu origin/HEAD vẫn cập nhật được"
-git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
 
 # URL hỏng thì fail rõ ràng, không để lại symlink chết
 export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
