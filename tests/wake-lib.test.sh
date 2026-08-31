@@ -68,6 +68,11 @@ kill -TERM -"$waiter" 2>/dev/null || kill -TERM "$waiter" 2>/dev/null || true
 sleep 0.8
 leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "$leaked" "0" "giết process group thì không còn orca mồ côi"
+# `pgrep -f run_orphanprobe` CHỈ khớp argv của con orca, nên nó từng báo 0 trong
+# khi shell bọc vẫn sống và quay vòng poll. Đếm cả process group mới thấy được:
+# $waiter là pgid vì khối này chạy dưới `set -m`.
+remaining=$(pgrep -g "$waiter" 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$remaining" "0" "cả process group biến mất, không riêng con orca"
 pkill -f 'run_orphanprobe' 2>/dev/null || true
 rm -f "$(ofm_requests_dir)/orphan.md"
 
