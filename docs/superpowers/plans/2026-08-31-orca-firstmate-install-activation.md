@@ -2401,6 +2401,15 @@ def main():
         os.execvp(cmd[0], cmd)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 
+    # SIGTERM phải thành exception, nếu không `finally` KHÔNG chạy. Đã đo: bấm
+    # Ctrl-C (SIGINT) thì con được dọn sạch, nhưng `kill` (SIGTERM) làm Python
+    # chết ngay và agent con SỐNG SÓT — đúng đường mà một wrapper có timeout sẽ
+    # dùng. Đăng ký sau khi fork nên chỉ áp cho tiến trình cha; con đã execvp
+    # và được đặt lại handler về mặc định.
+    def _on_term(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_term)
+
     buf = b""
     def pump(sec):
         nonlocal buf
