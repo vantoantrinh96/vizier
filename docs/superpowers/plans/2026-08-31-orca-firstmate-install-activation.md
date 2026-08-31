@@ -938,10 +938,38 @@ out=$(payload sess-a 5 | bash "$HOOK" 2>/dev/null); rc=$?
 assert_rc "$rc" 0 "chạm trần thì exit 0"
 assert_eq "$out" "" "chạm trần thì không emit"
 
-# Park cũ hơn phải đứng im khi đã có park mới hơn
-printf '7\n' > "$OFM_HOME/park-owner"
-out=$(payload sess-a 0 | OFM_CURSOR_PARK_SEQ=3 bash "$HOOK" 2>/dev/null)
-assert_eq "$out" "" "park cũ không emit khi đã bị thay"
+# Park bị thay thì đứng im — kiểm bằng claim tường minh
+printf 'someone-else\n' > "$OFM_HOME/park-owner"
+out=$(payload sess-a 0 | OFM_CURSOR_PARK_CLAIM=mine bash "$HOOK" 2>/dev/null)
+# Hook tự ghi claim của nó lúc bắt đầu, nên nó SẼ là chủ; ca này chỉ khẳng định
+# claim tường minh không làm hook vỡ. Ca thật nằm ở khối đồng thời dưới đây.
+printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
+assert_rc $? 0 "claim tường minh vẫn phát bình thường khi không bị thay"
+
+# HAI PARK THẬT chạy chồng nhau, cùng thấy một message: chỉ MỘT được phát.
+# Queue để rỗng cho tới khi cả hai đã vào vòng chờ, nếu không park thứ nhất
+# xong trước khi park thứ hai bắt đầu và ta chỉ đo hai park tuần tự.
+: > "$OFM_FAKE_ORCA_STATE/queue/run_a"
+rm -f "$OFM_HOME/park-owner"
+( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p1.out" 2>/dev/null ) & p1=$!
+( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p2.out" 2>/dev/null ) & p2=$!
+sleep 0.6
+fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+wait "$p1" 2>/dev/null || true
+wait "$p2" 2>/dev/null || true
+emitters=$(grep -l followup_message "$OFM_TEST_TMP/p1.out" "$OFM_TEST_TMP/p2.out" 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$emitters" "1" "hai park chồng nhau thì đúng một cái phát"
+
+# File park-owner không đọc được phải cho ra IM LẶNG, không phải ai cũng phát
+rm -f "$OFM_HOME/park-owner"
+out=$(payload sess-a 0 | OFM_CURSOR_PARK_CLAIM=never-written bash "$HOOK" 2>/dev/null)
+# Hook ghi 'never-written' rồi đọc lại thấy khớp -> phát. Để mô phỏng file rác,
+# ghi đè ngay sau khi hook ghi là không đo được trong một tiến trình; thay vào
+# đó khẳng định hướng thất bại bằng một owner_file chỉ-đọc-được-bởi-người-khác.
+chmod 000 "$OFM_HOME/park-owner" 2>/dev/null || true
+out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null)
+assert_eq "$out" "" "owner_file không ghi/đọc được thì im lặng"
+chmod 644 "$OFM_HOME/park-owner" 2>/dev/null || true
 
 ofm_test_teardown
 ofm_test_report
@@ -998,24 +1026,28 @@ runs=$(ofm_open_run_ids)
 [ -n "$runs" ] || exit 0
 
 # Giành quyền park trước khi chờ.
+#
+# HỢP ĐỒNG LÀ "AI GHI SAU CÙNG THÌ ĐƯỢC NÓI", không phải "số lớn hơn thì được
+# nói". Bản trước đọc số cũ rồi cộng một rồi ghi — không nguyên tử, nên hai park
+# cùng lúc chọn CÙNG một số và cả hai đều tưởng mình mới nhất: đúng cú báo trùng
+# mà cơ chế này sinh ra để chặn. Thêm một mã duy nhất vào claim rồi ĐỌC LẠI
+# trước khi phát thì kẻ ghi sau cùng thắng và mọi kẻ khác im, không cần nguyên
+# tử ở đâu cả. Bất biến: KHÔNG BAO GIỜ có quá một park phát.
+#
+# Nó cũng sửa luôn hướng thất bại: file không đọc được thì `current` không khớp
+# `my_claim` nên ta IM. Bản trước mặc định `current=$my_seq` khi file rác, tức
+# mọi park đều tự nhận là chủ và tất cả đều phát — sai hướng, và tệ hơn cả race.
 owner_file="$(ofm_home)/park-owner"
-if [ -n "${OFM_CURSOR_PARK_SEQ:-}" ]; then
-  my_seq=$OFM_CURSOR_PARK_SEQ
-else
-  prev=$(cat "$owner_file" 2>/dev/null | tr -d ' ')
-  case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
-  my_seq=$((prev + 1))
-  printf '%s\n' "$my_seq" > "$owner_file" 2>/dev/null || exit 0
-fi
+my_claim="${OFM_CURSOR_PARK_CLAIM:-$$.$(date +%s).${RANDOM:-0}}"
+printf '%s\n' "$my_claim" > "$owner_file" 2>/dev/null || exit 0
 
 summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
 [ -n "$summary" ] || exit 0
 
-# Còn là park mới nhất không? Nếu không, đứng im: park mới sẽ thấy cùng
+# Ta còn là kẻ ghi sau cùng không? Nếu không, đứng im: park mới sẽ thấy cùng
 # message đó vì chưa ai ack.
-current=$(cat "$owner_file" 2>/dev/null | tr -d ' ')
-case "$current" in ''|*[!0-9]*) current=$my_seq ;; esac
-[ "$current" = "$my_seq" ] || exit 0
+current=$(cat "$owner_file" 2>/dev/null)
+[ "$current" = "$my_claim" ] || exit 0
 
 jq -cn --arg m "orca-firstmate: $summary" '{followup_message:$m}'
 exit 0
