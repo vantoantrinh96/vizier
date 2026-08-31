@@ -48,6 +48,31 @@ grep -q 'OWNER_PLACEHOLDER' "$OFM_TEST_REPO/install.sh"; assert_rc $? 1 "không 
 default_url=$(sed -n 's/^REPO_URL="\${OFM_REPO_URL:-\(.*\)}"$/\1/p' "$OFM_TEST_REPO/install.sh")
 assert_contains "$default_url" "github.com" "mặc định trỏ tới GitHub"
 assert_contains "$default_url" "orca-firstmate" "mặc định trỏ đúng repo"
+# `github.com` một mình KHÔNG phân biệt được: chuỗi SSH `git@github.com:...`
+# cũng chứa nó. Phải bắt đúng dấu hiệu của dạng SSH.
+case "$default_url" in *git@*) assert_eq "ssh" "https" "mặc định KHÔNG được là dạng SSH" ;; esac
+
+# Đích trên PATH đã là THƯ MỤC: phải TỪ CHỐI, không được báo thành công
+export OFM_REPO_URL="file://$ORIGIN"
+rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
+mkdir -p "$OFM_BIN_DIR/orca-firstmate"
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "đích là thư mục thì rc 1"
+assert_contains "$out" "không phải symlink" "nói rõ lý do"
+rmdir "$OFM_BIN_DIR/orca-firstmate"
+
+# $SRC tồn tại nhưng không phải git repo: báo rõ và đưa lệnh xoá
+rm -rf "$OFM_HOME/src"; mkdir -p "$OFM_HOME/src"; printf 'junk\n' > "$OFM_HOME/src/junk"
+out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "src không phải git repo thì rc 1"
+assert_contains "$out" "rm -rf" "in lệnh xoá cho captain"
+rm -rf "$OFM_HOME/src"
+
+# origin/HEAD bị xoá trên bare repo: lần chạy sau vẫn phải cập nhật được
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1
+git -C "$ORIGIN" symbolic-ref --delete HEAD 2>/dev/null || true
+sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "thiếu origin/HEAD vẫn cập nhật được"
+git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
 
 # URL hỏng thì fail rõ ràng, không để lại symlink chết
 export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
