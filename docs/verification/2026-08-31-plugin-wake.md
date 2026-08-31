@@ -156,3 +156,41 @@ Hai adapter vì thế khác nhau ở cả *nơi cài*, không chỉ ở cơ ch�
 
 Chưa kiểm: Cursor có nạp `skills/` từ `~/.cursor/skills/` hay không (superpowers nằm ở đó nên
 nhiều khả năng có, nhưng chưa đo).
+
+---
+
+# Kiểm chứng: `stop_hook_active` xuyên chuỗi đánh thức
+
+Ngày: 2026-08-31
+Claude Code: 2.1.236
+
+## Câu hỏi
+
+`hooks/wake-claude.sh` dùng `stop_hook_active` để chặn vòng lặp vô hạn: hook `--peek` nên một
+message chưa ack vẫn còn đó ở Stop kế tiếp, và mỗi lần đánh thức lại sinh ra một lần nữa. Nhưng
+tài liệu công khai mô tả `stop_hook_active` là cờ cho trường hợp hook **chặn** lần stop — còn
+`asyncRewake` thì đã đo là KHÔNG chặn (RESULT về sau 0.08s trong khi hook còn chạy 12s). Nên cờ
+này có được đặt trên cái Stop **sau** một lần đánh thức bằng exit 2 hay không là chuyện phải đo.
+
+## Cách đo
+
+Plugin throwaway với Stop hook `asyncRewake`, gate theo `cwd`, ghi lại `stop_hook_active` mỗi lần
+fire, exit 2 ở hai lần đầu rồi exit 0. Lái bằng một phiên `--input-format stream-json` giữ sống.
+
+## Kết quả
+
+```
+fire#1  stop_hook_active=false     <- sau lượt người dùng thật
+fire#2  stop_hook_active=true      <- sau lần đánh thức bởi exit 2
+fire#3  stop_hook_active=true      <- sau lần đánh thức thứ hai
+```
+
+## Hệ quả
+
+1. **Trần theo `stop_hook_active` CÓ chạm.** Vòng lặp vô hạn thực sự bị chặn.
+2. **Nhưng cờ này không phân biệt được "message cũ chưa ack" với "message mới".** Sau *bất kỳ*
+   lần exit 2 nào — kể cả một lần re-arm do hết giờ, hoàn toàn không liên quan tới message nào —
+   mọi Stop tiếp theo trong chuỗi đều có cờ true. Nên một message MỚI tới trong chuỗi re-arm sẽ bị
+   coi là lần lặp và bị nuốt im lặng.
+3. Do đó chặn vòng lặp phải dựa trên **danh tính message đã báo**, không dựa trên cờ. Cờ chỉ nói
+   "lượt này do hook gây ra", không nói "ta đã báo đúng thứ này rồi".
