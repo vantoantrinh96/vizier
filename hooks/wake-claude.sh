@@ -11,10 +11,12 @@
 #   - hết giờ chờ mailbox -> exit 2 "re-arm" (FIX 2): không có gì mới để báo,
 #     chỉ đơn thuần cắm lại vòng chờ ở lượt kế. Không phải vòng xoáy vì mỗi
 #     vòng chờ tới tám tiếng.
-#   - có message thật -> exit 2 kèm tóm tắt: đây là lần BÁO ĐẦU TIÊN.
+#   - có message thật -> exit 2 kèm tóm tắt: đây là message CHƯA TỪNG BÁO
+#     (khác với "last-wake", hoặc chưa có "last-wake" nào).
 # Và một nhánh exit 0 không còn "câm tuyệt đối" theo nghĩa cũ nữa: nhánh trần
-# `stop_hook_active` (FIX 1) vẫn in một dòng ra stderr trước khi exit 0, để
-# captain thấy vòng đã dừng có chủ đích chứ không phải hook chết lặng.
+# theo danh tính message (FIX 1, so với "$(ofm_home)/last-wake") vẫn in một
+# dòng ra stderr trước khi exit 0, để captain thấy vòng đã dừng có chủ đích
+# chứ không phải hook chết lặng.
 #
 # HOOK NÀY CHẠY SAU MỖI LƯỢT CỦA MỌI PHIÊN CLAUDE CODE TRÊN MÁY, không dedupe.
 # Nên thứ tự cổng chặn là bắt buộc, rẻ trước đắt sau, và mọi nhánh không chắc
@@ -58,24 +60,48 @@ if [ -z "$summary" ]; then
   exit 2
 fi
 
-# FIX 1 — TRẦN CHẶN VÒNG VÔ HẠN. Hook dùng --peek nên một message chưa được
-# first mate ack vẫn còn nguyên ở lượt sau; không có trần này thì MỖI lần tỉnh
-# dậy vì message đó lại sinh ra một lần tỉnh nữa — vòng vô hạn, và đường ack
-# (thuộc về first mate, không phải hook) nằm ở một plan sau, nên hôm nay đây
-# là kết quả MẶC ĐỊNH của bất kỳ lần wake thành công nào nếu không chặn.
-# `stop_hook_active` là tín hiệu Claude Code gửi khi LƯỢT NÀY là do chính hook
-# Stop trước đó gây ra (không phải captain gõ gì mới) — đúng dấu hiệu "ta đã
-# tỉnh nó một lần rồi mà nó vẫn chưa xử lý xong". Chỉ đọc field này SAU KHI
-# biết có message thật (không phải nhánh hết giờ ở trên): nếu không có gì để
-# báo thì không có gì để chặn, và một jq thừa ở mọi lượt Stop trên máy là phí
-# không cần thiết. Ta đã nói một lần rồi; nếu first mate không ack, đó là lỗi
-# của first mate, không phải chỗ để hook nói lại — nhưng vẫn phải nói MỘT dòng
-# trước khi im, để captain thấy trần đã chạm chứ không phải hook chết lặng.
+# FIX 1 — TRẦN CHẶN VÒNG VÔ HẠN, theo DANH TÍNH MESSAGE, không theo cờ một
+# mình. Hook dùng --peek nên một message chưa được first mate ack vẫn còn
+# nguyên ở lượt sau; không có trần này thì MỖI lần tỉnh dậy vì message đó lại
+# sinh ra một lần tỉnh nữa — vòng vô hạn, và đường ack (thuộc về first mate,
+# không phải hook) nằm ở một plan sau, nên hôm nay đây là kết quả MẶC ĐỊNH của
+# bất kỳ lần wake thành công nào nếu không chặn.
+#
+# Bản đầu chặn chỉ bằng `stop_hook_active`. Đo lại
+# (docs/verification/2026-08-31-plugin-wake.md, mục "stop_hook_active xuyên
+# chuỗi đánh thức") cho kết quả:
+#   fire#1  stop_hook_active=false   <- sau lượt captain gõ thật
+#   fire#2  stop_hook_active=true    <- sau lần đánh thức bởi exit 2
+#   fire#3  stop_hook_active=true    <- sau lần đánh thức thứ hai
+# Trần CÓ chạm — vòng vô hạn bị chặn thật. Nhưng cờ chỉ nói "lượt này do hook
+# Stop trước đó gây ra", KHÔNG nói "ta đã báo đúng thứ này rồi". Sau BẤT KỲ
+# exit 2 nào — kể cả nhánh hết giờ re-arm ở trên, hoàn toàn không liên quan
+# tới message nào — mọi Stop kế tiếp trong chuỗi đều mang cờ true. Một cái
+# chặn chỉ dựa vào cờ sẽ nuốt im lặng một message MỚI tới giữa một chuỗi
+# re-arm — tệ hơn vòng lặp, vì vòng lặp còn ồn, cái này câm.
+#
+# Sửa: so DANH TÍNH, không so cờ một mình. Nhớ tóm tắt đã báo lần gần nhất ở
+# "$(ofm_home)/last-wake"; chỉ im lặng (exit 0) khi cờ true VÀ tóm tắt lần
+# này giống hệt byte-for-byte tóm tắt đã ghi — tức chắc chắn đây đúng là cùng
+# một message chưa ack, không phải suy đoán từ việc lượt này do hook gây ra.
+# Vẫn đọc `stop_hook_active` trước: thiếu nó thì báo cáo ĐẦU TIÊN (chưa từng
+# có gì trong last-wake để so, hoặc lần đầu chạy) cũng bị so trùng nhầm với
+# chính nó và bị nuốt — cờ là điều kiện để phép so identity có ý nghĩa, không
+# phải điều kiện để bỏ qua nó.
 stop_hook_active=$(printf '%s' "$payload" | jq -r '.stop_hook_active // false' 2>/dev/null)
-if [ "$stop_hook_active" = "true" ]; then
-  printf 'orca-firstmate: đã chạm trần đánh thức (message chưa được ack); dừng lại đây, không tỉnh thêm vòng nào nữa cho tới khi first mate ack hoặc captain tự gõ.\n' >&2
+last_wake_file="$(ofm_home)/last-wake"
+last_wake=$(cat "$last_wake_file" 2>/dev/null)
+if [ "$stop_hook_active" = "true" ] && [ "$summary" = "$last_wake" ]; then
+  printf 'orca-firstmate: đã chạm trần đánh thức (message giống hệt lần trước, đối chiếu theo nội dung chứ không chỉ theo cờ stop_hook_active, và vẫn chưa được ack); dừng lại đây, không tỉnh thêm vòng nào nữa cho tới khi first mate ack hoặc captain tự gõ.\n' >&2
   exit 0
 fi
+
+# Ghi last-wake có thể thất bại (home mất quyền ghi, disk đầy, ...). Vẫn phải
+# báo và exit 2 chứ không được chết ở đây: mất bản ghi nhiều nhất gây MỘT lần
+# tỉnh trùng ở lượt sau (vô hại — lượt đó lại thử ghi lại), còn nuốt luôn
+# message vì lỗi ghi file thì mất tín hiệu vĩnh viễn. Câm vì lỗi ghi luôn tệ
+# hơn một lần báo lặp.
+printf '%s' "$summary" > "$last_wake_file" 2>/dev/null
 
 printf 'orca-firstmate: %s\n' "$summary" >&2
 exit 2
