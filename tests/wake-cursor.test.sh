@@ -5,6 +5,10 @@ ofm_test_setup
 . "$OFM_TEST_REPO/lib/ofm-home.sh"
 HOOK="$OFM_TEST_REPO/hooks/wake-cursor.sh"
 export OFM_WAIT_TIMEOUT_MS=300
+# Nhịp poll production là 1000ms. Không đặt ở đây thì mỗi lần gọi hook mất ~1s
+# và chỉ tìm thấy message nhờ vòng lặp kiểm file TRƯỚC khi kiểm deadline — test
+# pass nhờ một thứ tự tình cờ chứ không nhờ hành vi nó đặt tên.
+export OFM_WAKE_POLL_MS=50
 
 payload() {  # <session_id> <loop_count>
   printf '{"session_id":"%s","loop_count":%s,"workspace_roots":["/tmp"],"status":"completed"}' "$1" "$2"
@@ -58,10 +62,24 @@ wait "$p2" 2>/dev/null || true
 emitters=$(grep -l followup_message "$OFM_TEST_TMP/p1.out" "$OFM_TEST_TMP/p2.out" 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "$emitters" "1" "hai park chồng nhau thì đúng một cái phát"
 
-# owner_file không ghi được phải cho ra IM LẶNG
-chmod 000 "$OFM_HOME/park-owner" 2>/dev/null || true
+# Cổng read-back: ghi claim xong rồi bị NGƯỜI KHÁC thay giữa chừng -> phải im,
+# dù đã nhìn thấy message. Đây mới là ca chứng minh cổng read-back; ca `chmod
+# 000` trước đó chặn ngay ở bước GHI và thoát ở một cổng khác hẳn, nên nó pass
+# mà chưa từng chạm cổng này.
+: > "$OFM_FAKE_ORCA_STATE/queue/run_a"
+rm -f "$OFM_HOME/park-owner"
+( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p3.out" 2>/dev/null ) & p3=$!
+sleep 0.15
+printf 'usurper\n' > "$OFM_HOME/park-owner"
+fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+wait "$p3" 2>/dev/null || true
+assert_eq "$(cat "$OFM_TEST_TMP/p3.out")" "" "bị thay chủ giữa chừng thì im, dù đã thấy message"
+
+# Không ghi được owner_file cũng phải im — cổng khác, ca khác, ghi rõ là khác
+: > "$OFM_FAKE_ORCA_STATE/queue/run_a"
+printf 'x\n' > "$OFM_HOME/park-owner"; chmod 000 "$OFM_HOME/park-owner" 2>/dev/null || true
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null)
-assert_eq "$out" "" "owner_file không ghi/đọc được thì im lặng"
+assert_eq "$out" "" "không ghi được owner_file thì im (cổng GHI, không phải read-back)"
 chmod 644 "$OFM_HOME/park-owner" 2>/dev/null || true
 
 ofm_test_teardown
