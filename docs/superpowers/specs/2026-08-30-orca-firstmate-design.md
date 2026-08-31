@@ -99,7 +99,7 @@ Home tách khỏi plugin có chủ đích: gỡ hoặc nâng cấp plugin không
 **Cài một lần, dùng mọi nơi.** Một lệnh:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<owner>/orca-firstmate/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vantoantrinh96/orca-firstmate/main/install.sh | sh
 orca-firstmate doctor
 orca-firstmate install
 ```

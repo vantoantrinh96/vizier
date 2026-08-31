@@ -2132,16 +2132,17 @@ bare repo local qua `file://` nên chạy được offline, không cần repo đ
 > quyết định khác nhau: cái sau sửa `~/.cursor/hooks.json` của captain. Một `curl | sh` không
 > được phép âm thầm làm việc đó.
 
-- [ ] **Step 0: Lấy URL thật của repo**
+- [ ] **Step 0: Đối chiếu URL repo**
 
-Repo là public trên GitHub và remote do captain tự đặt. Đọc nó ra, đừng đoán:
+Đã xác định: remote là `git@github.com:vantoantrinh96/orca-firstmate.git`, và `gh repo view` xác
+nhận repo **PUBLIC**. Chạy lại để chắc nó chưa đổi:
 
 ```bash
-git remote get-url origin
+git remote get-url origin && gh repo view --json visibility,nameWithOwner
 ```
 
-Dùng giá trị đó làm mặc định trong `install.sh` ở Step 3, và thay `OWNER_PLACEHOLDER` bằng
-owner thật. Nếu `git remote get-url origin` chưa có gì, **dừng và hỏi captain** — đừng bịa URL.
+Mặc định trong `install.sh` ở Step 3 đã là dạng **HTTPS** của cùng repo đó. Nếu remote khác với
+giá trị trên, **dừng và báo captain** — đừng tự đổi URL trong script.
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -2191,12 +2192,13 @@ printf 'rác\n' > "$OFM_HOME/src/bin/orca-firstmate"
 sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "src bẩn vẫn cập nhật được"
 assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "src bẩn được khôi phục"
 
-# Mặc định phải là URL thật, không phải placeholder. Test này là thứ bắt lỗi
-# "quên điền" thay vì để nó trôi tới máy người dùng.
-grep -q 'OWNER_PLACEHOLDER' "$OFM_TEST_REPO/install.sh"; assert_rc $? 1 "không còn placeholder owner"
+# Mặc định phải là URL thật và phải là HTTPS. SSH sẽ hỏng trên máy mới chưa có
+# key, mà repo đã public nên HTTPS không cần auth — đây là thứ bắt lỗi "dán
+# nguyên remote SSH vào" thay vì để nó trôi tới người dùng đầu tiên.
 default_url=$(sed -n 's/^REPO_URL="\${OFM_REPO_URL:-\(.*\)}"$/\1/p' "$OFM_TEST_REPO/install.sh")
-assert_contains "$default_url" "github.com" "mặc định trỏ tới GitHub"
+assert_contains "$default_url" "https://github.com/" "mặc định là HTTPS, không phải SSH"
 assert_contains "$default_url" "orca-firstmate" "mặc định trỏ đúng repo"
+case "$default_url" in *git@*) assert_eq "ssh" "https" "mặc định KHÔNG được là dạng SSH" ;; esac
 
 # URL hỏng thì fail rõ ràng, không để lại symlink chết
 export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
@@ -2231,8 +2233,13 @@ Expected: FAIL — `install.sh: No such file or directory`
 set -eu
 
 # Repo public trên GitHub, nên clone và curl đều không cần auth.
-# OWNER lấy từ `git remote get-url origin` ở Step 0; không để nguyên chuỗi này.
-REPO_URL="${OFM_REPO_URL:-https://github.com/OWNER_PLACEHOLDER/orca-firstmate.git}"
+#
+# DÙNG HTTPS, KHÔNG DÙNG SSH. Remote của checkout là dạng SSH
+# (git@github.com:vantoantrinh96/orca-firstmate.git), nhưng bootstrap chạy trên
+# một máy mới qua `curl | sh` thì chưa chắc có SSH key cho tài khoản đó — và
+# repo đã public nên HTTPS clone không cần auth gì cả. Lấy owner/tên từ remote,
+# phát ra dạng HTTPS.
+REPO_URL="${OFM_REPO_URL:-https://github.com/vantoantrinh96/orca-firstmate.git}"
 
 HOME_DIR="${OFM_HOME:-$HOME/.orca-firstmate}"
 SRC="$HOME_DIR/src"
