@@ -38,6 +38,7 @@
 | `commands/firstmate.md` | `/firstmate` — kích hoạt phiên |
 | `.claude-plugin/plugin.json` | manifest plugin Claude Code |
 | `bin/ofm-adapter-claude.sh` | cài/gỡ adapter Claude |
+| `lib/ofm-merge-lib.sh` | luật quyết định mất-bản-cập-nhật, tách khỏi adapter để source được trong test |
 | `bin/ofm-adapter-cursor.sh` | merge/unmerge `~/.cursor/hooks.json` |
 | `bin/orca-firstmate` | CLI: `install`, `doctor`, `update`, `uninstall` |
 | `install.sh` | bootstrap `curl \| sh` — clone source, symlink CLI, KHÔNG tự cài vào harness |
@@ -1494,6 +1495,7 @@ git commit -m "feat: add the Claude Code plugin adapter"
 **Rủi ro cao nhất của cả plan.** File đích là `~/.cursor/hooks.json`, nơi Orca đã có 8 entry. Merge sai là phá supervision của Orca, không chỉ của ta.
 
 **Files:**
+- Create: `lib/ofm-merge-lib.sh`
 - Create: `bin/ofm-adapter-cursor.sh`
 - Create: `tests/adapter-cursor.test.sh`
 
@@ -1577,6 +1579,29 @@ ofm_test_report
 Run: `bash tests/adapter-cursor.test.sh`
 Expected: FAIL — `bin/ofm-adapter-cursor.sh: No such file or directory`
 
+- [ ] **Step 3a: Viết `lib/ofm-merge-lib.sh`**
+
+```bash
+# shellcheck shell=bash
+# Luật quyết định cho merge vào file thuộc về tool khác.
+#
+# Ở lib chứ không ở adapter, vì adapter có khối `case` dispatch chạy ngay khi
+# source — không test được nếu không bịa nhánh chỉ-dành-cho-test vào đúng file
+# rủi ro nhất dự án. Lib thì vốn sinh ra để được source.
+#
+# Bản thân cuộc đua ghi file không tái hiện được trong một unit test, nhưng
+# LUẬT quyết định thì phải kiểm được, và đây chính là nó.
+
+# 0 khi không có dấu hiệu mất bản cập nhật.
+# Một phép đếm RỖNG (jq lỗi, file không đọc được) tính là LỆCH, không tính là
+# bằng nhau: hai chuỗi rỗng so với nhau thì "bằng", và đó là cách một lỗi thật
+# đội lốt trạng thái lành.
+ofm_no_lost_update() {  # <others_before> <others_after> <mine_after>
+  case "$1$2$3" in *[!0-9]*|'') return 1 ;; esac
+  [ "$2" = "$1" ] && [ "$3" = "1" ]
+}
+```
+
 - [ ] **Step 3: Viết `bin/ofm-adapter-cursor.sh`**
 
 ```bash
@@ -1597,6 +1622,13 @@ Expected: FAIL — `bin/ofm-adapter-cursor.sh: No such file or directory`
 set -u
 
 MARKER="wake-cursor.sh"   # tên file là marker: không tool nào khác có file tên này
+
+# Luật quyết định "có mất bản cập nhật không" nằm trong lib, KHÔNG nằm ở đây:
+# một script có khối `case` dispatch thì không source được để test, và ta không
+# bịa nhánh chỉ-dành-cho-test vào đúng file rủi ro nhất của dự án.
+LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib not found\n' >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$LIB/ofm-merge-lib.sh"
 
 _home() { printf '%s' "${OFM_HOME:-$HOME/.orca-firstmate}"; }
 _default_hooks() { printf '%s/.cursor/hooks.json' "$HOME"; }
@@ -1644,15 +1676,6 @@ _count_mine() {  # <hooks_json>
     [(.hooks.stop // [])[]
      | select(((.command? | type) == "string") and (.command | contains($m)))]
     | length' "$1" 2>/dev/null
-}
-
-# Quyết định "có mất bản cập nhật không". Tách ra thành hàm để test được bằng
-# số dựng sẵn: bản thân cuộc đua thì không tái hiện được trong một unit test,
-# nhưng LUẬT quyết định thì phải kiểm được. Một phép đếm rỗng (jq lỗi, file
-# không đọc được) tính là LỆCH, không tính là bằng nhau.
-_no_lost_update() {  # <others_before> <others_after> <mine_after>
-  case "$1$2$3" in *[!0-9]*|'') return 1 ;; esac
-  [ "$2" = "$1" ] && [ "$3" = "1" ]
 }
 
 # Áp entry của ta lên file hiện tại. Dùng cho cả lần merge đầu lẫn lần thử lại.
@@ -1715,9 +1738,9 @@ case "$action" in
     # về trạng thái cũ hơn cả hai bên, tệ hơn là cứ để yên. Thay vào đó: thử
     # merge lại MỘT lần từ trạng thái hiện tại (đã chứa thay đổi của họ), rồi
     # nếu vẫn lệch thì báo thật to và chỉ chỗ backup cho captain tự quyết.
-    if ! _no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+    if ! ofm_no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
       _merge_ours "$H" "$cmd" || { printf 'refused: merge lại thất bại\n' >&2; exit 1; }
-      if ! _no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+      if ! ofm_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" "$(_count_mine "$H")"; then
         printf 'refused: có tiến trình khác ghi %s cùng lúc và ta không hoà giải được.\n' "$H" >&2
         printf '  KHÔNG tự khôi phục vì backup cũ hơn thay đổi của họ. Backup ở: %s\n' "${backup:-<không có>}" >&2
         printf '  Hãy kiểm tra file rồi chạy lại install.\n' >&2
