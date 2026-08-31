@@ -124,7 +124,7 @@ Phiên không gõ `/firstmate` thì không giữ lock, nên hook câm và không
 
 **Luật cứng: CLI chỉ tồn tại lúc cài và lúc chẩn đoán, không bao giờ nằm trên đường chạy.** Cài xong, first mate nói chuyện thẳng với `orca`; không đường runtime nào gọi `orca-firstmate`. Bỏ luật này là xây lại 162 script của firstmate dưới cái tên đẹp hơn.
 
-Bốn lệnh: `install [--harness …]`, `doctor` (preflight ở mục Entry point), `update` (kéo payload mới rồi chép lại), `uninstall` (gỡ payload, **giữ nguyên** `requests/` và `projects/`). Viết bằng bash: CLI này chỉ chép file và kiểm vài thứ, Orca lại chỉ chạy macOS, nên một binary Go cho ~200 dòng là nghi lễ thừa.
+Năm lệnh: `install [--harness …]`, `doctor` (preflight ở mục Entry point, cộng kiểm chính bản đã cài còn nguyên), `update` (fetch trong `src` rồi chép lại), `uninstall` (gỡ payload, **giữ nguyên** `requests/` và `projects/`), và `unlock` (in chủ lock hiện tại rồi xoá lock). `unlock` tồn tại vì `CLAUDE_PID` là tiến trình `claude`, không phải phiên: sau `/clear` hoặc một lần resume, lock giữ một pid còn sống mà session id không khớp gì cả — `ofm_lock_claim` từ chối mãi, `/firstmate` bị cấm tự xoá lock, và nếu không có lệnh này thì không còn đường phục hồi nào được hỗ trợ. Viết bằng bash: CLI này chỉ chép file và kiểm vài thứ, Orca lại chỉ chạy macOS, nên một binary Go cho ~200 dòng là nghi lễ thừa.
 
 ### Một repo, nhiều manifest
 
