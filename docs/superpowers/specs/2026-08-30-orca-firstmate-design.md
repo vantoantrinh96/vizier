@@ -188,6 +188,7 @@ Hệ quả cho Cursor: cần thêm `~/.orca-firstmate/park-owner` (seq tăng d�
 
 - Cursor: không dùng được ở headless `cursor-agent -p` — **không hook nào fire ở chế độ đó**; phải chạy phiên tương tác. Cursor còn đòi trust theo từng thư mục workspace, nên lời hứa "gõ `/firstmate` ở mọi nơi" ở Cursor kèm một lần trust cho mỗi thư mục mới.
 - Harness chưa có adapter: `install` báo thẳng "chưa hỗ trợ", không im lặng bỏ qua.
+- **`install` không tham số KHÔNG cài Cursor.** Nửa Cursor chưa có đường kích hoạt (`ofm-activate.sh` phụ thuộc biến môi trường chỉ Claude Code có), nên một entry cắm vào `~/.cursor/hooks.json` chỉ đọc lock rồi exit 0: không chức năng, mà vẫn nhận trọn rủi ro ghi vào file Orca dùng chung. Muốn cài thì phải yêu cầu tường minh `--harness cursor`, và adapter in rõ giới hạn đó.
 - Harness không trả lời được câu 3 — Codex là ca đã biết, cơ chế của nó là "bounded foreground checkpoints" nên **không đánh thức được phiên idle** — thì adapter đó phải nói rõ orca-firstmate ở đó chạy giảm cấp: vẫn dispatch, vẫn brief, nhưng captain phải tự hỏi "xong chưa".
 
 ## Khái niệm Request (đơn vị điều phối)
@@ -245,7 +246,8 @@ Block tới khi có message cho Run; FIFO; replay cùng Delivery tới khi `--ac
 
 - `session_id` trong payload stdin **không khớp** `~/.orca-firstmate/lock` → exit 0. Một lần đọc file; đây là thứ giữ hook câm trong mọi phiên Claude Code khác.
 - Khớp lock nhưng không có request nào `status: open` → exit 0, im lặng, không tốn gì.
-- Có → `check --wait --peek` (peek: không đánh dấu đã đọc), `--timeout-ms` đặt ngắn hơn timeout của hook một khoảng an toàn (ví dụ hook 28800s → wait 28500s) để hook luôn tự thoát có kiểm soát. Có message → in một dòng tóm tắt ra stderr, **exit 2** → Claude Code tỉnh dậy kể cả khi idle. Timeout → exit 2 với lý do "re-arm" để lượt kế cắm lại vòng chờ.
+- **`stop_hook_active: true` trong payload và ta ĐÃ có message → exit 0.** Vì hook dùng `--peek`, message chưa được ack vẫn còn đó ở lượt sau; không có chặn này thì mỗi lần tỉnh lại sinh ra một lần tỉnh nữa — vòng vô hạn. Ta đã nói một lần rồi; nếu first mate không ack, đó là lỗi của first mate, không phải chỗ để hook nói lại. Trước khi im, in một dòng nêu rõ đã chạm trần.
+- Có → `check --wait --peek` (peek: không đánh dấu đã đọc), `--timeout-ms` đặt ngắn hơn timeout của hook một khoảng an toàn (ví dụ hook 28800s → wait 28500s) để hook luôn tự thoát có kiểm soát. Có message → in một dòng tóm tắt ra stderr, **exit 2** → Claude Code tỉnh dậy kể cả khi idle. Timeout → exit 2 với lý do "re-arm" để lượt kế cắm lại vòng chờ. **Không được exit 0 ở đây**: phiên đang idle không sinh thêm Stop event nào, nên im lặng lúc hết giờ là giám sát chết vĩnh viễn tới khi captain tự gõ gì đó. Vòng re-arm không phải vòng xoáy — mỗi lần nó chờ tới tám tiếng.
 - **Hook không bao giờ ack.** Ack thuộc về first mate sau khi xử lý xong. Nhờ replay-tới-ack, hook chết giữa chừng không mất message; phiên mới chỉ cần `check` là thấy lại mọi thứ chưa ack — restart-proof đến từ Orca, không phải từ distro.
 
 Khi tỉnh, first mate (skill `supervise`):
