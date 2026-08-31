@@ -54,3 +54,48 @@ Năm điều được chứng minh, tất cả trong dạng plugin:
 Đo trên một phiên stream-json, không phải TUI tương tác. Hành vi async đã chứng minh ở tầng
 protocol; phần TUI hiển thị ra sao chưa kiểm. Không đo với timeout dài (dùng 120s, spec định
 dùng ~28800s).
+
+---
+
+# Kiểm chứng: hook Cursor cấp user
+
+Ngày: 2026-08-31
+cursor-agent: 2026.08.11-e8db854 (đúng version firstmate đã verify adapter Cursor)
+
+## Câu hỏi
+
+firstmate chứng minh cơ chế `stop` của Cursor ở `.cursor/hooks.json` **cấp project** với `--trust`.
+orca-firstmate cài **cấp user**. Cấp user có fire không?
+
+## Kết quả: headless không đo được câu đó
+
+Ba cấu hình, cùng một hook probe, chạy `cursor-agent -p --trust`:
+
+| Nơi khai hook | Hook fire? |
+|---|---|
+| plugin `~/.cursor/skills/ofm-probe` (auto-discovery) | không |
+| cùng plugin, ép bằng `--plugin-dir` | không |
+| `~/.cursor/hooks.json` cấp user — đúng chỗ Orca đang dùng | **không** |
+
+Cấu hình thứ ba là cấu hình đối chứng: đó là vị trí đã biết chắc chạy, vì Orca tự cài 8 event
+của nó ở đó. Nó cũng không fire.
+
+**Kết luận: `cursor-agent -p` không chạy hook nào, không riêng gì turn-end.** README firstmate
+chỉ ghi "no turn-end hook in headless"; phép đo này cho thấy phạm vi rộng hơn thế.
+
+File `~/.cursor/hooks.json` của captain được sao lưu trước và khôi phục byte-exact ngay sau
+phép đo (sha256 khớp: `ba94bfa2…5c7e35c7`).
+
+## Hệ quả cho thiết kế
+
+- Adapter Cursor **không thể có test tự động** cho đường wake. Phải smoke test tay, đúng cách
+  firstmate làm.
+- Câu hỏi "plugin cấp user có nạp hook không" **vẫn mở**; phải đo bằng phiên tương tác.
+- `cursor-agent` đòi trust theo từng thư mục workspace (`--trust` hoặc quyết định tương tác).
+  Với orca-firstmate "chạy ở mọi nơi", nghĩa là mỗi thư mục mới captain gõ `/firstmate` đều
+  vướng một lần trust. Cần cân nhắc ở adapter Cursor.
+
+## Probe còn lại trên máy
+
+`~/.cursor/skills/ofm-probe/` — đã gate theo cwd nên câm ở mọi phiên khác. Xoá bằng
+`rm -rf ~/.cursor/skills/ofm-probe`.
