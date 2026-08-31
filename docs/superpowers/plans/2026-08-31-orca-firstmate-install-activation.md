@@ -516,6 +516,8 @@ set -u
 ofm_test_setup
 . "$OFM_TEST_REPO/lib/ofm-home.sh"
 . "$OFM_TEST_REPO/lib/ofm-wake-lib.sh"
+# Nhịp poll production là 1000ms; test hạ xuống để chạy nhanh.
+export OFM_WAKE_POLL_MS=50
 
 mk_request() {  # <slug> <run_id> <status>
   printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\nyêu cầu gốc\n' \
@@ -547,6 +549,34 @@ assert_contains "$out" "run_c" "tóm tắt nêu run id"
 lines=$(printf '%s' "$out" | wc -l | tr -d ' ')
 assert_eq "$lines" "0" "tóm tắt là đúng một dòng, không newline cuối"
 
+# Frontmatter là nguồn duy nhất: "status: open" trong phần văn xuôi không tính
+printf -- '---\nrun_id: run_body\nstatus: closed\n---\nstatus: open\n' > "$(ofm_requests_dir)/body.md"
+assert_eq "$(ofm_open_run_ids | grep -c run_body || true)" "0" "status trong văn xuôi không tính"
+# File không mở bằng `---` thì bỏ qua hẳn
+printf 'lời nói đầu\n---\nrun_id: run_late\nstatus: open\n---\n' > "$(ofm_requests_dir)/late.md"
+assert_eq "$(ofm_open_run_ids | grep -c run_late || true)" "0" "frontmatter không ở đầu file thì bỏ qua"
+rm -f "$(ofm_requests_dir)/body.md" "$(ofm_requests_dir)/late.md"
+
+# CRLF không được âm thầm biến một request đang mở thành không-mở
+printf -- '---\r\nrun_id: run_crlf\r\nstatus: open\r\n---\r\n' > "$(ofm_requests_dir)/crlf.md"
+assert_eq "$(ofm_open_run_ids | grep -c run_crlf || true)" "1" "frontmatter CRLF vẫn đọc được"
+rm -f "$(ofm_requests_dir)/crlf.md"
+
+# ofm_summarize: newline lọt qua .type hay .run_id cũng phải bị gói về một dòng
+s=$(ofm_summarize '{"type":"worker\ndone","run_id":"r\n1","body":"a\nb"}')
+assert_eq "$(printf '%s' "$s" | grep -c . )" "1" "tóm tắt luôn đúng một dòng dù mọi trường có newline"
+
+# Giết tiến trình chờ từ ngoài thì con `orca` phải chết theo, không để lại mồ côi
+printf -- '---\nrun_id: run_orphanprobe\nstatus: open\n---\nx\n' > "$(ofm_requests_dir)/orphan.md"
+( printf 'run_orphanprobe\n' | ofm_wait_any_run 30000 >/dev/null 2>&1 ) & waiter=$!
+sleep 0.8
+kill "$waiter" 2>/dev/null || true
+sleep 0.8
+leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$leaked" "0" "không để lại orca mồ côi sau khi tiến trình chờ bị giết"
+pkill -f 'run_orphanprobe' 2>/dev/null || true
+rm -f "$(ofm_requests_dir)/orphan.md"
+
 # Dòng keepalive bị bỏ qua, không bị coi là message
 fake_orca_queue run_a '{"_keepalive":true}'
 out=$(printf 'run_a\n' | ofm_wait_any_run 300)
@@ -577,16 +607,33 @@ Expected: FAIL — `lib/ofm-wake-lib.sh: No such file or directory`
 # Run nào bound theo terminal để dựa vào.
 
 OFM_WAKE_TYPES="${OFM_WAKE_TYPES:-worker_done,escalation,question}"
+# Nhịp poll. Production để 1000ms: ở timeout tám tiếng thì đó là 28.500 vòng
+# thay vì 285.000, mà độ trễ đánh thức thêm dưới một giây thì con người không
+# nhận ra. Test hạ xuống 50ms cho nhanh.
+OFM_WAKE_POLL_MS="${OFM_WAKE_POLL_MS:-1000}"
+
+# Chỉ trả về phần frontmatter: khối giữa dòng `---` thứ nhất và `---` thứ hai.
+# Một chữ "status:" nằm trong phần văn xuôi không được phép quyết định gì, và
+# `tr -d '\r'` để một file CRLF không âm thầm bị coi là không-mở.
+_ofm_frontmatter() {  # <file>
+  awk '
+    NR==1 && $0 != "---" { exit }
+    /^---[[:space:]]*$/ { n++; if (n==2) exit; next }
+    n==1 { print }
+  ' "$1" 2>/dev/null | tr -d '\r'
+}
 
 ofm_open_run_ids() {
-  local dir f status run
+  local dir f fm status run
   dir=$(ofm_requests_dir)
   [ -d "$dir" ] || return 0
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
-    status=$(sed -n 's/^status:[[:space:]]*//p' "$f" | head -1)
+    fm=$(_ofm_frontmatter "$f")
+    [ -n "$fm" ] || continue
+    status=$(printf '%s\n' "$fm" | sed -n 's/^status:[[:space:]]*//p' | head -1)
     [ "$status" = "open" ] || continue
-    run=$(sed -n 's/^run_id:[[:space:]]*//p' "$f" | head -1)
+    run=$(printf '%s\n' "$fm" | sed -n 's/^run_id:[[:space:]]*//p' | head -1)
     [ -n "$run" ] && printf '%s\n' "$run"
   done
 }
@@ -595,43 +642,60 @@ ofm_summarize() {  # <json_line>
   local line=$1 type run detail
   type=$(printf '%s' "$line" | jq -r '.type // "message"' 2>/dev/null)
   run=$(printf '%s' "$line" | jq -r '.run_id // ""' 2>/dev/null)
-  detail=$(printf '%s' "$line" | jq -r '.outcome // .body // ""' 2>/dev/null | tr '\n' ' ' | cut -c1-120)
-  printf '%s run=%s %s' "${type:-message}" "${run:-?}" "${detail}" | sed 's/[[:space:]]*$//'
+  detail=$(printf '%s' "$line" | jq -r '.outcome // .body // ""' 2>/dev/null | tr '\n\r\t' '   ' | cut -c1-120)
+  # MỌI trường đi qua tr, không chỉ detail: caller dựa vào "đúng một dòng", và
+  # một newline lọt qua .type hay .run_id phá hợp đồng đó y như trong .body.
+  printf '%s run=%s %s' "${type:-message}" "${run:-?}" "${detail}" \
+    | tr '\n\r\t' '   ' | sed 's/[[:space:]]*$//'
 }
 
 # Đọc run id từ stdin, chờ tối đa <timeout_ms>, in một dòng tóm tắt hoặc rỗng.
 ofm_wait_any_run() {  # <timeout_ms>
-  local timeout_ms=$1 tmp run i=0 waited=0 step=100 line
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/ofm-wake.XXXXXX") || return 0
-  while IFS= read -r run; do
-    [ -n "$run" ] || continue
-    i=$((i + 1))
-    (
-      orca orchestration check --wait --peek --run "$run" \
-        --types "$OFM_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
-        2>/dev/null > "$tmp/$i.out"
-    ) &
-    printf '%s\n' "$!" >> "$tmp/pids"
-  done
-  if [ "$i" -eq 0 ]; then rm -rf "$tmp"; return 0; fi
-
-  while [ "$waited" -le "$timeout_ms" ]; do
-    for f in "$tmp"/*.out; do
-      [ -s "$f" ] || continue
-      # Bỏ keepalive; lấy dòng JSON thật đầu tiên.
-      line=$(jq -rc 'select(._keepalive|not) | select(.type? != null or .body? != null)' "$f" 2>/dev/null | head -1)
-      [ -n "$line" ] || continue
-      _ofm_wake_kill_all "$tmp"
-      ofm_summarize "$line"
-      rm -rf "$tmp"
-      return 0
+  # Cả thân hàm nằm trong một subshell để `trap` chỉ thuộc về nó, không dính
+  # vào shell của caller.
+  (
+    local timeout_ms=$1 tmp run i=0 line poll_s deadline f
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/ofm-wake.XXXXXX") || return 0
+    # TRAP TRƯỚC KHI SPAWN BẤT CỨ GÌ. Nếu tiến trình này bị giết từ ngoài —
+    # harness cắt hook, captain đóng phiên, máy sleep — thì mọi `orca --wait`
+    # con phải chết theo. Không có trap thì MỖI LƯỢT của MỖI phiên trên máy để
+    # lại một tiến trình mồ côi có thể sống tới tám tiếng. Trap cũng là đường
+    # dọn duy nhất cho cả ba lối ra bình thường, nên không còn chỗ nào phải
+    # nhớ gọi cleanup bằng tay.
+    trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT INT TERM HUP
+    while IFS= read -r run; do
+      [ -n "$run" ] || continue
+      i=$((i + 1))
+      (
+        orca orchestration check --wait --peek --run "$run" \
+          --types "$OFM_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
+          2>/dev/null > "$tmp/$i.out"
+      ) &
+      printf '%s\n' "$!" >> "$tmp/pids"
     done
-    sleep 0.1
-    waited=$((waited + step))
-  done
-  _ofm_wake_kill_all "$tmp"
-  rm -rf "$tmp"
-  return 0
+    [ "$i" -gt 0 ] || return 0
+
+    # Deadline theo giờ THẬT, không theo bộ đếm logic: bộ đếm cộng dồn nhịp
+    # poll rồi trôi khỏi thời gian thực, vì mỗi vòng còn tốn thời gian chạy
+    # thân vòng — và càng trôi khi file lớn dần.
+    poll_s=$(awk -v m="${OFM_WAKE_POLL_MS:-1000}" 'BEGIN{printf "%.3f", m/1000}')
+    deadline=$(( $(date +%s) + (timeout_ms + 999) / 1000 ))
+    while :; do
+      for f in "$tmp"/*.out; do
+        [ -s "$f" ] || continue
+        # grep rẻ đứng trước jq: `--types` đã bảo đảm mọi message trả về đều
+        # có `type`, còn keepalive của Orca đi ra stderr và bị bỏ, nên hầu hết
+        # vòng lặp không phải fork jq nào.
+        grep -q '"type"' "$f" 2>/dev/null || continue
+        line=$(jq -rc 'select(._keepalive|not) | select(.type? != null)' "$f" 2>/dev/null | head -1)
+        [ -n "$line" ] || continue
+        ofm_summarize "$line"
+        return 0
+      done
+      [ "$(date +%s)" -lt "$deadline" ] || return 0
+      sleep "$poll_s"
+    done
+  )
 }
 
 _ofm_wake_kill_all() {  # <tmpdir>
