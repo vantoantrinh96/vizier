@@ -1,6 +1,7 @@
 # orca-firstmate — Design
 
 Ngày: 2026-08-30
+Cập nhật: 2026-08-31 — bổ sung mục Delivery mode và no-mistakes
 Trạng thái: đã duyệt design trong chat, chờ duyệt spec
 
 ## Tóm tắt
@@ -63,12 +64,13 @@ orca-firstmate/
   hooks/
     wake.sh                  # Stop hook: chờ mailbox, exit 2 để đánh thức (~50 dòng)
   skills/
-    brief/SKILL.md           # sinh spec 3 tầng cho task-create
+    brief/SKILL.md           # sinh spec 4 tầng cho task-create
     routing/SKILL.md         # khám phá host, eligibility, chọn host per-request
     supervise/SKILL.md       # xử lý batch mailbox, release/reuse, ack, báo cáo
+    delivery/SKILL.md        # delivery mode, hợp đồng giao hàng, chính sách ask-user
   requests/                  # state động, git-ignored nhưng bền trên đĩa (restart-proof cần đĩa, không cần git)
   projects/
-    <tên>.md                 # tri thức project: build/test/ship, convention, bẫy, gợi ý model
+    <tên>.md                 # tri thức project: delivery mode, build/test/ship, convention, bẫy, gợi ý model
   tests/
     fake-orca/               # orca giả trên PATH trả JSON mẫu
     *.test.sh
@@ -95,7 +97,7 @@ Yêu cầu gốc của captain, các quyết định đã chốt, task đã tạ
 Vòng đời:
 
 1. **Mở**: captain nêu yêu cầu → first mate xác định project → chạy routing (dưới) → **hỏi captain chọn host một lần** → `run-create --objective` → ghi file request.
-2. **Chạy**: mỗi việc con → skill `brief` sinh spec → `task-create --spec` → `worker-start --task <id> --worktree new-top-level --name <n> --agent claude [--model … --effort …] [--on <host>] --setup run`. Mọi task trong request — kể cả fix theo review, retry, việc phát sinh — **kế thừa host đã chọn, không hỏi lại**.
+2. **Chạy**: mỗi việc con → skill `brief` sinh spec → `task-create --spec` → `worker-start --task <id> --worktree new-top-level --name <n> --agent claude [--model … --effort …] [--on <host>] --setup run`. Mọi task trong request — kể cả fix theo review, retry, việc phát sinh — **kế thừa host đã chọn, không hỏi lại**. Delivery mode thì ngược lại: chốt riêng cho từng task tại lúc tạo (mục Delivery mode), ghi vào file request kèm một dòng lý do khi lệch posture của project.
 3. **Theo dõi**: sự kiện đánh thức first mate (phần Supervision), xử lý, báo captain phần đáng báo.
 4. **Đóng**: captain xác nhận request hoàn tất → first mate release mọi Dispatch còn lại của Run, đặt `status: closed`. Host hết dính. Request mới hỏi host lại từ đầu.
 
@@ -137,39 +139,91 @@ Khi tỉnh, first mate (skill `supervise`):
 1. `check` đọc batch → xử lý **từng** message trước khi ack.
 2. Mỗi `worker_done` được chấp nhận: quyết terminal đi đâu **trước khi ack** — có task nối tiếp cho đúng agent đó → đọc `worker.agent_terminal_handle` từ `worker-show`, rồi `worker-start --task <next> --terminal <handle>` (Orca chuyển ownership cleanup); không → `worker-release --dispatch <id>`. Release chạy cho cả `worker_done` thành công lẫn thất bại, trừ khi captain yêu cầu giữ terminal (`worker-retain`).
 3. `--ack <delivery_id>` chỉ sau khi mọi message trong batch được xử lý.
-4. Báo captain **một** tin gộp, chỉ điều đáng nói: outcome, PR, quyết định cần captain. `escalation`/`question` → chuyển thành câu hỏi kèm ngữ cảnh; trả lời của captain đi ngược qua `orchestration reply`.
+4. Báo captain **một** tin gộp, chỉ điều đáng nói: outcome, PR, quyết định cần captain. `escalation`/`question` → chuyển thành câu hỏi kèm ngữ cảnh; trả lời của captain đi ngược qua `orchestration reply`. `question` mang một ask-user finding của no-mistakes đi qua chính sách của skill `delivery` trước, không mặc định chuyển thẳng cho captain.
 
-Quy tắc cứng: **không release vì timeout, TUI idle, heartbeat, status, question, escalation, hay `worker_done` bị reject/stale** — chỉ release sau `worker_done` thật đã xử lý. Worker im lâu bất thường → `worker-read --dispatch` (nguồn `auto`: transcript hook-proven hoặc terminal-bounded) để chẩn đoán rồi báo captain.
+Quy tắc cứng: **không release vì timeout, TUI idle, heartbeat, status, question, escalation, hay `worker_done` bị reject/stale** — chỉ release sau `worker_done` thật đã xử lý. Thêm một điều kiện cho mode `no-mistakes`: `worker_done` chỉ được coi là terminal khi body báo outcome axi terminal (`passed`, `checks-passed`, `failed`, `cancelled`); thiếu thì **không release**, vì có thể một run vẫn đang sở hữu nhánh. Worker im lâu bất thường → `worker-read --dispatch` (nguồn `auto`: transcript hook-proven hoặc terminal-bounded) để chẩn đoán rồi báo captain.
 
 ## Brief tự động
 
-Mỗi project một file `projects/<tên>.md`, captain sửa trực tiếp được. Skill `brief` ghép ba tầng thành `--spec` cho `task-create`:
+Mỗi project một file `projects/<tên>.md`, captain sửa trực tiếp được. Skill `brief` ghép bốn tầng thành `--spec` cho `task-create`:
 
-1. **Bất biến** (mọi worker): báo xong đúng cú pháp `orchestration send --type worker_done … --outcome succeeded|failed` (thất bại phải nằm trong `--outcome`, không chỉ trong prose); bí thì `orchestration ask` chứ không đoán; không tự merge; không rời worktree được giao.
+1. **Bất biến** (mọi worker): báo xong đúng cú pháp `orchestration send --type worker_done … --outcome succeeded|failed` (thất bại phải nằm trong `--outcome`, không chỉ trong prose); bí thì `orchestration ask` chứ không đoán; không tự merge; không rời worktree được giao; **không bao giờ stop/restart/update daemon `no-mistakes`** — một instance dùng chung mọi worktree và host, restart là giết run đang chạy của người khác, gặp lỗi daemon thì escalate rồi dừng.
 2. **Project** (từ file tri thức): cách build/test, convention, cách ship (PR vào nhánh nào, format commit), bẫy đã biết, link tài liệu.
-3. **Task** (từ yêu cầu captain): việc cụ thể + định nghĩa hoàn thành.
+3. **Hợp đồng giao hàng** (từ mode đã chốt): mở đầu bằng một dòng cố định `Delivery contract: mode=<mode>`, kèm định nghĩa hoàn thành riêng của mode đó — chi tiết ở mục Delivery mode dưới.
+4. **Task** (từ yêu cầu captain): việc cụ thể + định nghĩa hoàn thành.
 
-Captain chỉ mô tả tầng 3. File project **tự dày lên**: worker vấp bẫy mới → first mate đề nghị thêm một dòng vào file (captain gật mới ghi) — worker sau thừa hưởng.
+Captain chỉ mô tả tầng 4; tầng 3 first mate tự chốt tại intake. File project **tự dày lên**: worker vấp bẫy mới → first mate đề nghị thêm một dòng vào file (captain gật mới ghi) — worker sau thừa hưởng.
 
 File project có thể khai gợi ý model per loại task (scout → model rẻ/effort thấp, ship → model mạnh), first mate áp qua `worker-start --model … --effort …` (chỉ với terminal mới; `--effort` đòi `--model`).
+
+## Delivery mode và no-mistakes
+
+[`no-mistakes`](https://github.com/kunchenguid/no-mistakes) là một tool ngoài, không phải phần của distro: nó dựng một git proxy nội bộ đứng trước remote thật, và khi ta `git push no-mistakes` thì daemon tạo worktree dùng-một-lần, chạy pipeline cố định `intent → rebase → review → test → document → lint → push → pr → ci`, chỉ forward nhánh tới push target và mở PR sau khi mọi bước qua. Agent lái nó qua `no-mistakes axi`, một surface non-interactive in TOON ra stdout.
+
+Phân vai giữ đúng tinh thần firstmate: **no-mistakes sở hữu pipeline, distro chỉ chọn mode và định tuyến quyết định.** Không chép lại cơ chế gate vào đây; `axi --help` của bản đang cài là authoritative.
+
+### Mode
+
+v1 có hai mode:
+
+- **`direct-PR`** (mặc định): worker implement, push nhánh riêng, mở PR. Không pipeline.
+- **`no-mistakes`**: worker implement, commit, rồi lái pipeline qua `axi`.
+
+Mode khai trong frontmatter `projects/<tên>.md` (`delivery: direct-PR`) — đó là posture chuẩn của project. Captain chỉ định khác cho một task cụ thể thì task đó theo captain, first mate ghi lý do một dòng vào file request. **Project chưa có file tri thức → hỏi captain, không đoán mode.**
+
+`local-only` (nhánh sạch tại chỗ, không remote) ngoài phạm vi v1.
+
+### Hợp đồng giao hàng trong brief
+
+Tầng 3 của brief mở đầu bằng dòng cố định `Delivery contract: mode=<mode>`, rồi:
+
+- **`direct-PR`**: implement → push nhánh riêng → mở PR → `worker_done --outcome succeeded` kèm URL `https://…` đầy đủ. Không bao giờ push nhánh mặc định, không bao giờ tự merge.
+- **`no-mistakes`**: chạy `no-mistakes doctor`, nếu repo chưa init trong worktree thì `no-mistakes init`; implement → commit → `axi run --intent <ý định của captain>` → lái tiếp **mọi** `axi run`/`axi respond` cho tới outcome. `worker_done` chỉ gửi khi axi trả outcome terminal, và **body phải chứa outcome đó** (`passed` / `checks-passed` / `failed` / `cancelled`) cùng PR URL.
+
+Vì brief đã bắt worker tự chạy `doctor`/`init`, **routing không cần probe gate readiness trên host** — host thiếu binary thì worker escalate. Đỡ hẳn một vòng khám phá xuyên host.
+
+### Ask-user finding đi qua mailbox Orca
+
+Pipeline dừng ở finding cần người quyết. Worker **không bao giờ tự trả lời finding của chính nó**: nó gọi `orchestration ask` kèm finding ID, step, các lựa chọn, và khuyến nghị của nó. First mate tỉnh dậy qua đúng message type `question` đã có sẵn trong mục Supervision, quyết theo chính sách dưới, rồi `orchestration reply` trả về **một quyết định chính xác**: action, finding ID, và câu lệnh `axi respond` cụ thể. Worker áp dụng và lái tiếp.
+
+**First mate không bao giờ tự gọi `axi respond` cho run của worker.** Một run có đúng một người lái.
+
+Chính sách quyết (skill `delivery` là owner duy nhất):
+
+- **First mate tự quyết** finding không mơ hồ so với intent đã chấp nhận: sửa lỗi thật, hoàn thiện thiết kế đã duyệt, sửa hồi quy do một vòng fix trước làm hỏng, sửa nhỏ bắt buộc để hành vi đã chấp nhận đúng — kể cả khi khó.
+- **Escalate lên captain** khi: Fix sẽ mở rộng hợp đồng (thêm guarantee, subsystem, abstraction, bề mặt tương thích, yêu cầu giám sát liên tục mà intent không đòi); là quyết định sản phẩm hoặc kiến trúc chưa chốt; nhiều finding cùng một chủ đề cho thấy các vòng fix đang đắp máy móc quanh một abstraction đáng ngờ; hoặc destructive, không đảo ngược được, nhạy cảm bảo mật.
+- Nhãn của reviewer (`security`, `correctness`, `required`) là **bằng chứng về finding, không phải thẩm quyền nới scope**.
+
+Escalation gửi captain nêu đủ: yêu cầu gốc, phần hợp đồng bị nới, phương án nhỏ nhất không nới, hệ quả của nhận và của từ chối, và khuyến nghị kèm lý do.
+
+### An toàn release
+
+Với task mode `no-mistakes`, `worker_done` thiếu outcome axi terminal thì **không release** — `worker-read --dispatch` để chẩn đoán rồi báo captain. Đây là chỗ Orca-native rẻ hơn firstmate thật: firstmate phải có một lớp attribution đối chiếu branch/head để đoán run nào thuộc worktree nào, còn ở đây hợp đồng brief bắt worker tự khai outcome, nên distro không cần lớp đó.
+
+### Merge authority
+
+v1: **captain merge mọi PR.** Thẩm quyền merge thường trực kiểu `yolo` ngoài phạm vi — nhưng ghi lại cho đúng: `yolo` là một trục **trực giao** với delivery mode, nó chỉ nói ai được merge, không nói work đi qua pipeline nào.
 
 ## Xử lý lỗi
 
 - `worker-start` thất bại hoặc `outcome_unknown`: exit ≠ 0, JSON có `stage`/`failedStage`, `setup`, `effects`, `residualResources`, lệnh recovery. Quy tắc: **đọc receipt, làm đúng recovery ghi trong đó, không retry mù.** `--retry-of <dispatch_id>` khi thử lại để nối lịch sử (nhớ lặp lại placement vì retry không kế thừa). Còn tài nguyên dư → báo captain.
 - Wait-for-setup timeout để setup ở trạng thái `running` là bình thường, không phải bằng chứng thất bại — kiểm tra lại trước khi kết luận.
-- `worker-release` trả `release_pending`/`release_unknown`: theo đúng recovery action trong receipt; **cấm** thay bằng `terminal close`. Delivery replay có thể lặp `worker-release` an toàn.
+- `worker-release` trả `release_pending`/`release_unknown`: theo đúng recovery action trong receipt; **cấm** thay bằng `terminal close`. Replay của mailbox delivery có thể lặp `worker-release` an toàn.
 - Host dính chết giữa request: dừng, báo, chờ captain quyết (đổi host cho request là quyết định của captain, không của first mate).
 - `ask` của worker timeout: câu hỏi vẫn pending, resume bằng message ID gốc — không tạo câu hỏi trùng.
+- Lỗi daemon `no-mistakes`: worker escalate rồi dừng, không tự chữa. First mate cũng không restart daemon để "thông" một run — daemon dùng chung, restart giết run của worker khác. Đây là việc của captain trên máy sở hữu daemon.
 
 ## Kiểm thử
 
-- **fake-orca**: script `tests/fake-orca/orca` đặt trước PATH, trả JSON mẫu đã đối chiếu với schema thật (lấy từ `orca agent-context --json` và output thật trên máy captain). Test lifecycle không cần app: routing loại host không ready, brief ghép đúng 3 tầng, hook exit 0 khi không có request mở / exit 2 khi có message, supervise không ack trước khi xử lý xong batch.
+- **fake-orca**: script `tests/fake-orca/orca` đặt trước PATH, trả JSON mẫu đã đối chiếu với schema thật (lấy từ `orca agent-context --json` và output thật trên máy captain). Test lifecycle không cần app: routing loại host không ready, brief ghép đúng 4 tầng, hook exit 0 khi không có request mở / exit 2 khi có message, supervise không ack trước khi xử lý xong batch. Thêm ba ca cho delivery: brief mode `no-mistakes` sinh đúng dòng `Delivery contract:` và DoD chờ outcome axi; supervise **không** release khi `worker_done` của task `no-mistakes` thiếu outcome; `question` mang ask-user finding đi vào chính sách của `delivery` thay vì ack thẳng.
 - **Smoke thật** (chạy tay, có Orca thật): mở request → 1 task echo → worker chạy → `worker_done` → hook đánh thức → release → đóng request. Một biến thể `--on "Mac mini"`.
 - Ghi kết quả smoke thật vào `docs/verification/` kèm version app đã kiểm (học cách firstmate làm evidence theo version, vì Orca không có protocol version marker — capabilities trong `orca status` là gate tương thích).
 
 ## Ngoài phạm vi v1 (YAGNI, chủ động ghi lại để khỏi bò vào)
 
-- Gate quyền hạn kiểu no-mistakes / delivery mode per-project — v1 mặc định worker mở PR, captain merge; nói lại sau khi dùng thật.
+- `local-only` (nhánh sạch tại chỗ, merge có kiểm soát vào `main` local) — v1 chỉ `direct-PR` và `no-mistakes`.
+- Registry mode đầy đủ kiểu `no-mistakes-prod-only` (mode có điều kiện, phân loại bề mặt từng task) — v1 mode phẳng theo project, captain override được từng task.
+- `yolo` / thẩm quyền merge thường trực — v1 captain merge mọi PR.
 - Relay (X/Discord), AFK mode, voice.
 - Secondmate/coordinator lồng nhau — flat: một first mate, N worker.
 - Tự cân bằng tải giữa host — captain chọn host per-request là đủ.
@@ -180,3 +234,4 @@ File project có thể khai gợi ý model per loại task (scout → model rẻ
 - **Gắn chặt schema orchestration của Orca**: Orca không có version marker ổn định; đổi contract sẽ lộ lúc runtime. Giảm nhẹ: kiểm `orchestration.contract.v1` trong capabilities lúc session start; fake-orca fixtures ghi rõ version app đã đối chiếu.
 - **Stop hook asyncRewake là hành vi của Claude Code**, đổi harness là mất cơ chế wake — chấp nhận: distro này chọn Claude Code làm harness duy nhất của v1.
 - App Orca phải đang chạy — `orca open` ở session start nếu chưa.
+- **Phụ thuộc thêm vào `no-mistakes`** cho mode cùng tên: tên outcome và tên lệnh `axi` có thể đổi giữa các version. Giảm nhẹ có sẵn trong thiết kế: distro **không bao giờ parse output TOON của axi** — worker lái pipeline và tự khai outcome trong `worker_done`, nên bề mặt gắn kết chỉ là bốn tên outcome terminal, không phải cả schema.
