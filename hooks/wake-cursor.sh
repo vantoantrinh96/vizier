@@ -35,7 +35,26 @@ ofm_lock_matches "$session_id" || exit 0
 # ta cắn trước và Cursor không lặng lẽ ngừng gọi hook ở trần của nó.
 ceiling=${OFM_CURSOR_LOOP_CEILING:-5}
 case "$loop_count" in ''|*[!0-9]*) loop_count=0 ;; esac
-[ "$loop_count" -lt "$ceiling" ] || exit 0
+
+# FIX 8 — TRẦN PHẢI VẪN NÓI ĐƯỢC MỘT CÂU, KHÔNG ĐƯỢC CÂM. Bản cũ chỉ có
+# `[ "$loop_count" -lt "$ceiling" ] || exit 0`: đúng lúc trần bị chạm, hook im
+# lặng tuyệt đối — captain thấy Cursor đứng yên không một lời giải thích, và
+# không phân biệt được đó là do TA chủ động dừng (còn xa mới chạm loop_limit
+# 200 của Cursor) hay do lỗi thật. Tách hai ca:
+#   - loop_count == ceiling: ĐÚNG LƯỢT chạm trần -> phát MỘT followup_message
+#     báo rõ rồi exit 0. Đây là lần đầu và LẦN DUY NHẤT được nói.
+#   - loop_count > ceiling: đã báo ở lượt trước rồi -> câm, đúng cách cũ.
+# Dùng "==" chứ không phải "≥" cho ca báo: followup_message ta phát ở đây tự
+# nó khiến Cursor chạy thêm một lượt, lượt đó Stop lại tới hook với
+# loop_count == ceiling+1 -- nếu dùng "≥" ta sẽ báo lại ở CHÍNH lượt đó, rồi
+# lượt kế lại báo tiếp — vòng phát-vô-hạn ngược hẳn với mục đích của trần.
+if [ "$loop_count" -gt "$ceiling" ]; then
+  exit 0
+fi
+if [ "$loop_count" -eq "$ceiling" ]; then
+  jq -cn --arg m "orca-firstmate: đã chạm trần tự đánh thức ($ceiling lượt liên tiếp); dừng ở đây, gõ gì đó để nối lại giám sát." '{followup_message:$m}'
+  exit 0
+fi
 
 runs=$(ofm_open_run_ids)
 [ -n "$runs" ] || exit 0

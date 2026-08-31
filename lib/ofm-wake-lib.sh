@@ -87,9 +87,19 @@ ofm_wait_any_run() {  # <timeout_ms>
       [ -n "$run" ] || continue
       i=$((i + 1))
       (
+        # FIX 11 — `</dev/null` LÀ BẮT BUỘC. Vòng `while read` này đọc run id
+        # từ CHÍNH stdin của hàm (caller `printf ... | ofm_wait_any_run`), và
+        # một tiến trình nền không tự có fd 0 riêng — nó THỪA KẾ NGUYÊN stdin
+        # của vòng lặp trừ khi bị redirect tường minh. Nếu `orca` (một tiến
+        # trình thật, không phải builtin) đọc stdin vì bất kỳ lý do gì — lỗi,
+        # log, hay hành vi tương lai ta không kiểm soát — nó ăn mất một phần
+        # pipe mà vòng `while read` còn đang cần, và mọi run id CÒN LẠI sau đó
+        # bị NUỐT ÂM THẦM, không lỗi, không log: request thứ hai trở đi không
+        # bao giờ được chờ. Chặn hẳn đường đó bằng cách trỏ fd 0 của con vào
+        # /dev/null, không để nó chạm pipe của vòng lặp dù chỉ một byte.
         orca orchestration check --wait --peek --run "$run" \
           --types "$OFM_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
-          2>/dev/null > "$tmp/$i.out"
+          2>/dev/null > "$tmp/$i.out" < /dev/null
       ) &
       printf '%s\n' "$!" >> "$tmp/pids"
     done

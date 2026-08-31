@@ -4,7 +4,16 @@ set -u
 ofm_test_setup
 . "$OFM_TEST_REPO/lib/ofm-home.sh"
 HOOK="$OFM_TEST_REPO/hooks/wake-cursor.sh"
-export OFM_WAIT_TIMEOUT_MS=300
+# FIX 12 — 300ms từng gây fail ngẫu nhiên ~1/5 lần chạy. Nguyên nhân: deadline
+# trong lib/ofm-wake-lib.sh tính bằng `$(date +%s) + (timeout_ms+999)/1000` —
+# `date +%s` CẮT XUỐNG giây nguyên, nên nếu lệnh chạy ở mili-giây .999 của một
+# giây, deadline thật hiệu quả có thể chỉ còn 0ms thay vì ~300ms dự định. Với
+# 300ms, biên độ méo đó (tới gần 1000ms) đủ NUỐT TRỌN cả timeout, khiến `sleep
+# 0.15` cố định ở khối đồng thời bên dưới đôi khi thả message SAU khi cả hai
+# park đã hết giờ. KHÔNG được sửa lib sản xuất — bug thật ở đó chỉ gây lệch độ
+# trễ dưới 1s trên nền timeout 8 tiếng, vô hại; sửa test bằng cách nới timeout
+# ra 3000ms để cùng biên độ méo đó chỉ còn chiếm một phần nhỏ, không nuốt hết.
+export OFM_WAIT_TIMEOUT_MS=3000
 # Nhịp poll production là 1000ms. Không đặt ở đây thì mỗi lần gọi hook mất ~1s
 # và chỉ tìm thấy message nhờ vòng lặp kiểm file TRƯỚC khi kiểm deadline — test
 # pass nhờ một thứ tự tình cờ chứ không nhờ hành vi nó đặt tên.
@@ -16,6 +25,26 @@ payload() {  # <session_id> <loop_count>
 mk_request() {
   printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: open\nopened: 2026-08-31\n---\nx\n' \
     "$2" > "$(ofm_requests_dir)/$1.md"
+}
+
+# FIX 12 — thay `sleep 0.15` cố định bằng chờ CÓ ĐIỀU KIỆN: poll tới khi
+# park-owner đã được ghi (một park đã vào tới điểm chờ mailbox) VÀ mọi pid nền
+# truyền vào còn sống (chưa thoát sớm vì lỗi), rồi mới trả về để caller thả
+# message vào hàng đợi. Có trần lặp (1s) để không treo test vô hạn nếu điều
+# kiện không bao giờ đúng — bounded wait, không phải sleep đoán mò.
+wait_for_park_ready() {  # <pid...>
+  local i=0 ok pid
+  while [ "$i" -lt 100 ]; do
+    ok=1
+    [ -e "$OFM_HOME/park-owner" ] || ok=0
+    for pid in "$@"; do
+      kill -0 "$pid" 2>/dev/null || ok=0
+    done
+    [ "$ok" = 1 ] && return 0
+    i=$((i + 1))
+    sleep 0.01
+  done
+  return 1
 }
 
 # Không lock: câm
@@ -37,10 +66,19 @@ assert_eq "$lines" "1" "in đúng MỘT dòng JSON"
 printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
 assert_rc $? 0 "stdout là JSON hợp lệ"
 
-# Trần loop cắn trước loop_limit của Cursor
+# FIX 8 — chạm trần vẫn phải nói MỘT câu, không im lặng tuyệt đối. Đúng lượt
+# loop_count == ceiling (mặc định 5): phát followup_message báo đã chạm trần.
 out=$(payload sess-a 5 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "chạm trần thì exit 0"
-assert_eq "$out" "" "chạm trần thì không emit"
+assert_rc "$rc" 0 "FIX 8: chạm trần vẫn exit 0"
+assert_contains "$out" "followup_message" "FIX 8: chạm trần phải phát một câu, không câm"
+assert_contains "$out" "trần" "câu báo nêu rõ lý do là đã chạm trần"
+lines=$(printf '%s\n' "$out" | grep -c . )
+assert_eq "$lines" "1" "câu báo trần cũng đúng MỘT dòng JSON"
+
+# Qua trần rồi (đã báo ở lượt trước) thì câm, không lặp lại câu báo mãi mãi.
+out=$(payload sess-a 6 | bash "$HOOK" 2>/dev/null); rc=$?
+assert_rc "$rc" 0 "qua trần rồi thì exit 0"
+assert_eq "$out" "" "qua trần rồi thì câm, không lặp lại câu báo trần vô hạn"
 
 # Park bị thay thì đứng im — kiểm bằng claim tường minh
 printf 'someone-else\n' > "$OFM_HOME/park-owner"
@@ -55,7 +93,7 @@ assert_rc $? 0 "claim tường minh vẫn phát bình thường khi không bị 
 rm -f "$OFM_HOME/park-owner"
 ( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p1.out" 2>/dev/null ) & p1=$!
 ( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p2.out" 2>/dev/null ) & p2=$!
-sleep 0.15
+wait_for_park_ready "$p1" "$p2"
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 wait "$p1" 2>/dev/null || true
 wait "$p2" 2>/dev/null || true
@@ -69,7 +107,7 @@ assert_eq "$emitters" "1" "hai park chồng nhau thì đúng một cái phát"
 : > "$OFM_FAKE_ORCA_STATE/queue/run_a"
 rm -f "$OFM_HOME/park-owner"
 ( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p3.out" 2>/dev/null ) & p3=$!
-sleep 0.15
+wait_for_park_ready "$p3"
 printf 'usurper\n' > "$OFM_HOME/park-owner"
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 wait "$p3" 2>/dev/null || true
