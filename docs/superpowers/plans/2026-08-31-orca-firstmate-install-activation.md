@@ -320,10 +320,24 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   ( ofm_lock_claim "race-$i" claude $$ > "$race/$i.out" 2>&1 ) &
 done
 wait
+# ĐÚNG MỘT, không phải "không quá một": kẻ `mv` thành công cuối cùng, theo định
+# nghĩa, không có ai ghi sau nó, nên lần đọc lại của nó phải thấy chính nó. Bản
+# trước assert <=1 và đo ra 0 — nhưng đó là va chạm tên tmp, không phải race.
 wins=$(grep -l '^claimed' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
-[ "$wins" -le 1 ]; assert_rc $? 0 "không quá một phiên tin mình giành được lock (thấy $wins)"
+assert_eq "$wins" "1" "đúng một phiên giành được lock trống"
+losers=$(grep -l '^refused' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$losers" "9" "chín phiên còn lại đều bị từ chối, không ai lỗi ghi"
 owners=$(sed -n 's/^session_id=//p' "$(ofm_lock_path)" | wc -l | tr -d ' ')
 assert_eq "$owners" "1" "lock cuối cùng chỉ ghi tên một phiên"
+
+# session_id chứa newline phá lock file, phải bị chặn ngay ở cửa
+rm -f "$(ofm_lock_path)"
+out=$(ofm_lock_claim "$(printf 'a\nb')" claude $$); rc=$?
+assert_rc "$rc" 1 "session_id chứa newline bị từ chối"
+assert_contains "$out" "newline" "nói rõ lý do"
+assert_eq "$(ofm_lock_get session_id)" "" "không ghi lock nào khi session_id xấu"
+out=$(ofm_lock_claim "" claude $$); rc=$?
+assert_rc "$rc" 1 "session_id rỗng bị từ chối"
 
 # Release chỉ có tác dụng với đúng chủ
 printf 'session_id=sess-e\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
@@ -389,9 +403,13 @@ _ofm_lock_write() {  # <session_id> <harness> <pid>
   local f tmp
   f=$(ofm_lock_path)
   mkdir -p "$(ofm_home)" || return 1
-  tmp="$f.$$"
-  printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || return 1
-  mv "$tmp" "$f"
+  # mktemp, KHÔNG "$f.$$": trong bash, `$$` bên trong subshell là pid của shell
+  # CHA, nên nhiều subshell cùng cha dùng chung một tên tmp, ghi đè lẫn nhau và
+  # làm `mv` thất bại. Test race chính là ca đó, và nó từng đo sai vì lỗi này —
+  # báo "không ai giành được lock" khi thực ra chỉ là va chạm tên file tạm.
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
 # Đọc LẠI lock sau khi ghi, và chỉ báo thành công khi ta thực sự là chủ.
@@ -412,7 +430,15 @@ _ofm_lock_confirm() {  # <session_id> <verb> <detail>
 }
 
 ofm_lock_claim() {  # <session_id> <harness> <pid>
-  local sid=$1 harness=$2 pid=$3 owner owner_pid owner_harness
+  local sid=$1 harness=$2 pid=$3 owner owner_pid
+  # Lock file là key=value theo dòng và đọc bằng sed, nên một session_id chứa
+  # newline sẽ ghi ra file mà chính ta không đọc lại được -> claimant đơn lẻ bị
+  # refused một cách bí ẩn. Chặn ngay ở cửa, nói rõ lý do.
+  case "$sid" in '') printf 'refused reason=empty_session_id\n'; return 1 ;; esac
+  if [ "$(printf '%s' "$sid" | tr -cd '\n' | wc -c | tr -d ' ')" != "0" ]; then
+    printf 'refused reason=session_id_has_newline\n'
+    return 1
+  fi
   owner=$(ofm_lock_get session_id)
   if [ -n "$owner" ]; then
     if [ "$owner" = "$sid" ]; then
