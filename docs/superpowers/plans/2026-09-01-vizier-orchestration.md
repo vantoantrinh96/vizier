@@ -1221,18 +1221,27 @@ git commit -m "feat: four-layer brief assembly"
 - Produces:
   - `vizier_msg_disposition <mode> <json_line>` → prints `<release|hold|none> <reason>`
   - `vizier_supervise_plan <default_mode> [<mode_map_file>]` → reads a batch of JSON lines on stdin, prints `PLAN <delivery_id> <disposition> <reason>` per message, then — **only if every message produced a disposition** — one `ACK <delivery_id>` line **per classified delivery**, in batch order.
-
-> **This interface changed during execution, twice.** As first written it took a
-> single `<mode>` for the whole batch, which let a mixed-mode batch release a
-> `no-mistakes` worker unchecked; the mode map fixed that while keeping the
-> all-or-nothing ack decision batch-wide. It also emitted one `ACK <last id>`
-> for the whole batch, which acked only the last delivery and left the rest to
-> be replayed on the next wake — re-releasing an already-released dispatch and
-> re-reporting the same PR. Both were found by review, not by the tests below.
-> **The task text and test snippets that follow are the original draft**, kept
-> as the historical record; `lib/vizier-supervise-lib.sh` and
-> `tests/supervise-lib.test.sh` are authoritative.
 - Produces no side effects: it never calls `orca`. The `supervise` skill executes the plan.
+
+> **This interface changed during execution, twice, and a third change followed
+> it downstream.** As first written it took a single `<mode>` for the whole
+> batch, which let a mixed-mode batch release a `no-mistakes` worker unchecked;
+> the mode map fixed that while keeping the all-or-nothing ack decision
+> batch-wide. It also emitted one `ACK <last id>` for the whole batch, which
+> acked only the last delivery and left the rest to be replayed on the next
+> wake — re-releasing an already-released dispatch and re-reporting the same
+> PR. A `reply` disposition was then added for `question` and `escalation`, so
+> a captain decision can no longer be acked away unanswered, and the skill
+> grew a `run_id` guard for a wake naming no open request. All were found by
+> review, not by the tests below.
+>
+> **Every task text and test snippet that follows is the original draft**, kept
+> as the historical record. The authoritative sources are
+> `lib/vizier-supervise-lib.sh` and `tests/supervise-lib.test.sh` for the
+> library, `skills/supervise/SKILL.md` for the procedure the model follows, and
+> `tests/loop.test.sh` for the end-to-end ack behaviour. Where this plan and
+> any of those four disagree, the shipped file is right and the plan is
+> history.
 
 **Why a plan and not an executor:** the spec's rule is "ack only after every message in the batch is processed". As prose in a skill that rule is forgettable. As a function that withholds the `ACK` line unless every message classified, it is enforced, and testable without a model.
 
@@ -1756,6 +1765,16 @@ git commit -m "feat: brief and dispatch skill"
 - Consumes: `vizier_supervise_plan` (Task 5); the wake hook from Plan 1, which is what causes this skill to run.
 - Produces: released or held terminals, one consolidated report to the captain.
 
+> **SUPERSEDED DRAFT — read `skills/supervise/SKILL.md`, not this.** The draft
+> below shows `## 4. Ack last` with a single `--ack` for the batch, no `reply`
+> disposition, and no `run_id` guard. All three are wrong in the shipped skill:
+> it acks once per `ACK` line, it has a `reply` disposition that a `question`
+> or `escalation` cannot be acked past, the batch is not acked until the one
+> consolidated report has actually put an escalation in front of the captain,
+> and §0 stops the skill when a wake's `run_id` names no open request.
+> `skills/supervise/SKILL.md` and its assertions in `tests/skills.test.sh` are
+> authoritative; this task text is the historical record of the first attempt.
+
 - [ ] **Step 1: Add the failing assertions**
 
 ```bash
@@ -2069,6 +2088,14 @@ git commit -m "feat: identity names the four coordination skills"
 - Produces: the regression that catches an integration break no single library test would.
 
 **Why this exists separately:** each library is correct in isolation. What no unit test covers is the *order* — that the request file is written before a worker starts, that the host recorded at open is the host passed at dispatch, and that a `hold` really does leave the terminal unreleased all the way through.
+
+> **SUPERSEDED DRAFT — read `tests/loop.test.sh`, not this.** The draft below
+> asserts a single `ACK d1` for the whole batch, which is the ack contract
+> Task 5's blockquote records as wrong: the shipped planner emits one `ACK`
+> line **per classified delivery**, and a `question` or `escalation` plans as
+> `reply` rather than being acked past. `tests/loop.test.sh` as it stands in
+> the repo is authoritative; this task text is the historical record of the
+> first attempt.
 
 - [ ] **Step 1: Write the test**
 
