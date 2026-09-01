@@ -13,7 +13,7 @@ case "$action" in
     dist=${2:?usage: install <dist_dir> [target_root]}
     target=${3:-$HOME/.claude/skills}
     [ -d "$dist" ] || { printf 'error: dist not found: %s\n' "$dist" >&2; exit 1; }
-    dest="$target/orca-firstmate"
+    dest="$target/vizier"
     mkdir -p "$target" || exit 1
     # Copy clean: delete the old copy first so install is idempotent in the
     # real sense, leaving no file behind from a previous version.
@@ -25,9 +25,9 @@ case "$action" in
     exit 0 ;;
   uninstall)
     target=${2:-$HOME/.claude/skills}
-    rm -rf "$target/orca-firstmate"
+    rm -rf "$target/vizier"
     printf 'removed claude adapter\n'; exit 0 ;;
   *)
-    printf 'usage: ofm-adapter-claude.sh detect|install <dist> [target]|uninstall [target]\n' >&2
+    printf 'usage: vizier-adapter-claude.sh detect|install <dist> [target]|uninstall [target]\n' >&2
     exit 2 ;;
 esac

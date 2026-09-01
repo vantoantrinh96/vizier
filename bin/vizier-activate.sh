@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Activates this session as the first mate. /firstmate calls exactly this
+# Activates this session as the first mate. /vizier calls exactly this
 # script. Prints one result line; rc 0 = this session is the first mate,
 # rc 1 = refused.
 set -u
@@ -13,7 +13,7 @@ set -u
 # then BOTH the wake hook AND the PostCompact hook would go silent forever
 # while the lock stayed held -- the whole product broken, silently. Better to
 # refuse activation.
-# Usage: ofm-activate.sh [harness] [session_id_override]
+# Usage: vizier-activate.sh [harness] [session_id_override]
 harness=${1:-claude}
 session_id=${2:-${CLAUDE_CODE_SESSION_ID:-}}
 
@@ -32,7 +32,7 @@ if [ -n "${CLAUDE_CODE_CHILD_SESSION:-}" ]; then
   printf 'refused reason=child_session\n' >&2
   printf 'this session is a child/subagent (CLAUDE_CODE_CHILD_SESSION is set): its session id\n' >&2
   printf 'does not match the payload received by the PARENT session Stop hook, so activating\n' >&2
-  printf 'here breaks completely, silently. Type /firstmate in the actual parent session, not here.\n' >&2
+  printf 'here breaks completely, silently. Type /vizier in the actual parent session, not here.\n' >&2
   exit 2
 fi
 
@@ -45,17 +45,17 @@ fi
 
 LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib not found\n' >&2; exit 2; }
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 
 # PID must be the long-lived HARNESS process, not the transient shell calling
 # this script. $PPID is the Bash tool's shell and can die right afterward,
 # which would make `kill -0` treat a first mate that's still alive as dead
 # and let another session steal the lock -- exactly the failure the liveness
 # rule calls worse than a stuck lock. Measured: CLAUDE_PID and
-# ofm_harness_pid give the same pid, so prefer the environment variable and
+# vizier_harness_pid give the same pid, so prefer the environment variable and
 # only then walk the process tree, and there is NO other fallback.
 pid=${CLAUDE_PID:-}
-case "$pid" in ''|*[!0-9]*) pid=$(ofm_harness_pid "$harness") ;; esac
+case "$pid" in ''|*[!0-9]*) pid=$(vizier_harness_pid "$harness") ;; esac
 case "$pid" in
   ''|*[!0-9]*)
     printf 'refused reason=no_harness_pid harness=%s\n' "$harness" >&2
@@ -65,20 +65,20 @@ esac
 # Only create the home AFTER every refusal check has passed: a refused
 # activation should not leave behind any directory that a later, successful
 # activation would find unfamiliar.
-mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
+mkdir -p "$(vizier_home)/requests" "$(vizier_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
 
-claim_out=$(ofm_lock_claim "$session_id" "$harness" "$pid"); claim_rc=$?
+claim_out=$(vizier_lock_claim "$session_id" "$harness" "$pid"); claim_rc=$?
 printf '%s\n' "$claim_out"
 # FIX 4 -- the previous owner might be a STUCK-BUT-ALIVE lock: `CLAUDE_PID`
 # is the pid of the `claude` process, not of the session, so after `/clear`
 # or a resume that pid is still alive but the session_id inside it has
-# changed -- `ofm_lock_claim` refuses forever because liveness never guesses
+# changed -- `vizier_lock_claim` refuses forever because liveness never guesses
 # dead (by design), and the command brief forbids the agent from deleting
 # the lock file itself. The captain needs to know the EXPLICIT way out right
 # where they run into it, not have to go dig through docs.
 case "$claim_out" in
   refused\ held_by=*)
-    printf 'if you are sure the session above is done, remove the lock with: orca-firstmate unlock\n' >&2
+    printf 'if you are sure the session above is done, remove the lock with: vizier unlock\n' >&2
     ;;
 esac
 exit "$claim_rc"

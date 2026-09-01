@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# orca-firstmate -- install and diagnostics CLI.
+# vizier -- install and diagnostics CLI.
 #
 # HARD RULE: this script runs ONLY at install time and diagnostic time. No
 # runtime path may call it. After install, the first mate talks directly to
@@ -10,7 +10,7 @@ set -u
 # PATH, so that is the only real invocation path -- and in that case
 # `dirname "$0"` points at the bin directory on PATH, not at where the real
 # script lives. The consequence has been reproduced: wrong REPO_DIR -> lib
-# source fails -> `ofm_home` doesn't exist -> `$(ofm_home)` is empty -> every
+# source fails -> `vizier_home` doesn't exist -> `$(vizier_home)` is empty -> every
 # path derived from it points somewhere wrong, and the anti-self-destruct
 # guard ends up operating on the caller's current directory instead. Walk the
 # whole link chain BEFORE deriving any path from it.
@@ -39,15 +39,15 @@ REPO_DIR="$(cd "$SELF_DIR/.." 2>/dev/null && pwd)" || {
 
 # A FAILED SOURCE MUST BE FATAL. Bash only prints a warning and keeps going,
 # and `set -u` does not catch a missing function -- that is exactly how a
-# missing `ofm_home` turns into an empty path and the guard ends up pointed
+# missing `vizier_home` turns into an empty path and the guard ends up pointed
 # at the wrong place.
-[ -r "$REPO_DIR/lib/ofm-home.sh" ] || {
-  printf 'error: could not read %s/lib/ofm-home.sh\n' "$REPO_DIR" >&2; exit 2; }
+[ -r "$REPO_DIR/lib/vizier-home.sh" ] || {
+  printf 'error: could not read %s/lib/vizier-home.sh\n' "$REPO_DIR" >&2; exit 2; }
 # shellcheck source=/dev/null
-. "$REPO_DIR/lib/ofm-home.sh"
+. "$REPO_DIR/lib/vizier-home.sh"
 
-OFM_HOME_DIR=$(ofm_home)
-[ -n "$OFM_HOME_DIR" ] || { printf 'error: home is empty\n' >&2; exit 2; }
+VIZIER_HOME_DIR=$(vizier_home)
+[ -n "$VIZIER_HOME_DIR" ] || { printf 'error: home is empty\n' >&2; exit 2; }
 
 # Canonicalize a path ONLY when the directory truly exists. `cd ""` is a
 # silent no-op in bash and returns the current directory -- exactly what
@@ -57,9 +57,9 @@ _canon() {  # <path> -> canonical path if it exists, empty if not
   (cd "$1" 2>/dev/null && pwd)
 }
 
-DIST="$OFM_HOME_DIR/dist"
-CLAUDE_SKILLS="${OFM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
-CURSOR_HOOKS="${OFM_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
+DIST="$VIZIER_HOME_DIR/dist"
+CLAUDE_SKILLS="${VIZIER_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+CURSOR_HOOKS="${VIZIER_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
 
 _sync_dist() {
   # REFUSE when running from the installed copy itself: _sync_dist deletes
@@ -75,7 +75,7 @@ _sync_dist() {
     case "$REPO_DIR/" in
       "$dist_canon"/*|"$dist_canon/")
         printf 'refused: running from the installed copy (%s).\n' "$REPO_DIR" >&2
-        printf '  run install/update from the source checkout: %s/src/bin/orca-firstmate install\n' "$OFM_HOME_DIR" >&2
+        printf '  run install/update from the source checkout: %s/src/bin/vizier install\n' "$VIZIER_HOME_DIR" >&2
         return 1 ;;
     esac
   fi
@@ -121,19 +121,19 @@ cmd_doctor() {
       problems=$((problems + 1))
     fi
   fi
-  if [ -z "${OFM_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+  if [ -z "${VIZIER_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
     printf 'NOT_READY: gh is not logged in (fix: gh auth login)\n'
     problems=$((problems + 1))
   fi
   # FIX 6 -- doctor USED TO ONLY CHECK THE TOOLCHAIN, and never asked "is
   # anything actually installed". A machine that ran doctor+install long ago,
   # whose Claude copy was later removed by hand (or was never installed),
-  # still reports "ok" here while /firstmate doesn't exist. This is a NOTE,
+  # still reports "ok" here while /vizier doesn't exist. This is a NOTE,
   # NOT a problem: it does not add to `problems`, does not pull rc down to
   # 1 -- a machine that uses only ONE of the two harnesses is valid (report,
   # don't refuse).
-  if [ ! -d "$CLAUDE_SKILLS/orca-firstmate" ]; then
-    printf 'NOTE: Claude adapter not installed at %s (fix: orca-firstmate install --harness claude)\n' "$CLAUDE_SKILLS"
+  if [ ! -d "$CLAUDE_SKILLS/vizier" ]; then
+    printf 'NOTE: Claude adapter not installed at %s (fix: vizier install --harness claude)\n' "$CLAUDE_SKILLS"
   fi
   # The Cursor adapter's `verify` used to be dead code: nothing called it
   # outside of tests. Call it here when cursor-agent IS PRESENT on the
@@ -145,8 +145,8 @@ cmd_doctor() {
   # and the verify logic only compares the expected $DIST path as a STRING,
   # so $DIST doesn't actually need to be present on disk.
   if command -v cursor-agent >/dev/null 2>&1; then
-    if ! bash "$REPO_DIR/bin/ofm-adapter-cursor.sh" verify "$DIST" "$CURSOR_HOOKS" >/dev/null 2>&1; then
-      printf 'NOTE: cursor-agent is on this machine but the Cursor entry at %s is missing or malformed (fix: orca-firstmate install --harness cursor)\n' "$CURSOR_HOOKS"
+    if ! bash "$REPO_DIR/bin/vizier-adapter-cursor.sh" verify "$DIST" "$CURSOR_HOOKS" >/dev/null 2>&1; then
+      printf 'NOTE: cursor-agent is on this machine but the Cursor entry at %s is missing or malformed (fix: vizier install --harness cursor)\n' "$CURSOR_HOOKS"
     fi
   fi
   if [ "$problems" -eq 0 ]; then
@@ -157,7 +157,7 @@ cmd_doctor() {
 }
 
 # FIX 9 -- A BARE `install` MUST NOT TOUCH CURSOR. The Cursor half has NO
-# activation path yet: `ofm-activate.sh` reads CLAUDE_CODE_SESSION_ID, a
+# activation path yet: `vizier-activate.sh` reads CLAUDE_CODE_SESSION_ID, a
 # variable only Claude Code has, so a Cursor entry installed "by default
 # alongside it" would just read the lock and exit 0 forever -- NO FUNCTION --
 # while still taking on the distro's single biggest risk: writing to
@@ -183,26 +183,26 @@ cmd_install() {
     # has no `claude`: gate on detect, same as before. An explicit
     # `--harness claude` still forces it, so the captain sees the adapter's
     # real error instead of it being swallowed by detect.
-    if bash "$DIST/bin/ofm-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$explicit" -eq 1 ]; then
-      bash "$DIST/bin/ofm-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
+    if bash "$DIST/bin/vizier-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$explicit" -eq 1 ]; then
+      bash "$DIST/bin/vizier-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
       did=$((did + 1))
       [ "$explicit" -eq 1 ] || \
-        printf 'note: skipping Cursor -- a bare install only installs Claude. To install Cursor: orca-firstmate install --harness cursor\n'
+        printf 'note: skipping Cursor -- a bare install only installs Claude. To install Cursor: vizier install --harness cursor\n'
     fi
   fi
   if [ "$want" = cursor ]; then
-    bash "$DIST/bin/ofm-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
+    bash "$DIST/bin/vizier-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
     did=$((did + 1))
   fi
   [ "$did" -gt 0 ] || { printf 'no supported harness found on this machine\n' >&2; return 1; }
-  printf 'done. Open a new session and type /firstmate.\n'
+  printf 'done. Open a new session and type /vizier.\n'
 }
 
 cmd_unlock() {
   # FIX 4 -- THERE WAS NO WAY OUT OF A STUCK-BUT-ALIVE LOCK. `CLAUDE_PID` is
   # the pid of the `claude` PROCESS, not of the session: after `/clear` or a
   # resume, that pid is still alive but the session_id inside it has
-  # changed, so `ofm_lock_matches` never matches again and `ofm_lock_claim`
+  # changed, so `vizier_lock_matches` never matches again and `vizier_lock_claim`
   # refuses forever (by design: "ONLY liveness decides", never guessing
   # dead). The command brief forbids the agent from deleting the lock file
   # itself. So there must be ONE explicit exit door, called by the captain
@@ -211,13 +211,13 @@ cmd_unlock() {
   # asked. No parameters needed: always clears the current lock, regardless
   # of who holds it.
   local holder pid
-  holder=$(ofm_lock_get session_id)
+  holder=$(vizier_lock_get session_id)
   if [ -z "$holder" ]; then
     printf 'no lock is currently held\n'
     return 0
   fi
-  pid=$(ofm_lock_get pid)
-  rm -f "$(ofm_lock_path)"
+  pid=$(vizier_lock_get pid)
+  rm -f "$(vizier_lock_path)"
   printf 'lock removed: session_id=%s pid=%s\n' "$holder" "$pid"
 }
 
@@ -225,17 +225,17 @@ cmd_update() {
   # FIX 7 -- `update` USED TO BE JUST AN ALIAS FOR `install`: it re-copied
   # exactly the payload already present in the current SRC checkout and
   # reported "done", never pulling anything new from the remote at all. The
-  # captain types `orca-firstmate update` believing they're getting the
+  # captain types `vizier update` believing they're getting the
   # latest, but they're actually just reinstalling the exact same old copy --
   # a silent wrong, the worst kind of bug. `git fetch` + `reset --hard
   # origin/HEAD` BEFORE `_sync_dist` (inside cmd_install) copies from
   # REPO_DIR: run through the bootstrap symlink, REPO_DIR here IS
-  # `$OFM_HOME_DIR/src` (see the "$0 CAN BE A SYMLINK" note above), so
+  # `$VIZIER_HOME_DIR/src` (see the "$0 CAN BE A SYMLINK" note above), so
   # resetting first and syncing after pulls the real new copy into dist.
   # Same recipe install.sh (POSIX sh) uses at bootstrap time -- no inventing
   # a different way for this CLI.
   local src
-  src="$OFM_HOME_DIR/src"
+  src="$VIZIER_HOME_DIR/src"
   if [ -d "$src/.git" ]; then
     git -C "$src" fetch --quiet origin || { printf 'error: fetch failed at %s\n' "$src" >&2; return 1; }
     # origin/HEAD may not be set yet (an old clone) -- ask the remote again,
@@ -250,29 +250,29 @@ cmd_update() {
 }
 
 cmd_uninstall() {
-  [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
-  [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
+  [ -d "$DIST" ] && bash "$DIST/bin/vizier-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
+  [ -d "$DIST" ] && bash "$DIST/bin/vizier-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
   rm -rf "$DIST"
   # Also clean up whatever install.sh created, otherwise the captain finishes
   # uninstalling and still has a dead command on PATH pointing at an orphaned
   # clone.
-  local bin_link="${OFM_BIN_DIR:-$HOME/.local/bin}/orca-firstmate"
+  local bin_link="${VIZIER_BIN_DIR:-$HOME/.local/bin}/vizier"
   [ -L "$bin_link" ] && rm -f "$bin_link"
   # DO NOT delete the directory currently holding this very script: bash
   # reads a script in chunks, and deleting it mid-run is undefined behavior.
   # Print the command for the captain instead.
   local src src_canon
-  src="$OFM_HOME_DIR/src"
+  src="$VIZIER_HOME_DIR/src"
   src_canon=$(_canon "$src")
   case "$REPO_DIR/" in
     "${src_canon:-$src}"/*|"${src_canon:-$src}/")
-      printf 'removed the adapter, payload, and symlink. requests/ and projects/ are kept at %s\n' "$(ofm_home)"
+      printf 'removed the adapter, payload, and symlink. requests/ and projects/ are kept at %s\n' "$(vizier_home)"
       printf 'the source checkout remains (cannot self-delete because this command is running from it):\n'
       printf '  rm -rf %s\n' "$src"
       return 0 ;;
   esac
   rm -rf "$src"
-  printf 'removed the adapter, payload, symlink, and clone. requests/ and projects/ are kept at %s\n' "$(ofm_home)"
+  printf 'removed the adapter, payload, symlink, and clone. requests/ and projects/ are kept at %s\n' "$(vizier_home)"
 }
 
 case "${1:-}" in
@@ -281,5 +281,5 @@ case "${1:-}" in
   update)    shift; cmd_update "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
   unlock)    shift; cmd_unlock "$@" ;;
-  *) printf 'usage: orca-firstmate install [--harness claude|cursor]|doctor|update|uninstall|unlock\n' >&2; exit 2 ;;
+  *) printf 'usage: vizier install [--harness claude|cursor]|doctor|update|uninstall|unlock\n' >&2; exit 2 ;;
 esac

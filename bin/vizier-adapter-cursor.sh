@@ -25,9 +25,9 @@ MARKER="wake-cursor.sh"   # the file name is the marker: no other tool has a fil
 # project.
 LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib not found\n' >&2; exit 2; }
 # shellcheck source=/dev/null
-. "$LIB/ofm-merge-lib.sh"
+. "$LIB/vizier-merge-lib.sh"
 
-_home() { printf '%s' "${OFM_HOME:-$HOME/.orca-firstmate}"; }
+_home() { printf '%s' "${VIZIER_HOME:-$HOME/.vizier}"; }
 _default_hooks() { printf '%s/.cursor/hooks.json' "$HOME"; }
 
 # Follow the symlink before writing. `mv tmp "$H"` onto a symlink would
@@ -81,7 +81,7 @@ _count_mine() {  # <hooks_json>
 # Apply our entry onto the current file. Used for both the first merge and
 # a retry.
 _merge_ours() {  # <hooks_json> <cmd>
-  local H=$1 cmd=$2 tmp="$1.ofm.$$"
+  local H=$1 cmd=$2 tmp="$1.vizier.$$"
   jq --arg cmd "$cmd" --arg m "$MARKER" '
     .version = (.version // 1)
     | .hooks = (.hooks // {})
@@ -142,9 +142,9 @@ case "$action" in
     # from the current state (which already contains their change), and if
     # it's still off, report loudly and point the captain at the backup to
     # decide for themselves.
-    if ! ofm_no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+    if ! vizier_no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
       # FIX 3 -- THIS USED TO BE A COMPARISON WITH ITSELF. The old version
-      # called `ofm_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" ...`
+      # called `vizier_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" ...`
       # -- both `$(_count_others "$H")` calls read the file RIGHT AFTER the
       # re-merge had just finished writing, so they always produced the same
       # number: the check could never detect a lost update on the second
@@ -155,7 +155,7 @@ case "$action" in
       # finishes.
       others_before_retry=$(_count_others "$H")
       _merge_ours "$H" "$cmd" || { printf 'refused: retry merge failed\n' >&2; exit 1; }
-      if ! ofm_no_lost_update "$others_before_retry" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+      if ! vizier_no_lost_update "$others_before_retry" "$(_count_others "$H")" "$(_count_mine "$H")"; then
         printf 'refused: another process wrote %s at the same time and we could not reconcile it.\n' "$H" >&2
         printf '  NOT auto-restoring, because the backup is older than their change. Backup at: %s\n' "${backup:-<none>}" >&2
         printf '  Please inspect the file and rerun install.\n' >&2
@@ -167,12 +167,12 @@ case "$action" in
     printf 'note: Cursor requires trust per workspace directory, so every new directory needs one trust step.\n'
     # FIX 9 -- say it straight AT INSTALL TIME, don't let the captain discover
     # it three days later: Cursor's wake now runs the full cycle, but
-    # ACTIVATION (`/firstmate`) does not yet. `ofm-activate.sh` reads
+    # ACTIVATION (`/vizier`) does not yet. `vizier-activate.sh` reads
     # CLAUDE_CODE_SESSION_ID, a variable only Claude Code has; Cursor has no
     # equivalent way to get its own session id. Installing this entry only
     # gets the hook ready for when the activation path arrives, it is not
     # ready to use right now.
-    printf 'note: Cursor has NO activation path yet -- /firstmate does not work on Cursor, this entry is just standing by.\n'
+    printf 'note: Cursor has NO activation path yet -- /vizier does not work on Cursor, this entry is just standing by.\n'
     exit 0 ;;
 
   uninstall)
@@ -182,7 +182,7 @@ case "$action" in
     _assert_stop_shape "$H" || exit 1
     _backup "$H" >/dev/null || { printf 'refused: could not write a backup\n' >&2; exit 1; }
     others_before=$(_count_others "$H")
-    tmp="$H.ofm.$$"
+    tmp="$H.vizier.$$"
     jq --arg m "$MARKER" '
       .hooks.stop = ((.hooks.stop // []) | map(select(
          (((.command? | type) == "string") and (.command | contains($m))) | not)))
@@ -212,6 +212,6 @@ case "$action" in
     exit 0 ;;
 
   *)
-    printf 'usage: ofm-adapter-cursor.sh detect|install <dist> [hooks_json]|uninstall [hooks_json]|verify <dist> [hooks_json]\n' >&2
+    printf 'usage: vizier-adapter-cursor.sh detect|install <dist> [hooks_json]|uninstall [hooks_json]|verify <dist> [hooks_json]\n' >&2
     exit 2 ;;
 esac
