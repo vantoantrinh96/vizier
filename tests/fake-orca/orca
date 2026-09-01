@@ -1,54 +1,174 @@
 #!/usr/bin/env bash
 # Fake orca for tests. Logs every call, serves queued messages, and NEVER
-# touches the network or the real app. Implements only the surface the tests
-# need, nothing more.
+# touches the network or the real app.
+#
+# SHAPES ARE COPIED, NOT INVENTED. Every envelope and field name below was
+# taken from a real Orca 1.4.193 response (captured 2026-09-01 and recorded in
+# the plan's "Verified Orca CLI surface" section). Plan 1 shipped a `doctor`
+# bug because a fixture and its parser were both built from an imagined shape,
+# so the fixture agreed with the bug. If you need a field that is not here,
+# capture it from the real app first -- do not add it from memory.
+#
+# UNKNOWN COMMANDS EXIT 64, NOT 0. A fake that silently succeeds on a command
+# it does not implement lets a caller ship a typo'd flag and still go green.
 set -u
 STATE="${VIZIER_FAKE_ORCA_STATE:?fake-orca needs VIZIER_FAKE_ORCA_STATE}"
 printf '%s\n' "$*" >> "$STATE/calls.log"
 
-run_id=""
-wait_mode=0
-timeout_ms=0
+# --- argument scan --------------------------------------------------------
+run_id=""; timeout_ms=0; wait_mode=0; peek=0; ack=""; types=""
+dispatch=""; task=""; project=""; host=""; environment=""; objective=""
+spec=""; msg_id=""; on_host=""
 prev=""
 for arg in "$@"; do
   case "$prev" in
-    --run) run_id=$arg ;;
-    --timeout-ms) timeout_ms=$arg ;;
+    --run)         run_id=$arg ;;
+    --timeout-ms)  timeout_ms=$arg ;;
+    --ack)         ack=$arg ;;
+    --types)       types=$arg ;;
+    --dispatch)    dispatch=$arg ;;
+    --task)        task=$arg ;;
+    --project)     project=$arg ;;
+    --host)        host=$arg ;;
+    --environment) environment=$arg ;;
+    --objective)   objective=$arg ;;
+    --spec)        spec=$arg ;;
+    --id)          msg_id=$arg ;;
+    --on)          on_host=$arg ;;
   esac
   [ "$arg" = "--wait" ] && wait_mode=1
+  [ "$arg" = "--peek" ] && peek=1
   prev=$arg
 done
 
+envelope() {  # <result_json>
+  jq -cn --argjson r "$1" '{id:"fake",ok:true,result:$r,_meta:{runtimeId:"fake-runtime"}}'
+}
+
+next_id() {  # <counter_name> <prefix> -- prints "<prefix>-<N>"
+  f="$STATE/counter.$1"
+  n=$(cat "$f" 2>/dev/null || printf '0'); n=$((n+1))
+  printf '%s' "$n" > "$f"
+  printf '%s-%s' "$2" "$n"
+}
+
 case "$1 ${2:-}" in
+
+  "status"|"status --json"|"status --environment"*)
+    # Per-host health. The local host is addressed by OMITTING --environment,
+    # which is why the empty key is spelled _local rather than "".
+    f="$STATE/status/${environment:-_local}"
+    if [ -f "$f" ]; then rt=$(cat "$f")
+    else rt='{"state":"ready","reachable":true,"runtimeId":"00000000-0000-0000-0000-000000000000","appVersion":"0.0.0","capabilities":["runtime.status.compat.v1","runtime.environments.v1","orchestration.contract.v1"]}'
+    fi
+    # Built in a variable first, then substituted: bash miscounts braces in
+    # ${VAR:-literal{with}braces} and silently corrupts nested JSON.
+    default_result=$(jq -cn --argjson rt "$rt" \
+      '{target:{kind:"local"},app:{running:true,pid:0,desktopWindowStatus:"available"},runtime:$rt,graph:{state:"ready"}}')
+    result="${VIZIER_FAKE_ORCA_STATUS_RESULT:-$default_result}"
+    envelope "$result"
+    exit 0
+    ;;
+
+  "host list")
+    hosts=$(jq -cs '.' "$STATE/hosts" 2>/dev/null || printf '[]')
+    envelope "$(jq -cn --argjson h "${hosts:-[]}" '{hosts:$h}')"
+    exit 0
+    ;;
+
+  "project setups")
+    all=$(jq -cs '.' "$STATE/setups" 2>/dev/null || printf '[]')
+    envelope "$(jq -cn --argjson s "${all:-[]}" --arg p "$project" --arg h "$host" \
+      '{setups: ($s | map(select(($p=="" or .projectId==$p) and ($h=="" or .hostId==$h))))}')"
+    exit 0
+    ;;
+
+  "worktree ps")
+    envelope '{"totalCount":0,"truncated":false,"worktrees":[]}'
+    exit 0
+    ;;
+
+  "orchestration run-create")
+    id=$(next_id run run)
+    envelope "$(jq -cn --arg id "$id" --arg o "$objective" '{run:{id:$id,objective:$o}}')"
+    exit 0
+    ;;
+
+  "orchestration task-create")
+    id=$(next_id task task)
+    printf '%s' "$spec" > "$STATE/spec.$id"
+    envelope "$(jq -cn --arg id "$id" --arg r "$run_id" '{task:{id:$id,run_id:$r}}')"
+    exit 0
+    ;;
+
+  "orchestration worker-start")
+    id=$(next_id dispatch dispatch)
+    n=${id#dispatch-}
+    mkdir -p "$STATE/workers"
+    [ -f "$STATE/workers/$id" ] || printf 'term-%s\n' "$n" > "$STATE/workers/$id"
+    envelope "$(jq -cn --arg id "$id" --arg t "$task" --arg on "$on_host" \
+      '{dispatch:{id:$id,task_id:$t,on:$on,state:"running"}}')"
+    exit 0
+    ;;
+
+  "orchestration worker-show")
+    h=$(cat "$STATE/workers/$dispatch" 2>/dev/null || printf '')
+    envelope "$(jq -cn --arg d "$dispatch" --arg h "$h" \
+      '{worker:{dispatch_id:$d,agent_terminal_handle:$h,state:"settled"}}')"
+    exit 0
+    ;;
+
+  "orchestration worker-release")
+    st="${VIZIER_FAKE_ORCA_RELEASE_STATE:-released}"
+    envelope "$(jq -cn --arg d "$dispatch" --arg s "$st" '{release:{dispatch_id:$d,state:$s}}')"
+    exit 0
+    ;;
+
+  "orchestration worker-list")
+    envelope '{"workers":[]}'
+    exit 0
+    ;;
+
   "orchestration check")
     q="$STATE/queue/${run_id:-_none}"
-    if [ -s "$q" ]; then
-      cat "$q"
-      exit 0
+    if [ -n "$ack" ]; then
+      # Ack removes exactly the acked delivery, nothing else. A fake that
+      # truncated the queue would hide the real bug this guards: acking a
+      # batch before every message in it has been processed.
+      if [ -f "$q" ]; then
+        jq -c --arg a "$ack" 'select(.delivery_id != $a)' "$q" > "$q.tmp" 2>/dev/null || : > "$q.tmp"
+        mv "$q.tmp" "$q"
+      fi
     fi
+    emit() {
+      [ -s "$q" ] || return 1
+      if [ -n "$types" ]; then
+        jq -c --arg t "$types" 'select(($t | split(",")) as $ts | .type as $x | $ts | index($x))' "$q"
+      else
+        cat "$q"
+      fi
+      # --peek never consumes. Without --peek the messages stay too: real
+      # Orca replays until --ack, and tests depend on that replay.
+      return 0
+    }
+    if emit | grep -q .; then emit; exit 0; fi
     if [ "$wait_mode" = 1 ]; then
-      # Simulate waiting: sleep up to the timeout then return empty, exactly
-      # like a real timeout. Tests use a very small timeout.
       slept=0
       while [ "$slept" -lt "${timeout_ms:-0}" ]; do
-        [ -s "$q" ] && { cat "$q"; exit 0; }
-        sleep 0.05
-        slept=$((slept+50))
+        if emit | grep -q .; then emit; exit 0; fi
+        sleep 0.05; slept=$((slept+50))
       done
     fi
     exit 0
     ;;
-  "status --json"|"status")
-    # Shape verified against the LIVE Orca app: reachable/state/capabilities
-    # live under result.runtime, not directly under result. Values below are
-    # placeholders (this repo is public) -- never the real runtimeId or pid.
-    # NOTE: the default is built in a plain variable first, then substituted
-    # with a simple ${VAR:-$other_var} -- bash's brace matching for
-    # ${VAR:-literal-with-braces} miscounts literal { / } inside the default
-    # word, which silently corrupts JSON containing nested objects.
-    default_status='{"id":"local-status","ok":true,"result":{"target":{"kind":"local"},"app":{"running":true,"pid":0,"desktopWindowStatus":"available"},"runtime":{"state":"ready","reachable":true,"runtimeId":"00000000-0000-0000-0000-000000000000","appVersion":"0.0.0","capabilities":["runtime.status.compat.v1","runtime.environments.v1","orchestration.contract.v1"]}}}'
-    printf '%s\n' "${VIZIER_FAKE_ORCA_STATUS:-$default_status}"
+
+  "orchestration send"|"orchestration reply"|"orchestration ask")
+    id=$(next_id msg msg)
+    envelope "$(jq -cn --arg id "$id" --arg r "$msg_id" '{message:{id:$id,in_reply_to:$r}}')"
     exit 0
     ;;
+
 esac
-exit 0
+
+printf 'fake-orca: unimplemented command: %s\n' "$*" >&2
+exit 64

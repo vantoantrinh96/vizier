@@ -51,6 +51,43 @@ fake_orca_queue() {  # <run_id> <json_line>
 
 fake_orca_calls() { cat "$VIZIER_FAKE_ORCA_STATE/calls.log" 2>/dev/null; }
 
+# --- fake-orca seeding ----------------------------------------------------
+# Each seeder appends one JSON line to a state file; fake-orca assembles the
+# envelope at read time. Line-per-record keeps the seeders append-only, so a
+# test can add a host mid-run without rewriting the whole document.
+
+fake_orca_seed_host() {  # <id> <name> <kind>
+  case "$3" in
+    local)       sel="--host $1" ;;
+    environment) sel="--environment $2" ;;
+    *) printf 'fake_orca_seed_host: unknown kind %s\n' "$3" >&2; return 2 ;;
+  esac
+  jq -cn --arg id "$1" --arg name "$2" --arg kind "$3" --arg sel "$sel" \
+    '{id:$id,name:$name,kind:$kind,selector:$sel}' \
+    >> "$VIZIER_FAKE_ORCA_STATE/hosts"
+}
+
+fake_orca_seed_setup() {  # <projectId> <hostId> <setupState>
+  jq -cn --arg p "$1" --arg h "$2" --arg s "$3" \
+    '{id:("setup-"+$h),projectId:$p,hostId:$h,setupState:$s,kind:"git",
+      setupMethod:"imported-existing-folder",displayName:"seeded",path:"/seeded"}' \
+    >> "$VIZIER_FAKE_ORCA_STATE/setups"
+}
+
+fake_orca_set_status() {  # <hostName|""> <state> <reachable>
+  # "" is the local host, which is addressed by omitting --environment.
+  f="$VIZIER_FAKE_ORCA_STATE/status/${1:-_local}"
+  mkdir -p "$VIZIER_FAKE_ORCA_STATE/status"
+  jq -cn --arg s "$2" --argjson r "$3" \
+    '{state:$s,reachable:$r,runtimeId:"00000000-0000-0000-0000-000000000000",
+      appVersion:"0.0.0",capabilities:["orchestration.contract.v1"]}' > "$f"
+}
+
+fake_orca_seed_worker() {  # <dispatch_id> <terminal_handle>
+  mkdir -p "$VIZIER_FAKE_ORCA_STATE/workers"
+  printf '%s\n' "$2" > "$VIZIER_FAKE_ORCA_STATE/workers/$1"
+}
+
 _vizier_fail() {
   VIZIER_TEST_FAILURES=$((VIZIER_TEST_FAILURES+1))
   printf 'FAIL: %s\n  got:  %s\n  want: %s\n' "$3" "$1" "$2" >&2
