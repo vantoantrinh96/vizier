@@ -58,5 +58,18 @@ has $f "one" "the captain gets one consolidated report"
 has $f "delivery" "questions route through the delivery policy"
 has $f "worker-read" "a quiet worker is diagnosed, not guessed at"
 
+# --- delivery -----------------------------------------------------------
+f=skills/delivery/SKILL.md
+assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "delivery skill exists"
+has $f "never call" "the first mate never drives a worker's run"
+has $f "axi respond" "the command it must not run is named"
+has $f "One precise decision" "the reply is a single decision"
+has $f "expand the contract" "the escalation test is stated"
+has $f "not authority" "a reviewer label is evidence, not authority"
+has $f "security" "security-sensitive findings escalate"
+has $f "orca orchestration reply --id" "the exact reply command"
+has $f "smallest option" "escalations offer the smallest non-expanding option"
+has $f "daemon" "the shared-daemon rule is restated"
+
 vizier_test_teardown
 vizier_test_report
