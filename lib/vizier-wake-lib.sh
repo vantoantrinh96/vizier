@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Scans open requests and waits on the mailbox of several Runs at once.
-# Requires lib/ofm-home.sh to be sourced first.
+# Requires lib/vizier-home.sh to be sourced first.
 #
 # WHY WAIT IN PARALLEL: `orca orchestration check` is per-Run (`--run <id>`),
 # and the spec allows several requests to be open at once. Waiting
@@ -11,18 +11,18 @@
 # ALWAYS PASS --run: a first-mate session is not an Orca terminal, so there is
 # no terminal-bound Run to fall back on.
 
-OFM_WAKE_TYPES="${OFM_WAKE_TYPES:-worker_done,escalation,question}"
+VIZIER_WAKE_TYPES="${VIZIER_WAKE_TYPES:-worker_done,escalation,question}"
 
 # Poll cadence. Production keeps it at 1000ms: at an eight-hour timeout that's
 # 28,500 loops instead of 285,000, and the extra sub-second wake latency is not
 # something a human notices. Tests lower it to 50ms for speed.
-OFM_WAKE_POLL_MS="${OFM_WAKE_POLL_MS:-1000}"
+VIZIER_WAKE_POLL_MS="${VIZIER_WAKE_POLL_MS:-1000}"
 
 # Return only the frontmatter: the block between the first `---` line and the
 # second. A "status:" that happens to appear in the prose body must never get
 # to decide anything, and `tr -d '\r'` keeps a CRLF file from silently being
 # treated as not-open.
-_ofm_frontmatter() {  # <file>
+_vizier_frontmatter() {  # <file>
   awk '
     { gsub(/\r$/, "") }
     NR==1 && $0 != "---" { exit }
@@ -31,13 +31,13 @@ _ofm_frontmatter() {  # <file>
   ' "$1" 2>/dev/null | tr -d '\r'
 }
 
-ofm_open_run_ids() {
+vizier_open_run_ids() {
   local dir f fm status run
-  dir=$(ofm_requests_dir)
+  dir=$(vizier_requests_dir)
   [ -d "$dir" ] || return 0
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
-    fm=$(_ofm_frontmatter "$f")
+    fm=$(_vizier_frontmatter "$f")
     [ -n "$fm" ] || continue
     status=$(printf '%s\n' "$fm" | sed -n 's/^status:[[:space:]]*//p' | head -1)
     [ "$status" = "open" ] || continue
@@ -46,7 +46,7 @@ ofm_open_run_ids() {
   done
 }
 
-ofm_summarize() {  # <json_line>
+vizier_summarize() {  # <json_line>
   local line=$1 type run detail
   type=$(printf '%s' "$line" | jq -r '.type // "message"' 2>/dev/null)
   run=$(printf '%s' "$line" | jq -r '.run_id // ""' 2>/dev/null)
@@ -60,12 +60,12 @@ ofm_summarize() {  # <json_line>
 
 # Read run ids from stdin, wait up to <timeout_ms>, print one summary line or
 # empty.
-ofm_wait_any_run() {  # <timeout_ms>
+vizier_wait_any_run() {  # <timeout_ms>
   # The whole function body lives in a subshell so `trap` belongs only to it,
   # not to the caller's shell.
   (
     local timeout_ms=$1 tmp run i=0 line poll_s deadline f
-    tmp=$(mktemp -d "${TMPDIR:-/tmp}/ofm-wake.XXXXXX") || return 0
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/vizier-wake.XXXXXX") || return 0
     # TRAP BEFORE SPAWNING ANYTHING. If this process is killed from the
     # outside -- the harness cuts the hook, the captain closes the session, the
     # machine sleeps -- every child `orca --wait` must die with it. Without the
@@ -81,8 +81,8 @@ ofm_wait_any_run() {  # <timeout_ms>
     # to block. The signal branch must therefore `exit` explicitly. Cleaning up
     # twice is harmless: kill against an already-dead pid and rm -rf against an
     # already-gone directory are both no-ops.
-    trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT
-    trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"; exit 0' INT TERM HUP
+    trap '_vizier_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT
+    trap '_vizier_wake_kill_all "$tmp"; rm -rf "$tmp"; exit 0' INT TERM HUP
     # NEVER `set -m` here. Bash does not create a new process group for a
     # background job, so every child `orca` stays in the process group the
     # HARNESS owns -- and that is exactly what lets the harness ending the hook
@@ -98,7 +98,7 @@ ofm_wait_any_run() {  # <timeout_ms>
       (
         # FIX 11 -- `</dev/null` IS MANDATORY. This `while read` loop reads run
         # ids from the function's OWN stdin (caller `printf ... |
-        # ofm_wait_any_run`), and a background process doesn't get its own fd
+        # vizier_wait_any_run`), and a background process doesn't get its own fd
         # 0 -- it INHERITS the loop's stdin whole unless explicitly redirected.
         # If `orca` (a real process, not a builtin) reads stdin for any reason
         # at all -- a bug, logging, or some future behavior we don't control --
@@ -108,7 +108,7 @@ ofm_wait_any_run() {  # <timeout_ms>
         # entirely by pointing the child's fd 0 at /dev/null, so it never
         # touches the loop's pipe by even one byte.
         orca orchestration check --wait --peek --run "$run" \
-          --types "$OFM_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
+          --types "$VIZIER_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
           2>/dev/null > "$tmp/$i.out" < /dev/null
       ) &
       printf '%s\n' "$!" >> "$tmp/pids"
@@ -119,7 +119,7 @@ ofm_wait_any_run() {  # <timeout_ms>
     # accumulates poll ticks drifts away from real time, since each iteration
     # also costs time running the loop body -- and it drifts further as the
     # file grows.
-    poll_s=$(awk -v m="${OFM_WAKE_POLL_MS}" 'BEGIN{printf "%.3f", m/1000}')
+    poll_s=$(awk -v m="${VIZIER_WAKE_POLL_MS}" 'BEGIN{printf "%.3f", m/1000}')
     deadline=$(( $(date +%s) + (timeout_ms + 999) / 1000 ))
     while :; do
       for f in "$tmp"/*.out; do
@@ -130,7 +130,7 @@ ofm_wait_any_run() {  # <timeout_ms>
         grep -q '"type"' "$f" 2>/dev/null || continue
         line=$(jq -rc 'select(._keepalive|not) | select(.type? != null)' "$f" 2>/dev/null | head -1)
         [ -n "$line" ] || continue
-        ofm_summarize "$line"
+        vizier_summarize "$line"
         return 0
       done
       [ "$(date +%s)" -lt "$deadline" ] || return 0
@@ -139,7 +139,7 @@ ofm_wait_any_run() {  # <timeout_ms>
   )
 }
 
-_ofm_wake_kill_all() {  # <tmpdir>
+_vizier_wake_kill_all() {  # <tmpdir>
   local p
   [ -f "$1/pids" ] || return 0
   while IFS= read -r p; do

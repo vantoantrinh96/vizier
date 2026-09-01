@@ -19,7 +19,7 @@
 # check misses exactly the case where the first two arguments are both empty.
 # Checking each argument on its own means two empty ones can never be masked
 # by one non-empty one.
-ofm_no_lost_update() {  # <others_before> <others_after> <mine_after>
+vizier_no_lost_update() {  # <others_before> <others_after> <mine_after>
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
   case "$2" in ''|*[!0-9]*) return 1 ;; esac
   case "$3" in ''|*[!0-9]*) return 1 ;; esac
