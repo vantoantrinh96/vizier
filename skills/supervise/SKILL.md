@@ -16,7 +16,12 @@ VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 . "$VIZIER_DIST/lib/vizier-home.sh"
 . "$VIZIER_DIST/lib/vizier-request-lib.sh"
 . "$VIZIER_DIST/lib/vizier-supervise-lib.sh"
+. "$VIZIER_DIST/lib/vizier-brief-lib.sh"
 ```
+
+`brief-lib` is here for `vizier_project_mode` in §2 — it is not only `brief`'s
+library. Without it that call is a `command not found` swallowed by `||
+default_mode=""`, which silently holds every healthy `direct-PR` worker.
 
 ## 0. Read run_id off the wake message itself
 
