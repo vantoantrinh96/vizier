@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# PostCompact hook: sau khi nén context, first mate quên mình là ai nhưng vẫn
-# đang giữ lock và vẫn bị đánh thức. In lại identity ra stderr cho đúng phiên
-# đang giữ lock, câm với mọi phiên khác.
+# PostCompact hook: after context compaction, the first mate forgets who it
+# is but is still holding the lock and still being woken up. Reprint identity
+# to stderr for the session that actually holds the lock, stay silent for
+# every other session.
 set -u
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
 [ -r "$LIB/ofm-home.sh" ] || exit 0
@@ -15,9 +16,9 @@ ofm_lock_matches "$session_id" || exit 0
 
 SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../skills/identity" 2>/dev/null && pwd)/SKILL.md"
 if [ -r "$SKILL" ]; then
-  printf 'orca-firstmate: phiên này vẫn là first mate. Đọc lại identity:\n' >&2
+  printf 'orca-firstmate: this session is still the first mate. Reprinting identity:\n' >&2
   cat "$SKILL" >&2
 else
-  printf 'orca-firstmate: phiên này vẫn là first mate nhưng không đọc được skill identity.\n' >&2
+  printf 'orca-firstmate: this session is still the first mate but the identity skill could not be read.\n' >&2
 fi
 exit 0

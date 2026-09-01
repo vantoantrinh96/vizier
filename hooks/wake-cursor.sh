@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# stop hook của Cursor — nửa Cursor của cơ chế tự thức dậy.
+# Cursor's stop hook -- the Cursor half of the self-wake mechanism.
 #
-# KHÔNG DÙNG LẠI ĐƯỢC CÔNG THỨC CỦA CLAUDE. Đã đo trên cursor-agent TUI
-# 2026.08.25-3e8eec8 (docs/verification/2026-08-31-plugin-wake.md):
-#   - Cursor chạy hook ĐỒNG BỘ và chờ nó: hook "park" giữ turn boundary mở.
-#   - exit 2 là NO-OP IM LẶNG. Không bao giờ dựa vào nó.
-#   - Kênh duy nhất là đúng một {"followup_message": "..."} trên STDOUT + exit 0.
-#     Cursor nhận nó và chạy một lượt model mới.
-#   - `loop_count` trong payload là bản Cursor của stop_hook_active.
-#   - Hook này KHÔNG cài được dạng plugin; nó chỉ fire từ ~/.cursor/hooks.json.
+# CANNOT REUSE CLAUDE'S RECIPE. Measured on cursor-agent TUI 2026.08.25-3e8eec8
+# (docs/verification/2026-08-31-plugin-wake.md):
+#   - Cursor runs the hook SYNCHRONOUSLY and waits for it: the hook "parks"
+#     and keeps the turn boundary open.
+#   - exit 2 is a SILENT NO-OP. Never rely on it.
+#   - The only channel is exactly one {"followup_message": "..."} on STDOUT
+#     plus exit 0. Cursor receives it and runs a new model turn.
+#   - `loop_count` in the payload is Cursor's version of stop_hook_active.
+#   - This hook CANNOT be installed as a plugin; it only fires from
+#     ~/.cursor/hooks.json.
 #
-# PARK-OWNER. Một tin captain gõ lúc hook đang park được nhận ngay và KHÔNG
-# giết hook đang park. Nên hai park có thể cùng sống, cùng thấy một message
-# (ta dùng --peek nên không ai ack), và cùng báo -> trùng. Mỗi lần chạy giành
-# một số thứ tự tăng dần; trước khi emit phải xác nhận mình vẫn là số mới nhất.
+# PARK-OWNER. A message the captain types while a hook is parked is received
+# immediately and does NOT kill the parked hook. So two parks can be alive at
+# once, both see the same message (we use --peek, so neither acks it), and
+# both report -> a duplicate. Each run claims an increasing sequence number;
+# before emitting, it must confirm it is still the most recent one.
 set -u
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
@@ -31,46 +34,55 @@ loop_count=$(printf '%s' "$payload" | jq -r '.loop_count // 0' 2>/dev/null)
 
 ofm_lock_matches "$session_id" || exit 0
 
-# Trần tự chặn, đặt THẤP HƠN loop_limit đăng ký trong hooks.json, để bound của
-# ta cắn trước và Cursor không lặng lẽ ngừng gọi hook ở trần của nó.
+# Self-imposed ceiling, set LOWER than the loop_limit registered in
+# hooks.json, so our bound bites first and Cursor never silently stops
+# calling the hook at its own ceiling.
 ceiling=${OFM_CURSOR_LOOP_CEILING:-5}
 case "$loop_count" in ''|*[!0-9]*) loop_count=0 ;; esac
 
-# FIX 8 — TRẦN PHẢI VẪN NÓI ĐƯỢC MỘT CÂU, KHÔNG ĐƯỢC CÂM. Bản cũ chỉ có
-# `[ "$loop_count" -lt "$ceiling" ] || exit 0`: đúng lúc trần bị chạm, hook im
-# lặng tuyệt đối — captain thấy Cursor đứng yên không một lời giải thích, và
-# không phân biệt được đó là do TA chủ động dừng (còn xa mới chạm loop_limit
-# 200 của Cursor) hay do lỗi thật. Tách hai ca:
-#   - loop_count == ceiling: ĐÚNG LƯỢT chạm trần -> phát MỘT followup_message
-#     báo rõ rồi exit 0. Đây là lần đầu và LẦN DUY NHẤT được nói.
-#   - loop_count > ceiling: đã báo ở lượt trước rồi -> câm, đúng cách cũ.
-# Dùng "==" chứ không phải "≥" cho ca báo: followup_message ta phát ở đây tự
-# nó khiến Cursor chạy thêm một lượt, lượt đó Stop lại tới hook với
-# loop_count == ceiling+1 -- nếu dùng "≥" ta sẽ báo lại ở CHÍNH lượt đó, rồi
-# lượt kế lại báo tiếp — vòng phát-vô-hạn ngược hẳn với mục đích của trần.
+# FIX 8 -- THE CEILING MUST STILL SAY ONE SENTENCE, IT MUST NOT GO SILENT.
+# The old version only had `[ "$loop_count" -lt "$ceiling" ] || exit 0`:
+# exactly when the ceiling was hit, the hook went absolutely silent -- the
+# captain would see Cursor sitting idle with no explanation, unable to tell
+# whether WE deliberately stopped it (nowhere near Cursor's own loop_limit of
+# 200) or a real error occurred. Split into two cases:
+#   - loop_count == ceiling: this is EXACTLY the turn that hits the ceiling ->
+#     emit ONE followup_message saying so clearly, then exit 0. This is the
+#     first and ONLY turn allowed to say it.
+#   - loop_count > ceiling: already reported on a previous turn -> stay
+#     silent, same as before.
+# Use "==" rather than ">=" for the reporting case: the followup_message we
+# emit here itself makes Cursor run one more turn, and that turn's Stop hits
+# the hook again with loop_count == ceiling+1 -- if we used ">=" we would
+# report again on THAT SAME turn, then the next turn would report again too
+# -- an infinite report loop, the exact opposite of what the ceiling is for.
 if [ "$loop_count" -gt "$ceiling" ]; then
   exit 0
 fi
 if [ "$loop_count" -eq "$ceiling" ]; then
-  jq -cn --arg m "orca-firstmate: đã chạm trần tự đánh thức ($ceiling lượt liên tiếp); dừng ở đây, gõ gì đó để nối lại giám sát." '{followup_message:$m}'
+  jq -cn --arg m "orca-firstmate: hit the self-wake ceiling ($ceiling turns in a row); stopping here, type something to resume supervision." '{followup_message:$m}'
   exit 0
 fi
 
 runs=$(ofm_open_run_ids)
 [ -n "$runs" ] || exit 0
 
-# Giành quyền park trước khi chờ.
+# Claim park ownership before waiting.
 #
-# HỢP ĐỒNG LÀ "AI GHI SAU CÙNG THÔI ĐƯ", không phải "số lớn hơn thì được
-# nói". Bản trước đọc số cũ rồi cộng một rồi ghi — không nguyên tử, nên hai park
-# cùng lúc chọn CÙNG một số và cả hai đều tưởng mình mới nhất: đúng cú báo trùng
-# mà cơ chế này sinh ra để chặn. Thêm một mã duy nhất vào claim rồi ĐỌC LẠI
-# trước khi phát thì kẻ ghi sau cùng thắng và mọi kẻ khác im, không cần nguyên
-# tử ở đâu cả. Bất biến: KHÔNG BAO GIỜ có quá một park phát.
+# THE CONTRACT IS "WHOEVER WRITES LAST WINS", not "the bigger number gets to
+# speak". The previous version read the old number, added one, and wrote it
+# back -- not atomic, so two parks running at the same time could pick the
+# SAME number and both believe they were the newest: exactly the duplicate
+# report this mechanism exists to block. Adding a unique token to the claim
+# and READING IT BACK before emitting means the last writer wins and everyone
+# else stays silent, with no atomicity needed anywhere. Invariant: NEVER more
+# than one park emits.
 #
-# Nó cũng sửa luôn hướng thất bại: file không đọc được thì `current` không khớp
-# `my_claim` nên ta IM. Bản trước mặc định `current=$my_seq` khi file rác, tức
-# mọi park đều tự nhận là chủ và tất cả đều phát — sai hướng, và tệ hơn cả race.
+# It also fixes the failure direction: if the file can't be read, `current`
+# won't match `my_claim`, so we STAY SILENT. The previous version defaulted
+# `current=$my_seq` when the file was garbage, meaning every park believed
+# itself the owner and all of them emitted -- the wrong direction, and worse
+# than the race itself.
 owner_file="$(ofm_home)/park-owner"
 my_claim="${OFM_CURSOR_PARK_CLAIM:-$$.$(date +%s).${RANDOM:-0}}"
 printf '%s\n' "$my_claim" > "$owner_file" 2>/dev/null || exit 0
@@ -78,8 +90,8 @@ printf '%s\n' "$my_claim" > "$owner_file" 2>/dev/null || exit 0
 summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
 [ -n "$summary" ] || exit 0
 
-# Ta còn là kẻ ghi sau cùng không? Nếu không, đứng im: park mới sẽ thấy cùng
-# message đó vì chưa ai ack.
+# Are we still the last writer? If not, stay quiet: the new park will see the
+# same message anyway, since no one has acked it.
 current=$(cat "$owner_file" 2>/dev/null)
 [ "$current" = "$my_claim" ] || exit 0
 

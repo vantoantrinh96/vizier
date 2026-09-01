@@ -1,13 +1,13 @@
 # shellcheck shell=bash
-# Đường dẫn home và lock first-mate duy nhất. Source từ hook, CLI và test.
+# Home path and the single first-mate lock. Sourced by the hook, the CLI, and tests.
 #
-# LOCK LÀ CỔNG CHẶN CỦA HOOK. Hook chạy sau mỗi lượt của MỌI phiên harness
-# trên máy, nên ofm_lock_matches phải là thao tác rẻ nhất có thể (một lần đọc
-# file) và mọi nhánh không chắc chắn phải trả "không khớp".
+# THE LOCK IS THE HOOK'S GATE. The hook runs after every turn of EVERY harness
+# session on the machine, so ofm_lock_matches must be the cheapest possible
+# operation (a single file read), and every uncertain branch must return "no match".
 #
-# LIVENESS KHÔNG BAO GIỜ ĐOÁN. Một pid không phân giải được là "chưa chứng
-# minh được", không phải "đã chết": cướp lock của một first mate còn sống là
-# hỏng nặng hơn nhiều so với việc bắt captain gỡ tay một lock cũ.
+# LIVENESS IS NEVER GUESSED. A pid that fails to resolve is "not proven",
+# not "dead": stealing the lock from a first mate that is still alive is a far
+# worse failure than making the captain manually clear a stale lock.
 
 ofm_home() { printf '%s' "${OFM_HOME:-$HOME/.orca-firstmate}"; }
 ofm_lock_path() { printf '%s/lock' "$(ofm_home)"; }
@@ -20,7 +20,7 @@ ofm_lock_get() {  # <key>
   sed -n "s/^$1=//p" "$f" 2>/dev/null | head -1
 }
 
-ofm_harness_pid() {  # <harness> — in pid tổ tiên gần nhất khớp, rỗng nếu không có
+ofm_harness_pid() {  # <harness> -- print the nearest matching ancestor pid, empty if none
   local want=$1 pid=$$ hops=0 comm ppid
   while [ "$pid" != "1" ] && [ "$hops" -lt 20 ]; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 0
@@ -43,21 +43,23 @@ _ofm_lock_write() {  # <session_id> <harness> <pid>
   local f tmp
   f=$(ofm_lock_path)
   mkdir -p "$(ofm_home)" || return 1
-  # mktemp, KHÔNG "$f.$$": trong bash, `$$` bên trong subshell là pid của shell
-  # CHA, nên nhiều subshell cùng cha dùng chung một tên tmp, ghi đè lẫn nhau và
-  # làm `mv` thất bại. Test race chính là ca đó, và nó từng đo sai vì lỗi này —
-  # báo "không ai giành được lock" khi thực ra chỉ là va chạm tên file tạm.
+  # mktemp, NOT "$f.$$": in bash, `$$` inside a subshell is the PARENT shell's
+  # pid, so multiple subshells with the same parent share one tmp name, overwrite
+  # each other, and make `mv` fail. The race test is exactly that case, and it
+  # once measured wrong because of this bug -- reporting "no one won the lock"
+  # when it was really just a collision on the temp file's name.
   tmp=$(mktemp "$f.XXXXXX") || return 1
   printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
-# Đọc LẠI lock sau khi ghi, và chỉ báo thành công khi ta thực sự là chủ.
-# Vì sao cần: chuỗi đọc-quyết-ghi trong ofm_lock_claim không nguyên tử, nên hai
-# phiên cùng thấy lock trống (hoặc cùng thấy một chủ đã chết) đều ghi và đều
-# tưởng mình thắng — đúng hỏng hóc tệ nhất của thiết kế này: hai phiên cùng ghi
-# requests/. Đọc lại biến bất biến thành "KHÔNG BAO GIỜ có quá một phiên tin
-# mình giữ lock", không cần thêm file mutex nào và không sinh trạng thái mutex cũ.
+# Read the lock BACK after writing, and report success only when we are truly
+# the owner. Why this is needed: the read-decide-write sequence in
+# ofm_lock_claim is not atomic, so two sessions that both see an empty lock (or
+# both see a dead owner) both write and both believe they won -- exactly the
+# worst failure of this design: two sessions writing requests/ at once. Reading
+# back turns that into an invariant -- "NEVER more than one session believes it
+# holds the lock" -- without adding any mutex file or leftover mutex state.
 _ofm_lock_confirm() {  # <session_id> <verb> <detail>
   local sid=$1 verb=$2 detail=$3 winner
   if ofm_lock_matches "$sid"; then
@@ -71,9 +73,10 @@ _ofm_lock_confirm() {  # <session_id> <verb> <detail>
 
 ofm_lock_claim() {  # <session_id> <harness> <pid>
   local sid=$1 harness=$2 pid=$3 owner owner_pid
-  # Lock file là key=value theo dòng và đọc bằng sed, nên một session_id chứa
-  # newline sẽ ghi ra file mà chính ta không đọc lại được -> claimant đơn lẻ bị
-  # refused một cách bí ẩn. Chặn ngay ở cửa, nói rõ lý do.
+  # The lock file is line-based key=value and read with sed, so a session_id
+  # containing a newline would write a file that we ourselves cannot read back
+  # -> a lone claimant gets refused for no obvious reason. Block it right at
+  # the door, and say exactly why.
   case "$sid" in '') printf 'refused reason=empty_session_id\n'; return 1 ;; esac
   if [ "$(printf '%s' "$sid" | tr -cd '\n' | wc -c | tr -d ' ')" != "0" ]; then
     printf 'refused reason=session_id_has_newline\n'
@@ -89,15 +92,16 @@ ofm_lock_claim() {  # <session_id> <harness> <pid>
     owner_pid=$(ofm_lock_get pid)
     case "$owner_pid" in
       ''|*[!0-9]*)
-        # Không phân giải được chủ cũ: từ chối thay vì cướp.
+        # Could not resolve the previous owner: refuse rather than steal.
         printf 'refused held_by=%s pid=unresolvable\n' "$owner"
         return 1
         ;;
     esac
-    # CHỈ liveness quyết định. Một pid còn sống không bao giờ bị cướp lock, kể
-    # cả khi `ps -o comm=` không khớp harness: tên lệnh không khớp là bằng chứng
-    # yếu về "không phải harness đó", không phải bằng chứng về "đã chết". Cướp
-    # lock của một first mate còn sống thì hai phiên cùng ghi requests/.
+    # ONLY liveness decides. A pid that is still alive never has its lock
+    # stolen, even when `ps -o comm=` doesn't match the harness: a command-name
+    # mismatch is weak evidence of "not that harness", not evidence of "dead".
+    # Stealing the lock of a first mate that is still alive means two sessions
+    # writing requests/.
     if kill -0 "$owner_pid" 2>/dev/null; then
       printf 'refused held_by=%s pid=%s\n' "$owner" "$owner_pid"
       return 1
@@ -110,7 +114,7 @@ ofm_lock_claim() {  # <session_id> <harness> <pid>
   _ofm_lock_confirm "$sid" claimed "session_id=$sid"
 }
 
-ofm_lock_release() {  # <session_id> — chỉ đúng chủ mới xoá được
+ofm_lock_release() {  # <session_id> -- only the true owner can remove it
   ofm_lock_matches "$1" || { printf 'not_owner\n'; return 0; }
   rm -f "$(ofm_lock_path)"
   printf 'released\n'

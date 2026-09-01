@@ -64,8 +64,8 @@ assert_contains "$(cat "$(ofm_home)/last-wake" 2>/dev/null)" "worker_done" \
 # mới, ca dưới đây mới phân biệt được.)
 err=$(payload_active sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
 assert_rc "$rc" 0 "FIX 1: cùng message, stop_hook_active=true thì exit 0, không lặp vô hạn"
-assert_contains "$err" "trần" "stderr nói rõ đã chạm trần, không im lặng tuyệt đối"
-assert_contains "$err" "chưa được ack" "stderr nói rõ message vẫn chưa được ack"
+assert_contains "$err" "ceiling" "stderr nói rõ đã chạm trần, không im lặng tuyệt đối"
+assert_contains "$err" "not acked" "stderr nói rõ message vẫn chưa được ack"
 stdout=$(payload_active sess-a | bash "$HOOK" 2>/dev/null)
 assert_eq "$stdout" "" "trần cũng không in gì ra stdout"
 

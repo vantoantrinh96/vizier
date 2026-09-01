@@ -71,7 +71,7 @@ assert_rc $? 0 "stdout là JSON hợp lệ"
 out=$(payload sess-a 5 | bash "$HOOK" 2>/dev/null); rc=$?
 assert_rc "$rc" 0 "FIX 8: chạm trần vẫn exit 0"
 assert_contains "$out" "followup_message" "FIX 8: chạm trần phải phát một câu, không câm"
-assert_contains "$out" "trần" "câu báo nêu rõ lý do là đã chạm trần"
+assert_contains "$out" "ceiling" "câu báo nêu rõ lý do là đã chạm trần"
 lines=$(printf '%s\n' "$out" | grep -c . )
 assert_eq "$lines" "1" "câu báo trần cũng đúng MỘT dòng JSON"
 

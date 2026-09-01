@@ -1,25 +1,27 @@
 # shellcheck shell=bash
-# Quét request đang mở và chờ mailbox nhiều Run cùng lúc.
-# Cần source lib/ofm-home.sh trước.
+# Scans open requests and waits on the mailbox of several Runs at once.
+# Requires lib/ofm-home.sh to be sourced first.
 #
-# VÌ SAO CHỜ SONG PARALLEL: `orca orchestration check` là per-Run (`--run <id>`),
-# và spec cho phép nhiều request mở cùng lúc. Chờ tuần tự thì một Run im lặng
-# sẽ chặn message của Run khác suốt cả timeout. Ta bung mỗi Run một tiến trình
-# nền, ai có tin trước thì thắng, rồi giết phần còn lại.
+# WHY WAIT IN PARALLEL: `orca orchestration check` is per-Run (`--run <id>`),
+# and the spec allows several requests to be open at once. Waiting
+# sequentially would let one silent Run block another Run's message for the
+# whole timeout. We fork one background process per Run, whichever gets a
+# message first wins, then we kill the rest.
 #
-# LUÔN TRUYỀN --run: phiên first mate không phải terminal Orca nên không có
-# Run nào bound theo terminal để dựa vào.
+# ALWAYS PASS --run: a first-mate session is not an Orca terminal, so there is
+# no terminal-bound Run to fall back on.
 
 OFM_WAKE_TYPES="${OFM_WAKE_TYPES:-worker_done,escalation,question}"
 
-# Nhịp poll. Production để 1000ms: ở timeout tám tiếng thì đó là 28.500 vòng
-# thay vì 285.000, mà độ trễ đánh thức thêm dưới một giây thì con người không
-# nhận ra. Test hạ xuống 50ms cho nhanh.
+# Poll cadence. Production keeps it at 1000ms: at an eight-hour timeout that's
+# 28,500 loops instead of 285,000, and the extra sub-second wake latency is not
+# something a human notices. Tests lower it to 50ms for speed.
 OFM_WAKE_POLL_MS="${OFM_WAKE_POLL_MS:-1000}"
 
-# Chỉ trả về phần frontmatter: khối giữa dòng `---` thứ nhất và `---` thứ hai.
-# Một chữ "status:" nằm trong phần văn xuôi không được phép quyết định gì, và
-# `tr -d '\r'` để một file CRLF không âm thầm bị coi là không-mở.
+# Return only the frontmatter: the block between the first `---` line and the
+# second. A "status:" that happens to appear in the prose body must never get
+# to decide anything, and `tr -d '\r'` keeps a CRLF file from silently being
+# treated as not-open.
 _ofm_frontmatter() {  # <file>
   awk '
     { gsub(/\r$/, "") }
@@ -49,54 +51,62 @@ ofm_summarize() {  # <json_line>
   type=$(printf '%s' "$line" | jq -r '.type // "message"' 2>/dev/null)
   run=$(printf '%s' "$line" | jq -r '.run_id // ""' 2>/dev/null)
   detail=$(printf '%s' "$line" | jq -r '.outcome // .body // ""' 2>/dev/null | tr '\n\r\t' '   ' | cut -c1-120)
-  # MỌI trường đi qua tr, không chỉ detail: caller dựa vào "đúng một dòng", và
-  # một newline lọt qua .type hay .run_id phá hợp đồng đó y như trong .body.
+  # EVERY field goes through tr, not just detail: the caller relies on "exactly
+  # one line", and a newline slipping through .type or .run_id breaks that
+  # contract exactly as badly as one slipping through .body.
   printf '%s run=%s %s' "${type:-message}" "${run:-?}" "${detail}" \
     | tr '\n\r\t' '   ' | sed 's/[[:space:]]*$//'
 }
 
-# Đọc run id từ stdin, chờ tối đa <timeout_ms>, in một dòng tóm tắt hoặc rỗng.
+# Read run ids from stdin, wait up to <timeout_ms>, print one summary line or
+# empty.
 ofm_wait_any_run() {  # <timeout_ms>
-  # Cả thân hàm nằm trong một subshell để `trap` chỉ thuộc về nó, không dính
-  # vào shell của caller.
+  # The whole function body lives in a subshell so `trap` belongs only to it,
+  # not to the caller's shell.
   (
     local timeout_ms=$1 tmp run i=0 line poll_s deadline f
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/ofm-wake.XXXXXX") || return 0
-    # TRAP TRƯỚC KHI SPAWN BẤT CỨ GÌ. Nếu tiến trình này bị giết từ ngoài —
-    # harness cắt hook, captain đóng phiên, máy sleep — thì mọi `orca --wait`
-    # con phải chết theo. Không có trap thì MỖI LƯỢT của MỖI phiên trên máy để
-    # lại một tiến trình mồ côi có thể sống tới tám tiếng. Trap cũng là đường
-    # dọn duy nhất cho cả ba lối ra bình thường, nên không còn chỗ nào phải
-    # nhớ gọi cleanup bằng tay.
-    # HAI trap, không một. Trong bash, trap TÍN HIỆU chạy handler rồi TIẾP TỤC
-    # thực thi — nó không kết thúc process. Một trap gộp cho cả EXIT và INT/TERM
-    # sẽ dọn sạch nhưng để shell này quay vòng poll tới hết deadline gốc (tám
-    # tiếng ở production), mỗi lần hook chạy một cái: đúng thứ tích tụ mà trap
-    # sinh ra để chặn. Nhánh tín hiệu vì thế phải `exit` tường minh. Dọn hai lần
-    # là vô hại: kill vào pid đã chết và rm -rf vào thư mục đã mất đều không sao.
+    # TRAP BEFORE SPAWNING ANYTHING. If this process is killed from the
+    # outside -- the harness cuts the hook, the captain closes the session, the
+    # machine sleeps -- every child `orca --wait` must die with it. Without the
+    # trap, EVERY TURN of EVERY session on the machine would leave behind an
+    # orphaned process that can live for up to eight hours. The trap is also
+    # the only cleanup path for all three normal exits, so there is nowhere
+    # left where cleanup has to be remembered by hand.
+    # TWO traps, not one. In bash, a SIGNAL trap runs its handler then
+    # CONTINUES execution -- it does not end the process. A single trap
+    # combined for both EXIT and INT/TERM would clean up but leave this shell
+    # spinning through the poll loop to the original deadline (eight hours in
+    # production), once per hook run: exactly the accumulation the trap exists
+    # to block. The signal branch must therefore `exit` explicitly. Cleaning up
+    # twice is harmless: kill against an already-dead pid and rm -rf against an
+    # already-gone directory are both no-ops.
     trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT
     trap '_ofm_wake_kill_all "$tmp"; rm -rf "$tmp"; exit 0' INT TERM HUP
-    # KHÔNG BAO GIỜ `set -m` ở đây. Bash không tạo process group mới cho job
-    # nền, nên mọi con `orca` ở lại trong process group mà HARNESS sở hữu — và
-    # đó chính là thứ làm cho việc harness kết thúc hook dọn sạch cả cụm
+    # NEVER `set -m` here. Bash does not create a new process group for a
+    # background job, so every child `orca` stays in the process group the
+    # HARNESS owns -- and that is exactly what lets the harness ending the hook
+    # clean up the whole cluster
     # (firstmate/bin/fm-claude-stop-autoarm.sh:35-37: "Claude owns the process
     # group, so its timeout/session teardown kills arm and watcher together").
-    # Bật `set -m` sẽ đẩy con sang group MỚI và thoát khỏi cú dọn đó — đúng
-    # ngược điều ta muốn. Trap ở trên lo đường thoát êm; group lo đường bị cắt.
+    # Turning on `set -m` would push the children into a NEW group and escape
+    # that cleanup -- exactly the opposite of what we want. The trap above
+    # covers the clean-exit path; the process group covers the cut-off path.
     while IFS= read -r run; do
       [ -n "$run" ] || continue
       i=$((i + 1))
       (
-        # FIX 11 — `</dev/null` LÀ BẮT BUỘC. Vòng `while read` này đọc run id
-        # từ CHÍNH stdin của hàm (caller `printf ... | ofm_wait_any_run`), và
-        # một tiến trình nền không tự có fd 0 riêng — nó THỪA KẾ NGUYÊN stdin
-        # của vòng lặp trừ khi bị redirect tường minh. Nếu `orca` (một tiến
-        # trình thật, không phải builtin) đọc stdin vì bất kỳ lý do gì — lỗi,
-        # log, hay hành vi tương lai ta không kiểm soát — nó ăn mất một phần
-        # pipe mà vòng `while read` còn đang cần, và mọi run id CÒN LẠI sau đó
-        # bị NUỐT ÂM THẦM, không lỗi, không log: request thứ hai trở đi không
-        # bao giờ được chờ. Chặn hẳn đường đó bằng cách trỏ fd 0 của con vào
-        # /dev/null, không để nó chạm pipe của vòng lặp dù chỉ một byte.
+        # FIX 11 -- `</dev/null` IS MANDATORY. This `while read` loop reads run
+        # ids from the function's OWN stdin (caller `printf ... |
+        # ofm_wait_any_run`), and a background process doesn't get its own fd
+        # 0 -- it INHERITS the loop's stdin whole unless explicitly redirected.
+        # If `orca` (a real process, not a builtin) reads stdin for any reason
+        # at all -- a bug, logging, or some future behavior we don't control --
+        # it eats part of the pipe the `while read` loop still needs, and
+        # every run id AFTER THAT is SILENTLY SWALLOWED, no error, no log: the
+        # second request onward is never waited on. Close that path off
+        # entirely by pointing the child's fd 0 at /dev/null, so it never
+        # touches the loop's pipe by even one byte.
         orca orchestration check --wait --peek --run "$run" \
           --types "$OFM_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
           2>/dev/null > "$tmp/$i.out" < /dev/null
@@ -105,17 +115,18 @@ ofm_wait_any_run() {  # <timeout_ms>
     done
     [ "$i" -gt 0 ] || return 0
 
-    # Deadline theo giờ THẬT, không theo bộ đếm logic: bộ đếm cộng dồn nhịp
-    # poll rồi trôi khỏi thời gian thực, vì mỗi vòng còn tốn thời gian chạy
-    # thân vòng — và càng trôi khi file lớn dần.
+    # Deadline by REAL wall-clock time, not a logical counter: a counter that
+    # accumulates poll ticks drifts away from real time, since each iteration
+    # also costs time running the loop body -- and it drifts further as the
+    # file grows.
     poll_s=$(awk -v m="${OFM_WAKE_POLL_MS}" 'BEGIN{printf "%.3f", m/1000}')
     deadline=$(( $(date +%s) + (timeout_ms + 999) / 1000 ))
     while :; do
       for f in "$tmp"/*.out; do
         [ -s "$f" ] || continue
-        # grep rẻ đứng trước jq: `--types` đã bảo đảm mọi message trả về đều
-        # có `type`, còn keepalive của Orca đi ra stderr và bị bỏ, nên hầu hết
-        # vòng lặp không phải fork jq nào.
+        # Cheap grep before jq: `--types` already guarantees every returned
+        # message has a `type`, and Orca's keepalive goes to stderr and gets
+        # dropped, so most loop iterations fork no jq at all.
         grep -q '"type"' "$f" 2>/dev/null || continue
         line=$(jq -rc 'select(._keepalive|not) | select(.type? != null)' "$f" 2>/dev/null | head -1)
         [ -n "$line" ] || continue
