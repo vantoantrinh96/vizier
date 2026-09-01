@@ -7,7 +7,7 @@ HOOK="$OFM_TEST_REPO/hooks/wake-claude.sh"
 export OFM_WAIT_TIMEOUT_MS=300
 
 payload() { printf '{"session_id":"%s","cwd":"/tmp","hook_event_name":"Stop"}' "$1"; }
-payload_active() {  # <session_id> — stop_hook_active:true, dùng cho ca FIX 1
+payload_active() {  # <session_id> -- stop_hook_active:true, used for the FIX 1 case
   printf '{"session_id":"%s","cwd":"/tmp","hook_event_name":"Stop","stop_hook_active":true}' "$1"
 }
 mk_request() {
@@ -15,88 +15,94 @@ mk_request() {
     "$2" "$3" > "$(ofm_requests_dir)/$1.md"
 }
 
-# Không có lock: câm tuyệt đối. Đây là cổng bảo vệ mọi phiên khác trên máy.
+# No lock: absolutely silent. This is the gate that protects every other session on the machine.
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "không lock thì exit 0"
-assert_eq "$out" "" "không lock thì không in gì"
-assert_eq "$(fake_orca_calls)" "" "không lock thì không gọi orca"
+assert_rc "$rc" 0 "no lock gives exit 0"
+assert_eq "$out" "" "no lock prints nothing"
+assert_eq "$(fake_orca_calls)" "" "no lock calls orca zero times"
 
-# Lock của phiên khác: vẫn câm
+# A different session's lock: still silent
 printf 'session_id=sess-other\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "session_id khác lock thì exit 0"
-assert_eq "$(fake_orca_calls)" "" "session_id khác thì không gọi orca"
+assert_rc "$rc" 0 "a mismatched session_id gives exit 0"
+assert_eq "$(fake_orca_calls)" "" "a mismatched session_id calls orca zero times"
 
-# Đúng chủ nhưng không có request mở: exit 0, vẫn không gọi orca
+# The right owner but no open request: exit 0, still no orca call
 printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "không request mở thì exit 0"
-assert_eq "$(fake_orca_calls)" "" "không request mở thì không gọi orca"
+assert_rc "$rc" 0 "no open request gives exit 0"
+assert_eq "$(fake_orca_calls)" "" "no open request calls orca zero times"
 
-# Đúng chủ, có request mở, không có message: FIX 2 -- hết giờ giờ đây phải
-# exit 2 (re-arm), KHÔNG PHẢI exit 0. exit 0 ở đây là giám sát chết vĩnh viễn
-# vì phiên idle không tự sinh Stop event nào để cắm lại vòng chờ.
+# The right owner, an open request, no message: FIX 2 -- a timeout must now
+# exit 2 (re-arm), NOT exit 0. exit 0 here means supervision dies permanently,
+# because an idle session generates no Stop event on its own to re-arm the wait.
 mk_request one run_a open
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 2 "FIX 2: hết giờ thì exit 2 để re-arm, không phải exit 0"
-assert_contains "$out" "re-arm" "stderr nêu rõ lý do là re-arm"
-assert_contains "$(fake_orca_calls)" "--run run_a" "có chờ đúng run"
+assert_rc "$rc" 2 "FIX 2: a timeout exits 2 to re-arm, not exit 0"
+assert_contains "$out" "re-arm" "stderr clearly states the reason is re-arm"
+assert_contains "$(fake_orca_calls)" "--run run_a" "waited on the right run"
 
-# Có message, stop_hook_active:false (báo ĐẦU TIÊN): exit 2, in tóm tắt ra
-# STDERR, và ghi lại tóm tắt đó vào last-wake -- đây là bản ghi FIX 1 dùng
-# để so danh tính ở các lượt sau, không phải cờ stop_hook_active một mình.
+# A message, stop_hook_active:false (the FIRST report): exit 2, prints a
+# summary to STDERR, and records that summary into last-wake -- this is the
+# FIX 1 record used to compare identity on later turns, not the
+# stop_hook_active flag alone.
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 err=$(payload sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
-assert_rc "$rc" 2 "báo đầu tiên (stop_hook_active=false) thì exit 2"
-assert_contains "$err" "worker_done" "stderr mang tóm tắt"
+assert_rc "$rc" 2 "the first report (stop_hook_active=false) exits 2"
+assert_contains "$err" "worker_done" "stderr carries the summary"
 stdout=$(payload sess-a | bash "$HOOK" 2>/dev/null);
-assert_eq "$stdout" "" "không in gì ra stdout"
+assert_eq "$stdout" "" "nothing is printed to stdout"
 assert_contains "$(cat "$(ofm_home)/last-wake" 2>/dev/null)" "worker_done" \
-  "báo đầu tiên phải ghi tóm tắt vào last-wake để lần sau so danh tính"
+  "the first report must record the summary into last-wake for later identity comparison"
 
-# FIX 1 -- CÙNG một message (--peek không ack nên nó vẫn còn đó) VÀ
-# stop_hook_active:true (lượt này chính hook gây ra) VÀ tóm tắt giống hệt
-# last-wake vừa ghi ở trên: đúng ca "đã báo rồi, còn chưa ack" -- trần chặn
-# vòng vô hạn. Phải exit 0, KHÔNG exit 2 -- nếu không mỗi lần tỉnh lại sinh
-# thêm một lần tỉnh nữa mãi mãi. Vẫn phải nói một câu ra stderr trước khi im,
-# không được câm lặng tuyệt đối. (Kiểm phản chứng: revert về so cờ một mình
-# vẫn cho kết quả này exit 0 -- ca này KHÔNG phân biệt được bản cũ với bản
-# mới, ca dưới đây mới phân biệt được.)
+# FIX 1 -- the SAME message (--peek doesn't ack, so it's still there) AND
+# stop_hook_active:true (this turn was caused by the hook itself) AND a
+# summary identical to the last-wake just recorded above: exactly the
+# "already reported, still unacked" case -- the ceiling that blocks the
+# infinite loop. Must exit 0, NOT exit 2 -- otherwise every wake would spawn
+# another wake forever. It must still say one thing to stderr before going
+# quiet, not go absolutely silent. (Disconfirming check: reverting to
+# comparing the flag alone still gives this same exit 0 -- this case does
+# NOT distinguish the old version from the new one; the case below does.)
 err=$(payload_active sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
-assert_rc "$rc" 0 "FIX 1: cùng message, stop_hook_active=true thì exit 0, không lặp vô hạn"
-assert_contains "$err" "ceiling" "stderr nói rõ đã chạm trần, không im lặng tuyệt đối"
-assert_contains "$err" "not acked" "stderr nói rõ message vẫn chưa được ack"
+assert_rc "$rc" 0 "FIX 1: the same message with stop_hook_active=true exits 0, no infinite repeat"
+assert_contains "$err" "ceiling" "stderr clearly states the ceiling was hit, not absolute silence"
+assert_contains "$err" "not acked" "stderr clearly states the message is still not acked"
 stdout=$(payload_active sess-a | bash "$HOOK" 2>/dev/null)
-assert_eq "$stdout" "" "trần cũng không in gì ra stdout"
+assert_eq "$stdout" "" "the ceiling also prints nothing to stdout"
 
-# ĐÂY LÀ CA BẢN CŨ (so cờ một mình) SAI, đo được ở
-# docs/verification/2026-08-31-plugin-wake.md ("stop_hook_active xuyên chuỗi
-# đánh thức"): fire#2 và fire#3 sau bất kỳ exit 2 nào -- kể cả re-arm hết giờ,
-# không liên quan gì tới message -- đều mang cờ true. Một message MỚI tới
-# trong khi cờ vẫn true (mailbox đổi nội dung, ví dụ một escalation ghi đè
-# worker_done cũ) phải vẫn được báo: danh tính khác last-wake nên PHẢI exit 2
-# và in tóm tắt MỚI, không được nuốt im lặng chỉ vì cờ true. Bản chỉ so cờ sẽ
-# exit 0 và nuốt câm ca này -- chính là Critical bị bắt.
-printf '%s\n' '{"type":"escalation","run_id":"run_a","outcome":"cần captain quyết"}' \
+# THIS IS THE CASE WHERE THE OLD VERSION (comparing the flag alone) WAS
+# WRONG, measured in docs/verification/2026-08-31-plugin-wake.md
+# ("stop_hook_active across a wake chain"): fire#2 and fire#3 after ANY
+# exit 2 -- including the timeout re-arm, unrelated to any message -- all
+# carry the flag true. A NEW message arriving while the flag is still true
+# (the mailbox's content changed, e.g. an escalation overwriting an old
+# worker_done) must still be reported: its identity differs from last-wake,
+# so it MUST exit 2 and print the NEW summary, and must not be silently
+# swallowed just because the flag is true. A version that only compares the
+# flag would exit 0 and silently swallow this case -- exactly the Critical
+# this catches.
+printf '%s\n' '{"type":"escalation","run_id":"run_a","outcome":"needs captain decision"}' \
   > "$OFM_FAKE_ORCA_STATE/queue/run_a"
 err=$(payload_active sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
-assert_rc "$rc" 2 "FIX 1: message KHÁC last-wake dù stop_hook_active=true vẫn phải exit 2, không bị nuốt"
-assert_contains "$err" "escalation" "stderr phải mang tóm tắt của message MỚI (không phải worker_done cũ)"
+assert_rc "$rc" 2 "FIX 1: a message DIFFERENT from last-wake must exit 2 even with stop_hook_active=true, not be swallowed"
+assert_contains "$err" "escalation" "stderr must carry the NEW message's summary (not the old worker_done)"
 assert_contains "$(cat "$(ofm_home)/last-wake" 2>/dev/null)" "escalation" \
-  "last-wake phải cập nhật sang message mới sau khi báo nó"
+  "last-wake must update to the new message after reporting it"
 
-# stop_hook_active:true nhưng KHÔNG có message (queue rỗng) thì đây là nhánh
-# hết giờ (FIX 2), trần của FIX 1 không áp dụng vì không có gì để lặp vô hạn.
-# So danh tính không chạm tới nhánh này: exit 2 và dòng re-arm phải nguyên vẹn
-# bất kể cờ hay last-wake đang chứa gì.
+# stop_hook_active:true but NO message (empty queue) is the timeout branch
+# (FIX 2); FIX 1's ceiling does not apply because there is nothing to loop
+# infinitely on. Identity comparison does not touch this branch: exit 2 and
+# the re-arm line must remain intact regardless of what the flag or
+# last-wake currently hold.
 : > "$OFM_FAKE_ORCA_STATE/queue/run_a"
 out=$(payload_active sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 2 "stop_hook_active=true nhưng không có message (hết giờ) thì vẫn exit 2 (re-arm)"
-assert_contains "$out" "re-arm" "nhánh hết giờ vẫn thắng khi không có message, bất kể stop_hook_active"
+assert_rc "$rc" 2 "stop_hook_active=true but no message (a timeout) still exits 2 (re-arm)"
+assert_contains "$out" "re-arm" "the timeout branch still wins with no message, regardless of stop_hook_active"
 
-# Payload rác không làm hook nổ
+# Garbage payload does not crash the hook
 out=$(printf 'not json' | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "payload rác thì exit 0"
+assert_rc "$rc" 0 "a garbage payload gives exit 0"
 
 ofm_test_teardown
 ofm_test_report

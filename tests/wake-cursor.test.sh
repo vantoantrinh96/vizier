@@ -4,19 +4,23 @@ set -u
 ofm_test_setup
 . "$OFM_TEST_REPO/lib/ofm-home.sh"
 HOOK="$OFM_TEST_REPO/hooks/wake-cursor.sh"
-# FIX 12 — 300ms từng gây fail ngẫu nhiên ~1/5 lần chạy. Nguyên nhân: deadline
-# trong lib/ofm-wake-lib.sh tính bằng `$(date +%s) + (timeout_ms+999)/1000` —
-# `date +%s` CẮT XUỐNG giây nguyên, nên nếu lệnh chạy ở mili-giây .999 của một
-# giây, deadline thật hiệu quả có thể chỉ còn 0ms thay vì ~300ms dự định. Với
-# 300ms, biên độ méo đó (tới gần 1000ms) đủ NUỐT TRỌN cả timeout, khiến `sleep
-# 0.15` cố định ở khối đồng thời bên dưới đôi khi thả message SAU khi cả hai
-# park đã hết giờ. KHÔNG được sửa lib sản xuất — bug thật ở đó chỉ gây lệch độ
-# trễ dưới 1s trên nền timeout 8 tiếng, vô hại; sửa test bằng cách nới timeout
-# ra 3000ms để cùng biên độ méo đó chỉ còn chiếm một phần nhỏ, không nuốt hết.
+# FIX 12 -- 300ms used to cause a random failure about 1 run in 5. Cause: the
+# deadline in lib/ofm-wake-lib.sh is computed as `$(date +%s) +
+# (timeout_ms+999)/1000` -- `date +%s` TRUNCATES to the whole second, so if
+# the command runs at millisecond .999 of a second, the effective real
+# deadline could be as little as 0ms instead of the intended ~300ms. At
+# 300ms, that distortion margin (up to nearly 1000ms) is enough to SWALLOW
+# THE ENTIRE timeout, which meant the fixed `sleep 0.15` in the concurrent
+# block below sometimes dropped the message AFTER both parks had already
+# timed out. DO NOT fix the production lib -- the real bug there only causes
+# a sub-1s latency skew against an eight-hour timeout, harmless; fix the test
+# instead by widening the timeout to 3000ms so that same distortion margin
+# only eats a small fraction of it, not all of it.
 export OFM_WAIT_TIMEOUT_MS=3000
-# Nhịp poll production là 1000ms. Không đặt ở đây thì mỗi lần gọi hook mất ~1s
-# và chỉ tìm thấy message nhờ vòng lặp kiểm file TRƯỚC khi kiểm deadline — test
-# pass nhờ một thứ tự tình cờ chứ không nhờ hành vi nó đặt tên.
+# Production's poll cadence is 1000ms. Without setting it here, every hook
+# call would take ~1s and would only find the message thanks to the loop
+# checking the file BEFORE checking the deadline -- the test would pass by
+# accident of ordering rather than by the behavior its name claims to test.
 export OFM_WAKE_POLL_MS=50
 
 payload() {  # <session_id> <loop_count>
@@ -27,11 +31,12 @@ mk_request() {
     "$2" > "$(ofm_requests_dir)/$1.md"
 }
 
-# FIX 12 — thay `sleep 0.15` cố định bằng chờ CÓ ĐIỀU KIỆN: poll tới khi
-# park-owner đã được ghi (một park đã vào tới điểm chờ mailbox) VÀ mọi pid nền
-# truyền vào còn sống (chưa thoát sớm vì lỗi), rồi mới trả về để caller thả
-# message vào hàng đợi. Có trần lặp (1s) để không treo test vô hạn nếu điều
-# kiện không bao giờ đúng — bounded wait, không phải sleep đoán mò.
+# FIX 12 -- replaces the fixed `sleep 0.15` with a CONDITIONAL wait: poll
+# until park-owner has been written (a park has reached the mailbox-wait
+# point) AND every background pid passed in is still alive (hasn't exited
+# early on an error), only then returning so the caller can drop a message
+# into the queue. Has a loop ceiling (1s) so the test doesn't hang forever if
+# the condition never becomes true -- a bounded wait, not a guessed sleep.
 wait_for_park_ready() {  # <pid...>
   local i=0 ok pid
   while [ "$i" -lt 100 ]; do
@@ -47,48 +52,50 @@ wait_for_park_ready() {  # <pid...>
   return 1
 }
 
-# Không lock: câm
+# No lock: silent
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "không lock thì exit 0"
-assert_eq "$out" "" "không lock thì stdout rỗng"
+assert_rc "$rc" 0 "no lock gives exit 0"
+assert_eq "$out" "" "no lock gives empty stdout"
 
 printf 'session_id=sess-a\nharness=cursor-agent\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
 mk_request one run_a
 
-# Có message: in đúng một object followup_message, exit 0 (KHÔNG phải exit 2)
+# A message: prints exactly one followup_message object, exit 0 (NOT exit 2)
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "Cursor luôn exit 0, kể cả khi đánh thức"
-assert_contains "$out" "followup_message" "in followup_message"
-assert_contains "$out" "worker_done" "followup mang tóm tắt"
+assert_rc "$rc" 0 "Cursor always exits 0, even when waking"
+assert_contains "$out" "followup_message" "prints followup_message"
+assert_contains "$out" "worker_done" "the followup carries the summary"
 lines=$(printf '%s\n' "$out" | grep -c . )
-assert_eq "$lines" "1" "in đúng MỘT dòng JSON"
+assert_eq "$lines" "1" "prints exactly ONE line of JSON"
 printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
-assert_rc $? 0 "stdout là JSON hợp lệ"
+assert_rc $? 0 "stdout is valid JSON"
 
-# FIX 8 — chạm trần vẫn phải nói MỘT câu, không im lặng tuyệt đối. Đúng lượt
-# loop_count == ceiling (mặc định 5): phát followup_message báo đã chạm trần.
+# FIX 8 -- hitting the ceiling must still say ONE sentence, not go absolutely
+# silent. Exactly on the turn loop_count == ceiling (default 5): emit a
+# followup_message reporting the ceiling was hit.
 out=$(payload sess-a 5 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "FIX 8: chạm trần vẫn exit 0"
-assert_contains "$out" "followup_message" "FIX 8: chạm trần phải phát một câu, không câm"
-assert_contains "$out" "ceiling" "câu báo nêu rõ lý do là đã chạm trần"
+assert_rc "$rc" 0 "FIX 8: hitting the ceiling still exits 0"
+assert_contains "$out" "followup_message" "FIX 8: hitting the ceiling must emit one sentence, not go silent"
+assert_contains "$out" "ceiling" "the report sentence clearly states the ceiling was hit"
 lines=$(printf '%s\n' "$out" | grep -c . )
-assert_eq "$lines" "1" "câu báo trần cũng đúng MỘT dòng JSON"
+assert_eq "$lines" "1" "the ceiling report is also exactly ONE line of JSON"
 
-# Qua trần rồi (đã báo ở lượt trước) thì câm, không lặp lại câu báo mãi mãi.
+# Past the ceiling (already reported on a previous turn): silent, does not repeat forever.
 out=$(payload sess-a 6 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "qua trần rồi thì exit 0"
-assert_eq "$out" "" "qua trần rồi thì câm, không lặp lại câu báo trần vô hạn"
+assert_rc "$rc" 0 "past the ceiling still exits 0"
+assert_eq "$out" "" "past the ceiling is silent, does not repeat the ceiling report forever"
 
-# Park bị thay thì đứng im — kiểm bằng claim tường minh
+# A replaced park stays quiet -- checked with an explicit claim
 printf 'someone-else\n' > "$OFM_HOME/park-owner"
 out=$(payload sess-a 0 | OFM_CURSOR_PARK_CLAIM=mine bash "$HOOK" 2>/dev/null)
-# Hook tự ghi claim của nó lúc bắt đầu, nên nó SẼ là chủ; ca này chỉ khẳng định
-# claim tường minh không làm hook vỡ. Ca thật nằm ở khối đồng thời dưới đây.
+# The hook writes its own claim at the start, so it WILL be the owner; this
+# case only confirms an explicit claim doesn't break the hook. The real test
+# is in the concurrent block below.
 printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
-assert_rc $? 0 "claim tường minh vẫn phát bình thường khi không bị thay"
+assert_rc $? 0 "an explicit claim still emits normally when not replaced"
 
-# HAI PARK THẬT chạy chồng nhau, cùng thấy một message: chỉ MỘT được phát.
+# TWO REAL parks running overlapped, both seeing the same message: only ONE emits.
 : > "$OFM_FAKE_ORCA_STATE/queue/run_a"
 rm -f "$OFM_HOME/park-owner"
 ( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p1.out" 2>/dev/null ) & p1=$!
@@ -98,12 +105,13 @@ fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeed
 wait "$p1" 2>/dev/null || true
 wait "$p2" 2>/dev/null || true
 emitters=$(grep -l followup_message "$OFM_TEST_TMP/p1.out" "$OFM_TEST_TMP/p2.out" 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "$emitters" "1" "hai park chồng nhau thì đúng một cái phát"
+assert_eq "$emitters" "1" "two overlapping parks means exactly one emits"
 
-# Cổng read-back: ghi claim xong rồi bị NGƯỜI KHÁC thay giữa chừng -> phải im,
-# dù đã nhìn thấy message. Đây mới là ca chứng minh cổng read-back; ca `chmod
-# 000` trước đó chặn ngay ở bước GHI và thoát ở một cổng khác hẳn, nên nó pass
-# mà chưa từng chạm cổng này.
+# Read-back gate: claim written, then REPLACED BY SOMEONE ELSE partway
+# through -> must stay quiet, even though it already saw the message. This is
+# the case that actually proves the read-back gate; the earlier `chmod 000`
+# case is blocked right at the WRITE step and exits through a completely
+# different gate, so it passes without ever touching this one.
 : > "$OFM_FAKE_ORCA_STATE/queue/run_a"
 rm -f "$OFM_HOME/park-owner"
 ( payload sess-a 0 | bash "$HOOK" > "$OFM_TEST_TMP/p3.out" 2>/dev/null ) & p3=$!
@@ -111,13 +119,13 @@ wait_for_park_ready "$p3"
 printf 'usurper\n' > "$OFM_HOME/park-owner"
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 wait "$p3" 2>/dev/null || true
-assert_eq "$(cat "$OFM_TEST_TMP/p3.out")" "" "bị thay chủ giữa chừng thì im, dù đã thấy message"
+assert_eq "$(cat "$OFM_TEST_TMP/p3.out")" "" "being replaced as owner partway through stays quiet, even after seeing the message"
 
-# Không ghi được owner_file cũng phải im — cổng khác, ca khác, ghi rõ là khác
+# Failing to write owner_file must also stay quiet -- a different gate, a different case, clearly labeled as different
 : > "$OFM_FAKE_ORCA_STATE/queue/run_a"
 printf 'x\n' > "$OFM_HOME/park-owner"; chmod 000 "$OFM_HOME/park-owner" 2>/dev/null || true
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null)
-assert_eq "$out" "" "không ghi được owner_file thì im (cổng GHI, không phải read-back)"
+assert_eq "$out" "" "failing to write owner_file stays quiet (the WRITE gate, not the read-back one)"
 chmod 644 "$OFM_HOME/park-owner" 2>/dev/null || true
 
 ofm_test_teardown
