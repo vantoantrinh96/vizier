@@ -26,5 +26,21 @@ has $f "vizier_request_create" "the request file is written through the library"
 has $f "vizier_request_close" "closing goes through the library"
 has $f "worker-release" "closing releases remaining dispatches"
 
+# --- brief ------------------------------------------------------------
+f=skills/brief/SKILL.md
+assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "brief skill exists"
+has $f "vizier_brief_assemble" "the spec comes from the library, never hand-written"
+has $f "orca orchestration task-create --spec" "exact task-create"
+has $f "orca orchestration worker-start" "exact worker-start"
+has $f "--worktree new-top-level" "isolation default"
+has $f "--setup run" "setup runs"
+has $f "--on" "the host is passed through"
+has $f "inherits the request's host" "host inheritance is stated"
+has $f "Ask the captain" "an unknown delivery mode is asked, never guessed"
+has $f "--effort" "model hints are applied"
+has $f "requires --model" "effort depends on model"
+has $f "--retry-of" "retries chain"
+has $f "never retry blind" "receipts are read"
+
 vizier_test_teardown
 vizier_test_report
