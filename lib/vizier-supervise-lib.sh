@@ -6,7 +6,7 @@
 # message in the batch is processed". Acking early loses messages
 # permanently -- replay-until-ack is the only reason a hook that dies
 # mid-flight is safe. As prose in a skill that rule is forgettable; here the
-# ACK line simply is not printed unless every message was classified, so the
+# ACK lines simply are not printed unless every message was classified, so the
 # rule holds even when the model is in a hurry.
 #
 # EVERY UNCERTAIN CASE FAILS CLOSED. `none` and `hold` cost the captain a
@@ -105,7 +105,7 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
   # different call still printed, because "did anything fail to classify"
   # was computed per call instead of over the one true peeked batch. So the
   # mode varies per line, but the loop, the UNPARSEABLE/bad tracking, and
-  # the final ACK line all stay batch-wide, exactly as before.
+  # the all-or-nothing ACK decision all stay batch-wide, exactly as before.
   #
   # <mode_map_file>, if given, is lines of `<dispatch_id><TAB><mode>` --
   # the caller builds it from the request file's own
@@ -133,14 +133,31 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
   # makes this safe in practice is the skill's anchored extraction pattern
   # keeping stray prose out of the map in the first place; this rule is the
   # second layer, for on the rare case a lookalike line still gets in.
+  #
+  # ONE `ACK <delivery_id>` LINE PER CLASSIFIED DELIVERY, NOT ONE FOR THE
+  # BATCH. An earlier version printed only `ACK <last id>`, the skill issued
+  # one `--ack`, and an ack removes exactly one delivery -- so a two-message
+  # batch left the first message queued. The next wake replayed it: it
+  # re-planned a release, re-ran `worker-release` on an already-released
+  # dispatch, and re-reported the same PR to the captain.
+  #
+  # Nobody has confirmed whether real Orca acks cumulatively. Acking each id
+  # explicitly is correct EITHER WAY -- against a cumulative ack the extra
+  # calls are no-ops on already-removed deliveries, which the skill already
+  # has to tolerate anyway (a replayed delivery makes a repeated
+  # worker-release safe by the same reasoning). Assuming cumulative acks is
+  # only correct if the assumption holds.
+  #
+  # The all-or-nothing rule is unchanged and still batch-wide: none of these
+  # lines is printed if any message in the batch failed to classify.
   local default_mode="$1" map_file="${2:-}"
-  local plan="" last="" bad=0
+  local plan="" acks="" bad=0
   local line id dispatch mode looked
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     # ASSUMES ORCA NEVER REPEATS A delivery_id WITHIN ONE BATCH. This is
-    # not re-checked here: a duplicate would print two PLAN lines for the
-    # same id and then ACK whichever came last, which is silently wrong
+    # not re-checked here: a duplicate would print two PLAN lines and two
+    # identical ACK lines for the same id, which is silently redundant
     # rather than loud. Orca's mailbox contract guarantees unique ids, so
     # this is a documented reliance on that guarantee, not a gap this
     # function closes.
@@ -163,15 +180,16 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
     fi
     plan="${plan}PLAN $id $(vizier_msg_disposition "$mode" "$line")
 "
-    last=$id
+    acks="${acks}ACK $id
+"
   done
   printf '%s' "$plan"
-  # No ACK when anything in the batch failed to classify. Orca replays an
-  # unacked batch, so withholding the ack loses nothing and re-delivers
-  # everything; acking a batch we did not fully understand loses a message
-  # for good.
-  if [ "$bad" -eq 0 ] && [ -n "$last" ]; then
-    printf 'ACK %s\n' "$last"
+  # No ACK at all when anything in the batch failed to classify -- not even
+  # for the messages that DID classify. Orca replays an unacked batch, so
+  # withholding the acks loses nothing and re-delivers everything; acking a
+  # batch we did not fully understand loses a message for good.
+  if [ "$bad" -eq 0 ]; then
+    printf '%s' "$acks"
   fi
   return 0
 }

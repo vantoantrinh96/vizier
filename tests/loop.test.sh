@@ -73,5 +73,27 @@ assert_eq "$(printf '%s\n' "$plan" | tail -1)" "ACK e1" "a held message is still
 # and nothing was released
 assert_eq "$(fake_orca_calls | grep -c 'worker-release --dispatch dispatch-9')" "0" "a held terminal is never released"
 
+# --- a MULTI-message batch must drain the queue COMPLETELY ----------------
+# The single `ACK <last id>` this plan used to print was issued as a single
+# `--ack`, and an ack removes exactly one delivery. So a two-message batch
+# left the first message queued: the next wake replayed it, re-planned a
+# release, re-ran worker-release on an already-released dispatch, and
+# re-reported the same PR to the captain. Nothing in a unit test could see
+# that -- it only shows up against a real queue, acked the way the skill says.
+run3=$(orca orchestration run-create --objective "Two workers" --json | jq -r '.result.run.id')
+vizier_request_create two-workers "$run3" platform github:acme/platform local "Two workers"
+fake_orca_queue "$run3" '{"delivery_id":"t1","type":"worker_done","dispatch_id":"dispatch-A","outcome":"succeeded","body":"PR https://x/A"}'
+fake_orca_queue "$run3" '{"delivery_id":"t2","type":"worker_done","dispatch_id":"dispatch-B","outcome":"succeeded","body":"PR https://x/B"}'
+plan=$(orca orchestration check --run "$run3" --peek --json | vizier_supervise_plan direct-PR)
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK ')" "2" "a two-message batch plans two acks"
+
+# Exactly what the skill tells the model to do: one `--ack` per ACK line.
+printf '%s\n' "$plan" | sed -n 's/^ACK //p' | while IFS= read -r ack_id; do
+  [ -n "$ack_id" ] || continue
+  orca orchestration check --run "$run3" --ack "$ack_id" --json >/dev/null
+done
+assert_eq "$(orca orchestration check --run "$run3" --peek --json | wc -l | tr -d ' ')" "0" \
+  "every delivery in the batch is drained -- nothing is left to be replayed"
+
 vizier_test_teardown
 vizier_test_report

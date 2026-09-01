@@ -100,8 +100,16 @@ batch='{"delivery_id":"d1","type":"heartbeat"}
 {"delivery_id":"d3","type":"question","body":"which option?"}'
 plan=$(printf '%s\n' "$batch" | vizier_supervise_plan direct-PR)
 assert_eq "$(printf '%s\n' "$plan" | grep -c '^PLAN ')" "3" "one plan line per message"
-assert_eq "$(printf '%s\n' "$plan" | tail -1)" "ACK d3" "ack is last and names the last delivery"
-assert_eq "$(printf '%s\n' "$plan" | grep -n '^ACK ' | cut -d: -f1)" "4" "ack never precedes a plan line"
+# ONE ACK LINE PER DELIVERY, not one for the batch. A single `ACK <last id>`
+# was acked with a single `--ack`, and an ack removes exactly one delivery --
+# so a two-message batch left the first message queued, and the next wake
+# replayed it: re-planning a release, re-running worker-release on an
+# already-released dispatch, and re-reporting the same PR to the captain.
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK ')" "3" "one ACK line per classified delivery"
+assert_eq "$(printf '%s\n' "$plan" | grep '^ACK ' | tr '\n' '|')" "ACK d1|ACK d2|ACK d3|" \
+  "the ACK lines name every delivery, in batch order"
+assert_eq "$(printf '%s\n' "$plan" | tail -1)" "ACK d3" "the last ack names the last delivery"
+assert_eq "$(printf '%s\n' "$plan" | grep -n '^ACK ' | head -1 | cut -d: -f1)" "4" "no ack precedes any plan line"
 assert_contains "$plan" "PLAN d2 release ok" "the worker_done in the middle is planned"
 
 # a message that cannot be parsed must block the ACK for the WHOLE batch
@@ -146,6 +154,11 @@ this is not json'
 plan=$(printf '%s\n' "$bad_mixed" | vizier_supervise_plan no-mistakes "$map")
 assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK ')" "0" "an unparseable message withholds the ack even with a mode map in play"
 assert_contains "$plan" "PLAN m4 release ok" "the good message before it is still planned correctly"
+
+# Per-delivery acks must NOT weaken the all-or-nothing rule: the good message
+# in a partly-unclassifiable batch does not get its own ack either.
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK m4')" "0" \
+  "not even the one message that DID classify is acked when another did not"
 
 vizier_test_teardown
 vizier_test_report

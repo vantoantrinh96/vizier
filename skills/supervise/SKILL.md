@@ -68,8 +68,11 @@ check applies (see below):
 
 ```bash
 default_mode=$(vizier_project_mode "$(vizier_request_get "$slug" project)") || default_mode=""
-printf '%s\n' "$batch" | vizier_supervise_plan "$default_mode" "$map"
+plan=$(printf '%s\n' "$batch" | vizier_supervise_plan "$default_mode" "$map")
+printf '%s\n' "$plan"
 ```
+
+Keep the plan in `$plan`: §4 acks off it, one `--ack` per `ACK` line.
 
 This is **one call over the whole batch**, never one call per message —
 `vizier_supervise_plan` resolves the mode per dispatch internally from the
@@ -117,11 +120,22 @@ recovery action. **Substituting `terminal close` is forbidden.** Repeating
 
 The captain asked to keep a terminal (`worker-retain`) → keep it.
 
-## 4. Ack last
+## 4. Ack last — one `--ack` per `ACK` line
+
+The plan prints **one `ACK <delivery_id>` line per message in the batch**, in
+batch order. Issue one `--ack` for each of them. An ack removes exactly the
+delivery it names, so a single `--ack` for a multi-message batch leaves the
+rest queued — the next wake replays them, re-plans a release, re-runs
+`worker-release` on a dispatch already released, and re-reports the same PR to
+the captain.
 
 ```bash
-orca orchestration check --run "$run_id" --ack "<the ACK id from the plan>" --json
+printf '%s\n' "$plan" | sed -n 's/^ACK //p' | while IFS= read -r ack_id; do
+  orca orchestration check --run "$run_id" --ack "$ack_id" --json
+done
 ```
+
+Acking an id twice is harmless; leaving one unacked is not.
 
 ## 5. Report once
 
