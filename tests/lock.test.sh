@@ -55,12 +55,20 @@ after=$(shasum -a 256 "$(vizier_lock_path)" | awk '{print $1}')
 assert_eq "$after" "$before" "and leaves the existing lock byte-identical"
 
 # --- take-stale: the file we take must be the file we judged ---------------
+# Contract note (review round 1, Important 3): on success, take-stale no
+# longer removes its own backup file -- it prints the backup's path and
+# leaves cleanup to the CALLER, so that rm can happen after the caller's
+# own create_exclusive instead of before it, shortening the window where
+# the true lock file does not exist on disk. vizier_lock_claim does this
+# cleanup itself; this direct test of the bare primitive does the same here
+# so it does not leak a lock.stale.* file for a later assertion to trip over.
 printf 'session_id=old\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
 snap=$(cat "$(vizier_lock_path)")
-_vizier_lock_take_stale "$snap"
-assert_rc "$?" 0 "take-stale succeeds when the file is unchanged"
+stale=$(_vizier_lock_take_stale "$snap"); rc=$?
+assert_rc "$rc" 0 "take-stale succeeds when the file is unchanged"
 assert_eq "$(test -e "$(vizier_lock_path)" && echo present || echo gone)" "gone" \
   "and leaves the slot free to create into"
+rm -f "$stale"
 
 # the case that prevents stealing from a live owner
 printf 'session_id=old\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
@@ -85,6 +93,70 @@ printf 'session_id=live-one\nharness=claude\npid=%s\nsince=2\n' $$ > "$(vizier_l
 out=$(_vizier_lock_take_stale "$snap" && _vizier_lock_create_exclusive thief claude $$ && echo stole || echo refused)
 assert_eq "$out" "refused" "a stale snapshot never dispossesses a live owner"
 assert_eq "$(vizier_lock_get session_id)" "live-one" "the live owner still holds it"
+
+# --- the same rule, driven through vizier_lock_claim itself, not the bare
+# primitives (review round 1, Important 2) ----------------------------------
+# A dead-pid lock is seeded; the injection seam fires right after
+# vizier_lock_claim has decided "dead, proceed to reclaim" but before it
+# calls _vizier_lock_take_stale -- the exact interleave the reviewer
+# demonstrated dispossessing a live owner when the snapshot was taken AFTER
+# the liveness check instead of before it. The claim must refuse, naming the
+# ACTUAL live owner (not the stale snapshot's), and that live owner's lock
+# must survive untouched.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=ghost\nharness=claude\npid=999999\nsince=1\n' > "$(vizier_lock_path)"
+inject='printf "session_id=live-one\nharness=claude\npid=%s\nsince=2\n" '"$$"' > "$(vizier_lock_path)"'
+out=$(VIZIER_TEST_LOCK_CLAIM_INJECT="$inject" vizier_lock_claim thief claude $$); rc=$?
+assert_rc "$rc" 1 "a mid-flight legitimate claim refuses the reclaimer (composed path)"
+assert_contains "$out" "held_by=live-one" "names the actual live owner, not the stale snapshot's"
+assert_eq "$(vizier_lock_get session_id)" "live-one" "the live owner survives the interleave"
+
+# --- unifying refresh through the same compare-and-swap closes the
+# refresh-vs-reclaim race too (review round 1, Important 4) -----------------
+# The demonstrated bug: A refreshes its own (believed-current) lock at the
+# same moment B legitimately reclaims it as dead, and -- on the old
+# unconditional-write refresh -- BOTH print success though only one write
+# survives. Simulate B's reclaim landing between A's snapshot and A's
+# take_stale call; A's refresh must now refuse rather than lie about holding it.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a\nharness=claude\npid=999999\nsince=1\n' > "$(vizier_lock_path)"
+inject='printf "session_id=sess-b\nharness=claude\npid=%s\nsince=2\n" '"$$"' > "$(vizier_lock_path)"'
+out=$(VIZIER_TEST_LOCK_CLAIM_INJECT="$inject" vizier_lock_claim sess-a claude $$); rc=$?
+assert_rc "$rc" 1 "a refresh that loses a concurrent reclaim refuses instead of lying"
+assert_eq "$(vizier_lock_get session_id)" "sess-b" "the reclaiming session's lock survives"
+
+# --- mutation-detecting: the restore's `set -C` guard specifically (review
+# round 1, minor) ------------------------------------------------------------
+# Simulate a legitimate third claimant landing in the vacated slot exactly
+# between take_stale detecting the mismatch and attempting its restore
+# write. The guard must refuse to clobber it. Without `set -C` on that
+# restore line, this assertion fails (the restore would silently overwrite
+# the third claimant's fresh, live lock).
+rm -f "$(vizier_lock_path)"
+printf 'session_id=old\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
+snap=$(cat "$(vizier_lock_path)")
+printf 'session_id=changed\nharness=claude\npid=1\nsince=2\n' > "$(vizier_lock_path)"
+inject='printf "session_id=third\nharness=claude\npid=%s\nsince=3\n" '"$$"' > "$(vizier_lock_path)"'
+VIZIER_TEST_TAKE_STALE_RESTORE_INJECT="$inject" _vizier_lock_take_stale "$snap"
+assert_rc "$?" 1 "take-stale still refuses when a legitimate claimant lands during its own restore"
+assert_eq "$(vizier_lock_get session_id)" "third" \
+  "and does not clobber that legitimate claimant's lock (set -C guards the restore)"
+
+# --- a create that fails for a NON-competitive reason must not claim
+# held_by= (review round 1, minor) -------------------------------------------
+# bin/vizier-activate.sh matches the literal string "refused held_by=" to
+# decide whether to print the `vizier unlock` hint. If create_exclusive
+# fails because the home is unwritable (not because someone else won the
+# race), there is no lock and no owner to name -- printing held_by=unknown
+# here would send the captain to unlock a lock that was never written.
+# Force a non-competitive failure universally (works even as root): put a
+# plain FILE where a directory needs to be created, so mkdir -p fails with
+# ENOTDIR regardless of permissions.
+blocked="$VIZIER_TEST_TMP/blocked-home"
+: > "$blocked"
+out=$(VIZIER_HOME="$blocked/sub" vizier_lock_claim sess-g claude $$ 2>&1); rc=$?
+assert_rc "$rc" 1 "a non-competitive create failure still refuses"
+assert_contains "$out" "reason=create_failed" "and does not print held_by= for it"
 
 # Anti-race invariant, run 20 times: many sessions claiming an empty lock at
 # once must produce EXACTLY ONE winner, every time. This now holds because
