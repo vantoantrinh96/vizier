@@ -67,8 +67,8 @@ vizier/
   commands/
     vizier.md             # /vizier:vizier -- activates the session, holds the lock, suggests a project from cwd
   skills/
-    brief/SKILL.md           # generates the 4-layer spec for task-create
-    routing/SKILL.md         # host discovery, eligibility, per-request host choice
+    request/SKILL.md         # opens and closes a Request: project, routing, the one host question
+    brief/SKILL.md           # generates the 4-layer spec for task-create, then dispatches
     supervise/SKILL.md       # processes mailbox batches, release/reuse, ack, reporting
     delivery/SKILL.md        # delivery mode, delivery contract, ask-user policy
     identity/SKILL.md        # identity + hard rules; both /vizier:vizier and PostCompact load it
@@ -87,7 +87,7 @@ vizier/
 
 ```
 ~/.vizier/
-  lock                       # {session_id, pid, since} -- current first mate owner
+  lock                       # {session_id, harness, pid, since} -- current first mate owner
   requests/<slug>.md         # ledger of an open request
   projects/<name>.md         # project knowledge: delivery mode, build/test/ship, conventions, pitfalls, model hints
 ```
