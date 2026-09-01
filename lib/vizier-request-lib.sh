@@ -33,6 +33,7 @@ _vizier_translit() {  # <text>
 }
 
 vizier_request_slug() {  # <text>
+  local s
   s=$(_vizier_translit "${1:-}")
   s=$(printf '%s' "$s" \
     | tr '[:upper:]' '[:lower:]' \
@@ -48,6 +49,7 @@ vizier_request_path() {  # <slug>
 }
 
 vizier_request_create() {  # <slug> <run_id> <project> <project_id> <host> <body>
+  local f t
   f=$(vizier_request_path "$1")
   [ -e "$f" ] && return 1
   mkdir -p "$(vizier_requests_dir)" || return 1
@@ -70,6 +72,7 @@ vizier_request_create() {  # <slug> <run_id> <project> <project_id> <host> <body
 
 # Print the frontmatter only: everything between the first `---` and the next.
 _vizier_request_frontmatter() {  # <slug>
+  local f
   f=$(vizier_request_path "$1")
   [ -r "$f" ] || return 1
   tr -d '\r' < "$f" | awk 'NR==1 && $0=="---" {inside=1; next} inside && $0=="---" {exit} inside'
@@ -81,6 +84,7 @@ vizier_request_get() {  # <slug> <key>
 }
 
 vizier_request_set() {  # <slug> <key> <value>
+  local f t
   f=$(vizier_request_path "$1")
   [ -w "$f" ] || return 1
   t=$(mktemp "${TMPDIR:-/tmp}/vizier-req.XXXXXX") || return 1
@@ -97,6 +101,7 @@ vizier_request_set() {  # <slug> <key> <value>
 }
 
 vizier_request_note() {  # <slug> <line>
+  local f
   f=$(vizier_request_path "$1")
   [ -w "$f" ] || return 1
   printf '%s\n' "$2" >> "$f"
@@ -107,6 +112,7 @@ vizier_request_close() {  # <slug>
 }
 
 vizier_request_open_slugs() {
+  local d f s
   d=$(vizier_requests_dir)
   [ -d "$d" ] || return 0
   for f in "$d"/*.md; do

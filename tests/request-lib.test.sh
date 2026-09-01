@@ -50,6 +50,21 @@ vizier_request_set dark-mode host "Mac mini"
 assert_eq "$(vizier_request_get dark-mode host)" "Mac mini" "a value with a space survives"
 assert_eq "$(grep -c '^host:' "$f")" "1" "set replaces, never appends a second key"
 
+# --- library calls must never clobber a caller's own variables ------------
+# The reviewer found this: every function used to assign to bare globals
+# named f, t, s, d -- exactly the short names a caller reaches for too. Set
+# sentinels and call several library functions in between; if any leaks
+# through as a bare global, the sentinel gets silently overwritten.
+f="caller-owns-this-f"
+s="caller-owns-this-s"
+vizier_request_create sentinel-check run-9 sentproj sent:proj local "sentinel body" >/dev/null
+vizier_request_get sentinel-check status >/dev/null
+vizier_request_set sentinel-check host other >/dev/null
+vizier_request_open_slugs >/dev/null
+vizier_request_close sentinel-check >/dev/null
+assert_eq "$f" "caller-owns-this-f" "library calls never clobber a caller's own \$f"
+assert_eq "$s" "caller-owns-this-s" "library calls never clobber a caller's own \$s"
+
 vizier_request_create login run-2 platform github:acme/platform local "Fix login"
 assert_eq "$(vizier_request_open_slugs | sort | tr '\n' ' ')" "dark-mode login " "both open"
 vizier_request_close dark-mode
