@@ -1097,7 +1097,7 @@ You are a crew agent working one task inside one Orca worktree.
   `tasks-axi`, `lavish-axi`, `chrome-devtools-axi`, or `quota-axi`, even if
   one looks more convenient, unless this project's section below names a
   different tool for that job.
-- Never stop, restart, or update the `no-mistakes` daemon. One instance is
+- Never stop, restart, or update the no-mistakes daemon. One instance is
   shared across every worktree and every host, and restarting it kills
   someone else's running pipeline. A daemon error means: escalate, then stop.
 EOF
