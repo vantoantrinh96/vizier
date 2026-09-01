@@ -5,16 +5,31 @@ description: Turn one task from an open Request into a briefed, dispatched worke
 
 # Brief and dispatch
 
+`VIZIER_DIST` is not set by the harness — derive it from the home path
+before the first `source`, the same way every other skill does:
+
 ```bash
+VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 . "$VIZIER_DIST/lib/vizier-home.sh"
 . "$VIZIER_DIST/lib/vizier-request-lib.sh"
 . "$VIZIER_DIST/lib/vizier-brief-lib.sh"
 ```
 
+## 0. Read the request
+
+`run_id` and `project` are not already in scope — this skill can run long
+after `request` opened the Request, in a separate turn. Read both from the
+request file the same way `host` is read later:
+
+```bash
+run_id=$(vizier_request_get "$slug" run_id)
+project=$(vizier_request_get "$slug" project)
+```
+
 ## 1. Settle the delivery mode — before writing anything
 
 ```bash
-mode=$(vizier_project_mode "<project>") || mode=""
+mode=$(vizier_project_mode "$project") || mode=""
 ```
 
 - Empty → the project has no knowledge file. **Ask the captain** which mode.
@@ -29,7 +44,7 @@ Mode is locked in **per task, at creation time**. It never changes mid-task.
 ## 2. Assemble the brief
 
 ```bash
-spec=$(vizier_brief_assemble "<project>" "$mode" "<the concrete task and its definition of done>")
+spec=$(vizier_brief_assemble "$project" "$mode" "<the concrete task and its definition of done>")
 ```
 
 Never hand-write a spec. The four layers exist so that layer 1 (the

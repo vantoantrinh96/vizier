@@ -80,6 +80,20 @@ assert_eq "$(d no-mistakes '{"delivery_id":"d","type":"worker_done","dispatch_id
 assert_eq "$(d direct-PR '{"delivery_id":"d","type":"worker_done","dispatch_id":"dispatch-1","body":"no axi here"}')" \
   "release ok" "direct-PR needs no axi outcome"
 
+# --- unrecognised mode strings fail closed to the strict check ------------
+# an EMPTY mode is what supervise sees before a per-dispatch mode has been
+# established (e.g. a mixed-mode batch, or a caller that didn't resolve it) --
+# it must NOT be read as "not no-mistakes, so release ok".
+assert_eq "$(d "" '{"delivery_id":"d","type":"worker_done","dispatch_id":"dispatch-1","body":"no axi here"}')" \
+  "hold no-axi-outcome" "an empty mode still requires the outcome line"
+assert_eq "$(d "" '{"delivery_id":"d","type":"worker_done","dispatch_id":"dispatch-1","body":"axi_outcome: passed"}')" \
+  "release axi-outcome=passed" "an empty mode still releases on a genuine terminal outcome"
+# a garbage/typo'd mode is not direct-PR either -- only the exact string is
+assert_eq "$(d direct-pr '{"delivery_id":"d","type":"worker_done","dispatch_id":"dispatch-1","body":"no axi here"}')" \
+  "hold no-axi-outcome" "a mistyped mode (wrong case) still requires the outcome line"
+assert_eq "$(d bogus-mode '{"delivery_id":"d","type":"worker_done","dispatch_id":"dispatch-1","body":"no axi here"}')" \
+  "hold no-axi-outcome" "an unrecognised mode string still requires the outcome line"
+
 # --- the batch plan: ack comes last, and only if all were processed -------
 batch='{"delivery_id":"d1","type":"heartbeat"}
 {"delivery_id":"d2","type":"worker_done","dispatch_id":"dispatch-1","outcome":"succeeded"}

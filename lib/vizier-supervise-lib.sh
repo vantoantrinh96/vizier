@@ -64,27 +64,37 @@ vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|none> <reason
     *) printf 'none stale-no-dispatch'; return 0 ;;
   esac
 
-  if [ "$mode" = "no-mistakes" ]; then
-    values=$(_vizier_axi_outcome "$body")
-    value_count=$(printf '%s\n' "$values" | sed '/^$/d' | wc -l | tr -d ' ')
-    if [ "$value_count" -eq 0 ]; then
-      printf 'hold no-axi-outcome'
-    elif [ "$value_count" -gt 1 ]; then
-      # More than one distinct value is ambiguous, not decidable -- see the
-      # RESIDUAL GAP note on _vizier_axi_outcome for why first-match-wins
-      # was wrong here.
-      printf 'hold axi-outcome=ambiguous'
-    else
-      outcome="$values"
-      case "$outcome" in
-        passed|checks-passed|failed|cancelled) printf 'release axi-outcome=%s' "$outcome" ;;
-        *)                                     printf 'hold axi-outcome=%s' "$outcome" ;;
-      esac
-    fi
+  # FAIL CLOSED ON THE MODE STRING ITSELF, not only on the body. The caller
+  # can pass a mode that is empty (nothing established yet) or garbage (a
+  # typo, a stale value), and a mixed-mode batch can genuinely mix a
+  # no-mistakes dispatch in among direct-PR ones. Treating anything other
+  # than the exact string `direct-PR` as "needs the strict check" means an
+  # unrecognised mode gets the safer of the two behaviors -- a wrongly held
+  # terminal costs the captain a report, a wrongly released one can lose a
+  # branch a pipeline still owns. `direct-PR` is the only value that ever
+  # skips the axi_outcome check, and it must be spelled exactly.
+  if [ "$mode" = "direct-PR" ]; then
+    printf 'release ok'
     return 0
   fi
 
-  printf 'release ok'
+  values=$(_vizier_axi_outcome "$body")
+  value_count=$(printf '%s\n' "$values" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$value_count" -eq 0 ]; then
+    printf 'hold no-axi-outcome'
+  elif [ "$value_count" -gt 1 ]; then
+    # More than one distinct value is ambiguous, not decidable -- see the
+    # RESIDUAL GAP note on _vizier_axi_outcome for why first-match-wins
+    # was wrong here.
+    printf 'hold axi-outcome=ambiguous'
+  else
+    outcome="$values"
+    case "$outcome" in
+      passed|checks-passed|failed|cancelled) printf 'release axi-outcome=%s' "$outcome" ;;
+      *)                                     printf 'hold axi-outcome=%s' "$outcome" ;;
+    esac
+  fi
+  return 0
 }
 
 vizier_supervise_plan() {  # <mode> -- batch JSON lines on stdin

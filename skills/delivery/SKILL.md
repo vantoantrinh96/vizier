@@ -8,6 +8,18 @@ description: Decide a no-mistakes ask-user finding. Use when supervise routes a 
 A `no-mistakes` pipeline stopped at a finding that needs a human. The worker
 did the right thing by asking instead of answering.
 
+`supervise` routes you here inside the same session, so `run_id` and `slug`
+are normally still the shell variables it already set. `VIZIER_DIST` is
+never set by the harness though — if this ever runs cold (a resumed
+session, a fresh one), derive it the same way every other skill does before
+touching the request file:
+
+```bash
+VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
+. "$VIZIER_DIST/lib/vizier-home.sh"
+. "$VIZIER_DIST/lib/vizier-request-lib.sh"
+```
+
 **You never call `axi respond` for a worker's run.** A run has exactly one
 driver, and it is the worker. You send a decision; the worker applies it.
 

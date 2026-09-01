@@ -8,9 +8,12 @@ description: Open or close a Request. Use when the captain states a new request,
 **One captain request = one Request = one Orca Run.** Not one feature — "fix
 the flaky test then add dark mode" is *one* request with two tasks.
 
-Source the libraries first:
+Source the libraries first. `VIZIER_DIST` is not set by the harness — it is
+derived from the home path the same way `bin/vizier` derives it, and every
+skill defines it itself, right here, before the first `source`:
 
 ```bash
+VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 . "$VIZIER_DIST/lib/vizier-home.sh"
 . "$VIZIER_DIST/lib/vizier-request-lib.sh"
 . "$VIZIER_DIST/lib/vizier-routing-lib.sh"
@@ -42,16 +45,18 @@ This is the request's only mandatory question. Every task in this request
 inherits the answer: retries, review fixes, spawned work. Never ask again.
 
 - The captain picks a host with no `ready` setup → propose
-  `orca project setup-clone` and run it **only after they agree**.
+  `orca project setup-clone --project <id> --host <host-id> --url <clone-url> --destination <path> [--display-name <name>] [--json]`
+  and run it **only after they agree**. The first four flags are required —
+  an agent told only the command name cannot run it.
 - No host is eligible → say so and stop. Do not fall back to local.
 - **Never silently move work to another host.** Not at open, not later.
 
 ### 4. Create the Run and the file
 
 ```bash
-run=$(orca orchestration run-create --objective "<the captain's request>" --json | jq -r '.result.run.id')
+run_id=$(orca orchestration run-create --objective "<the captain's request>" --json | jq -r '.result.run.id')
 slug=$(vizier_request_slug "<short title>")
-vizier_request_create "$slug" "$run" "<project>" "<project_id>" "<host>" "<the captain's words, verbatim>"
+vizier_request_create "$slug" "$run_id" "<project>" "<project_id>" "<host>" "<the captain's words, verbatim>"
 ```
 
 Quote the captain verbatim in the body. Later tasks are briefed from it, and a

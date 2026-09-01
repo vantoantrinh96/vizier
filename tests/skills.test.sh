@@ -17,6 +17,7 @@ f=skills/request/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "request skill exists"
 assert_eq "$(head -1 "$R/$f")" "---" "frontmatter present"
 has $f "name: request" "skill is named"
+has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is defined, not assumed"
 has $f "orca orchestration run-create --objective" "the exact run-create call"
 has $f "vizier_routing_table" "routing comes from the library"
 has $f "exactly once" "the host is asked exactly once"
@@ -29,6 +30,7 @@ has $f "worker-release" "closing releases remaining dispatches"
 # --- brief ------------------------------------------------------------
 f=skills/brief/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "brief skill exists"
+has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is defined, not assumed"
 has $f "vizier_brief_assemble" "the spec comes from the library, never hand-written"
 has $f "orca orchestration task-create --spec" "exact task-create"
 has $f "orca orchestration worker-start" "exact worker-start"
@@ -45,6 +47,7 @@ has $f "never retry blind" "receipts are read"
 # --- supervise --------------------------------------------------------
 f=skills/supervise/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "supervise skill exists"
+has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is defined, not assumed"
 has $f "vizier_supervise_plan" "dispositions come from the library"
 has $f "orca orchestration check" "the mailbox is read with check"
 has $f "--ack" "ack exists"
@@ -61,6 +64,7 @@ has $f "worker-read" "a quiet worker is diagnosed, not guessed at"
 # --- delivery -----------------------------------------------------------
 f=skills/delivery/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "delivery skill exists"
+has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is defined, not assumed"
 has $f "never call" "the first mate never drives a worker's run"
 has $f "axi respond" "the command it must not run is named"
 has $f "One precise decision" "the reply is a single decision"
