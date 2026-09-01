@@ -114,5 +114,38 @@ assert_contains "$plan" "UNPARSEABLE" "and says so"
 # an empty batch acks nothing
 assert_eq "$(printf '' | vizier_supervise_plan direct-PR | wc -l | tr -d ' ')" "0" "empty batch, empty plan"
 
+# --- per-dispatch mode map: one call, one batch, one ack --------------------
+# The map is <dispatch_id><TAB><mode>, exactly what the supervise skill
+# builds from the request file's `task <id> -> dispatch <id> (<mode>)` notes.
+map="$VIZIER_TEST_TMP/mode-map"
+printf 'dispatch-A\tdirect-PR\ndispatch-B\tno-mistakes\n' > "$map"
+
+# A batch mixing a direct-PR dispatch and a no-mistakes dispatch, resolved
+# correctly IN THE SAME vizier_supervise_plan call -- this is exactly what
+# splitting into one call per message could not do (see the library comment).
+mixed='{"delivery_id":"m1","type":"worker_done","dispatch_id":"dispatch-A","body":"no axi needed"}
+{"delivery_id":"m2","type":"worker_done","dispatch_id":"dispatch-B","body":"still running"}'
+plan=$(printf '%s\n' "$mixed" | vizier_supervise_plan no-mistakes "$map")
+assert_contains "$plan" "PLAN m1 release ok" "a direct-PR dispatch in the map releases even though the default mode is strict"
+assert_contains "$plan" "PLAN m2 hold no-axi-outcome" "a no-mistakes dispatch in the same call still holds, unaffected by the other dispatch's mode"
+assert_eq "$(printf '%s\n' "$plan" | tail -1)" "ACK m2" "one batch, one ack, even with mixed per-dispatch modes"
+
+# a dispatch absent from the map falls back to the DEFAULT_MODE ARGUMENT,
+# not to empty/strict by accident -- default_mode=direct-PR here, so a bug
+# that dropped the fallback (defaulting to "" instead) would show up as a
+# wrong hold instead of the expected release.
+missing='{"delivery_id":"m3","type":"worker_done","dispatch_id":"dispatch-not-in-map","body":"no axi here"}'
+plan=$(printf '%s\n' "$missing" | vizier_supervise_plan direct-PR "$map")
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^PLAN ')" "1" "one plan line"
+assert_contains "$plan" "PLAN m3 release ok" "a dispatch missing from the map falls back to the given default mode"
+
+# an unparseable message anywhere in a mixed-mode batch still withholds the
+# WHOLE batch's ack -- the exact invariant the per-message-call approach broke
+bad_mixed='{"delivery_id":"m4","type":"worker_done","dispatch_id":"dispatch-A","body":"no axi needed"}
+this is not json'
+plan=$(printf '%s\n' "$bad_mixed" | vizier_supervise_plan no-mistakes "$map")
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK ')" "0" "an unparseable message withholds the ack even with a mode map in play"
+assert_contains "$plan" "PLAN m4 release ok" "the good message before it is still planned correctly"
+
 vizier_test_teardown
 vizier_test_report

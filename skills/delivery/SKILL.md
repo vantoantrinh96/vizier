@@ -8,16 +8,27 @@ description: Decide a no-mistakes ask-user finding. Use when supervise routes a 
 A `no-mistakes` pipeline stopped at a finding that needs a human. The worker
 did the right thing by asking instead of answering.
 
-`supervise` routes you here inside the same session, so `run_id` and `slug`
-are normally still the shell variables it already set. `VIZIER_DIST` is
-never set by the harness though — if this ever runs cold (a resumed
-session, a fresh one), derive it the same way every other skill does before
-touching the request file:
+`VIZIER_DIST` is not set by the harness — derive it from the home path
+before the first `source`, the same way every other skill does. A captain
+can invoke this skill directly, not only by way of `supervise`, so treat
+`run_id` and `slug` as never already in scope rather than assuming
+`supervise`'s session state carried over:
 
 ```bash
 VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 . "$VIZIER_DIST/lib/vizier-home.sh"
 . "$VIZIER_DIST/lib/vizier-request-lib.sh"
+```
+
+## 0. Read run_id off the wake message itself
+
+The wake line is exactly `vizier: <type> run=<run_id> <detail>`; take
+`run_id` from it before doing anything else. Translate it to the request's
+slug with the shared library lookup, since a wake event never carries the
+slug itself:
+
+```bash
+slug=$(vizier_request_slug_for_run "$run_id")
 ```
 
 **You never call `axi respond` for a worker's run.** A run has exactly one

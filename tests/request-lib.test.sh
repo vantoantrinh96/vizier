@@ -77,5 +77,20 @@ printf -- '---\r\nrun_id: run-3\r\nproject: p\r\nproject_id: x\r\nhost: local\r\
 assert_eq "$(vizier_request_get crlf run_id)" "run-3" "CRLF file reads cleanly"
 assert_contains "$(vizier_request_open_slugs)" "crlf" "CRLF request counts as open"
 
+# --- slug_for_run: the reverse lookup supervise/delivery use to translate a
+# wake event's run_id (all a wake message ever carries) back to the request
+# file that names it ---------------------------------------------------------
+vizier_request_create run-lookup run-42 proj proj-id local "for slug_for_run"
+assert_eq "$(vizier_request_slug_for_run run-42)" "run-lookup" "matches the open request holding that run_id"
+assert_eq "$(vizier_request_slug_for_run run-does-not-exist)" "" "no match -> empty, not an error"
+vizier_request_close run-lookup
+assert_eq "$(vizier_request_slug_for_run run-42)" "" "a closed request's run_id no longer resolves"
+
+# must not clobber a caller's own $s either -- same reviewer-found class of
+# bug as the sentinel check above, this function has its own local $s
+s="caller-owns-this-s-2"
+vizier_request_slug_for_run run-2 >/dev/null
+assert_eq "$s" "caller-owns-this-s-2" "vizier_request_slug_for_run never clobbers a caller's own \$s"
+
 vizier_test_teardown
 vizier_test_report

@@ -23,14 +23,12 @@ VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 This skill starts cold, from an independent wake event — nothing has run
 beforehand in this session, so `run_id` is not already in scope. The wake
 line is exactly `vizier: <type> run=<run_id> <detail>`; take `run_id` from
-it before doing anything else. To find the request this Run belongs to (for
-the mode lookup in step 2, or the host later), match it against the open
-requests, since one Request is one Run:
+it before doing anything else. Translate it to the request's slug — needed
+for the mode map below, and for `host` later — with the shared library
+lookup, since a wake event never carries the slug itself:
 
 ```bash
-for s in $(vizier_request_open_slugs); do
-  [ "$(vizier_request_get "$s" run_id)" = "$run_id" ] && slug=$s && break
-done
+slug=$(vizier_request_slug_for_run "$run_id")
 ```
 
 ## 1. Read the batch
@@ -41,23 +39,35 @@ batch=$(orca orchestration check --run "$run_id" --peek --json)
 
 ## 2. Plan every message before acting on any
 
-Pass a mode only for a dispatch whose mode you have **actually established**
-from the request file (the project default from `vizier_project_mode`,
-overridden per task by any `task N: mode=<mode> because <reason>` note
-`brief` left) — never a guess:
+Build a per-dispatch mode map from the request file's own dispatch notes.
+`brief` writes one line per dispatch, `task <id> -> dispatch <id> (<mode>)` —
+keyed by dispatch id. The per-task override note is **not** a usable join
+key here: it's keyed by task number, and the batch you're resolving only
+carries `dispatch_id`. Pull dispatch id and mode out of the dispatch note:
 
 ```bash
-printf '%s\n' "$batch" | vizier_supervise_plan "<the established delivery mode, or empty if you have not established one>"
+f=$(vizier_request_path "$slug")
+map=$(mktemp)
+sed -n 's/.*-> dispatch \([^[:space:]]*\) (\(.*\))$/\1\t\2/p' "$f" > "$map"
 ```
 
+The fallback for a dispatch the map doesn't name is the project's own
+default mode — never a guess, and if even that is unavailable, the strict
+check applies (see below):
+
+```bash
+default_mode=$(vizier_project_mode "$(vizier_request_get "$slug" project)") || default_mode=""
+printf '%s\n' "$batch" | vizier_supervise_plan "$default_mode" "$map"
+```
+
+This is **one call over the whole batch**, never one call per message —
+`vizier_supervise_plan` resolves the mode per dispatch internally from the
+map you gave it. Splitting it into per-message calls breaks the ACK
+invariant below: "did anything fail to classify" has to be computed over
+the one true peeked batch, not recomputed separately per message.
 `vizier_supervise_plan` treats anything other than the exact string
-`direct-PR` — including an empty or unrecognised mode — as `no-mistakes`
-and requires the outcome line. A peeked batch can hold `worker_done`
-messages from **several tasks with different modes** at once: when that
-happens, resolve the mode **per dispatch** (call `vizier_supervise_plan`
-once per message with that dispatch's own mode) rather than one mode for
-the whole batch, or pass nothing and accept the strict path for all of them.
-Never pass `direct-PR` for a dispatch you have not confirmed is `direct-PR`.
+`direct-PR` — including an empty or unrecognised mode, from the map or from
+`default_mode` — as `no-mistakes` and requires the outcome line.
 
 Each `PLAN <delivery_id> <disposition> <reason>` line is a decision:
 

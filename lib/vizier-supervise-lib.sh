@@ -97,10 +97,27 @@ vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|none> <reason
   return 0
 }
 
-vizier_supervise_plan() {  # <mode> -- batch JSON lines on stdin
-  local mode="$1"
+vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON lines on stdin
+  # WHY THE BATCH STAYS WHOLE, EVEN THOUGH THE MODE IS RESOLVED PER MESSAGE.
+  # An earlier version of the calling skill called this once PER MESSAGE, to
+  # get a per-dispatch mode -- that broke the ACK invariant below: an
+  # unparseable message in one call could no longer suppress the ACK a
+  # different call still printed, because "did anything fail to classify"
+  # was computed per call instead of over the one true peeked batch. So the
+  # mode varies per line, but the loop, the UNPARSEABLE/bad tracking, and
+  # the final ACK line all stay batch-wide, exactly as before.
+  #
+  # <mode_map_file>, if given, is lines of `<dispatch_id><TAB><mode>` --
+  # the caller builds it from the request file's own
+  # `task <id> -> dispatch <id> (<mode>)` notes (written by the `brief`
+  # skill), which is keyed by dispatch id, unlike the per-task override
+  # note that isn't. A dispatch missing from the map, or no map at all,
+  # falls back to <default_mode> -- which itself already fails closed to
+  # the strict check unless it is the exact string `direct-PR` (see
+  # vizier_msg_disposition above).
+  local default_mode="$1" map_file="${2:-}"
   local plan="" last="" bad=0
-  local line id
+  local line id dispatch mode looked
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     # ASSUMES ORCA NEVER REPEATS A delivery_id WITHIN ONE BATCH. This is
@@ -115,6 +132,14 @@ vizier_supervise_plan() {  # <mode> -- batch JSON lines on stdin
 "
       bad=1
       continue
+    fi
+    mode="$default_mode"
+    if [ -n "$map_file" ] && [ -r "$map_file" ]; then
+      dispatch=$(printf '%s' "$line" | jq -r '.dispatch_id // empty' 2>/dev/null)
+      if [ -n "$dispatch" ]; then
+        looked=$(awk -F'\t' -v d="$dispatch" '$1==d{print $2; exit}' "$map_file")
+        [ -n "$looked" ] && mode="$looked"
+      fi
     fi
     plan="${plan}PLAN $id $(vizier_msg_disposition "$mode" "$line")
 "

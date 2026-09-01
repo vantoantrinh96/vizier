@@ -122,3 +122,28 @@ vizier_request_open_slugs() {
   done
   return 0
 }
+
+# The wake hook and any skill it triggers (supervise, delivery) learn a
+# run_id from the wake event itself, never a slug -- the request file is
+# named by slug, so anything that then needs the FILE (to read host, or a
+# dispatch's mode note) has to translate run_id back to slug first. Three
+# skills need exactly this translation; giving it one shared home means a
+# future change to how requests are matched only has to happen once, not be
+# kept in sync by hand across all three copies.
+#
+# A plain `for` loop, deliberately not a `| while read` pipeline: the latter
+# runs its body in a subshell on this shell's dialect (see the routing-table
+# carry-forward warning elsewhere in this project), and a `return 0` from
+# inside a piped-into `while` would only exit the subshell, not this
+# function -- silently falling through to the empty-result path below
+# instead of stopping at the first match.
+vizier_request_slug_for_run() {  # <run_id> -- prints the slug of the open request whose run_id matches, empty if none
+  local run_id="$1" s
+  for s in $(vizier_request_open_slugs); do
+    if [ "$(vizier_request_get "$s" run_id)" = "$run_id" ]; then
+      printf '%s' "$s"
+      return 0
+    fi
+  done
+  return 0
+}
