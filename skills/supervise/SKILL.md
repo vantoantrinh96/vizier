@@ -38,6 +38,11 @@ if [ -z "$slug" ]; then
   printf 'vizier: wake for run_id=%s, but no OPEN request names that Run.\n' "$run_id" >&2
   printf 'vizier: not processing this batch. Check ~/.vizier/requests/ -- the\n' >&2
   printf 'vizier: request was probably closed while a worker was still running.\n' >&2
+  # The snippet STOPS here, it does not just complain and fall through. A
+  # printf followed by a fall-through leaves the ack step reachable, which is
+  # the one thing this guard exists to forbid -- and a non-zero exit is also
+  # what tells the caller the wake was not processed.
+  exit 1
 fi
 ```
 
@@ -89,7 +94,7 @@ plan=$(printf '%s\n' "$batch" | vizier_supervise_plan "$default_mode" "$map")
 printf '%s\n' "$plan"
 ```
 
-Keep the plan in `$plan`: §5 acks off it, one `--ack` per `ACK` line.
+Keep the plan in `$plan`: §6 acks off it, one `--ack` per `ACK` line.
 
 This is **one call over the whole batch**, never one call per message —
 `vizier_supervise_plan` resolves the mode per dispatch internally from the
@@ -159,14 +164,37 @@ Answering counts as processed. Escalating counts as processed only once the
 question is actually in front of the captain — not once you have decided to
 ask it.
 
-## 5. Ack last — one `--ack` per `ACK` line
+**Sending §5's one consolidated report is what
+puts an escalation in front of the captain.** Deciding to escalate does not;
+drafting it does not; only sending that message does. So a `reply` delivery is
+not discharged until §5's message is sent, and the ack in §6 waits for it —
+`--ack` that delivery only afterwards. That is the whole reason the ack
+comes after the report and not before: an ack is what tells Orca the message
+is dealt with, and Orca replays only what is unacked. Ack the batch first and
+the replay safety net for the un-put question is gone — which is exactly the
+loss the `reply` disposition exists to prevent.
 
-The plan prints **one `ACK <delivery_id>` line per message in the batch**, in
-batch order. Issue one `--ack` for each of them. An ack removes exactly the
-delivery it names, so a single `--ack` for a multi-message batch leaves the
-rest queued — the next wake replays them, re-plans a release, re-runs
-`worker-release` on a dispatch already released, and re-reports the same PR to
-the captain.
+## 5. Report once
+
+**One** consolidated message for the whole wake, containing only what is worth
+saying: outcomes, PR URLs, and decisions the captain must make. Not one
+message per delivery, and not a narration of the steps above.
+
+- Everything §4 escalated goes in this one message, with full context, not in
+  a separate note of its own. Sending it is what discharges those `reply`
+  lines, so it happens before anything is acked.
+- A worker gone unusually quiet → `orca orchestration worker-read --dispatch <id>`
+  to diagnose. Report what you found; do not guess.
+
+## 6. Ack last — one `--ack` per `ACK` line
+
+Last means last: after §3's releases and after §5's report, never before
+either. The plan prints **one `ACK <delivery_id>` line per message in the
+batch**, in batch order. Issue one `--ack` for each of them. An ack removes
+exactly the delivery it names, so a single `--ack` for a multi-message batch
+leaves the rest queued — the next wake replays them, re-plans a release,
+re-runs `worker-release` on a dispatch already released, and re-reports the
+same PR to the captain.
 
 ```bash
 printf '%s\n' "$plan" | sed -n 's/^ACK //p' | while IFS= read -r ack_id; do
@@ -175,14 +203,3 @@ done
 ```
 
 Acking an id twice is harmless; leaving one unacked is not.
-
-## 6. Report once
-
-**One** consolidated message for the whole wake, containing only what is worth
-saying: outcomes, PR URLs, and decisions the captain must make. Not one
-message per delivery, and not a narration of the steps above.
-
-- Everything §4 escalated goes in this one message, with full context, not in
-  a separate note of its own.
-- A worker gone unusually quiet → `orca orchestration worker-read --dispatch <id>`
-  to diagnose. Report what you found; do not guess.

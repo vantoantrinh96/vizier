@@ -67,6 +67,25 @@ has $f '**`reply`**' "the reply disposition is named as its own decision"
 has $f "answered or escalated before the batch is" \
   "a reply must be discharged BEFORE the ack, not after"
 has $f 'one `--ack` per `ACK` line' "every delivery in the batch is acked, not just the last"
+# PRESENCE IS NOT ENOUGH HERE. "discharge a reply before the ack" and "the
+# single consolidated report is what actually reaches the captain" are both
+# rules a model follows IN SECTION ORDER, so if the ack section sits above
+# the report section the skill instructs the exact failure the `reply`
+# disposition was added to prevent: ack the question, then raise it, with the
+# replay safety net already thrown away. Both halves were anchored by text
+# and the contradiction still passed. Pin the ORDER, by section title rather
+# than by section number, so renumbering while swapping does not hide it.
+line_of() {  # <file> <basic-regex> -- first matching line number, or empty
+  grep -n -- "$2" "$R/$1" 2>/dev/null | head -1 | cut -d: -f1
+}
+ack_at=$(line_of $f '^## [0-9]*\. Ack last')
+report_at=$(line_of $f '^## [0-9]*\. Report once')
+ack_after_report=no
+[ -n "$ack_at" ] && [ -n "$report_at" ] && [ "$ack_at" -gt "$report_at" ] && ack_after_report=yes
+assert_eq "$ack_after_report" "yes" \
+  "the ack step comes after the report that puts an escalation in front of the captain"
+has $f "puts an escalation in front of the captain" \
+  "and the skill says so, so the order is a stated rule and not an accident"
 has $f "agent_terminal_handle" "terminal transfer reads the handle"
 has $f "--terminal" "transfer reuses the terminal"
 has $f "worker-release --dispatch" "release is by dispatch"
