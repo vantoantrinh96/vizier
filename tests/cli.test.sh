@@ -132,5 +132,60 @@ out=$(bash "$CLI" unlock 2>&1); rc=$?
 assert_rc "$rc" 0 "unlock with no lock still gives rc 0"
 assert_contains "$out" "no lock" "clearly states no lock is held"
 
+# --- version: reports source, payload match, and manifest ---
+
+# A FRESH INSTALL: src is a real git checkout of the payload, and dist is
+# synced FROM that exact tree by running the CLI through its own copy
+# inside src -- the same trick install.sh's real bootstrap relies on. `git
+# log` alone could never prove dist matches this commit; version must.
+rm -rf "$VIZIER_HOME/dist" "$VIZIER_HOME/src"
+mkdir -p "$VIZIER_HOME/src"
+for item in lib hooks skills commands bin .claude-plugin; do
+  [ -e "$VIZIER_TEST_REPO/$item" ] && cp -R "$VIZIER_TEST_REPO/$item" "$VIZIER_HOME/src/"
+done
+git -C "$VIZIER_HOME/src" init --quiet
+git -C "$VIZIER_HOME/src" add -A
+git -C "$VIZIER_HOME/src" -c user.email=t@t -c user.name=t commit --quiet -m seed
+bash "$VIZIER_HOME/src/bin/vizier" install --harness claude >/dev/null 2>&1
+short_sha=$(git -C "$VIZIER_HOME/src" log -1 --format=%h)
+
+out=$(bash "$CLI" version 2>&1); rc=$?
+assert_rc "$rc" 0 "a fresh install: version exits 0"
+assert_contains "$out" "$short_sha" "version names the source commit"
+assert_contains "$out" "dist matches src" "a fresh install reports dist matching src"
+
+# NO PAYLOAD INSTALLED: dist was never synced. "not installed" and
+# "mismatched" are two different problems with two different fixes, so
+# version must say the first plainly and must NOT claim the second.
+rm -rf "$VIZIER_HOME/dist"
+out=$(bash "$CLI" version 2>&1); rc=$?
+assert_rc "$rc" 0 "no payload installed: version exits 0"
+assert_contains "$out" "not installed" "no payload installed: version says so"
+case "$out" in *"DOES NOT MATCH"*) claimed=1 ;; *) claimed=0 ;; esac
+assert_rc "$claimed" 0 "no payload installed: version must not claim a mismatch"
+
+# A TAMPERED PAYLOAD: reinstall clean, then edit one file under dist by
+# hand -- exactly what a half-finished install, or someone poking at dist
+# directly, produces. This is the whole point of the command: catch it and
+# exit non-zero.
+bash "$VIZIER_HOME/src/bin/vizier" install --harness claude >/dev/null 2>&1
+printf '# tampered\n' >> "$VIZIER_HOME/dist/lib/vizier-home.sh"
+out=$(bash "$CLI" version 2>&1); rc=$?
+assert_rc "$rc" 1 "a tampered payload: version exits non-zero"
+assert_contains "$out" "DOES NOT MATCH" "a tampered payload: version reports the mismatch"
+
+# SRC ABSENT, NO PAYLOAD EITHER: reported plainly, no crash, rc 0 since
+# there is nothing installed to disagree with anything.
+rm -rf "$VIZIER_HOME/dist" "$VIZIER_HOME/src"
+out=$(bash "$CLI" version 2>&1); rc=$?
+assert_rc "$rc" 0 "src absent, no payload: version exits 0"
+assert_contains "$out" "not a git repository" "src absent: version reports it plainly"
+
+# SRC EXISTS BUT ISN'T A GIT REPO: same plain report, still no crash.
+mkdir -p "$VIZIER_HOME/src"; printf 'junk\n' > "$VIZIER_HOME/src/junk"
+out=$(bash "$CLI" version 2>&1); rc=$?
+assert_rc "$rc" 0 "src not a git repo: version exits 0"
+assert_contains "$out" "not a git repository" "src not a git repo: version reports it plainly"
+
 vizier_test_teardown
 vizier_test_report

@@ -89,6 +89,102 @@ _sync_dist() {
   printf 'payload -> %s\n' "$DIST"
 }
 
+# Hash the payload the same way _sync_dist DEFINES the payload: the sorted
+# file list under exactly the item directories it copies, plus the content
+# of each file. Comparing on a single combined digest -- not a per-file
+# diff -- keeps this dependency-free (shasum is already assumed elsewhere)
+# and keeps the two sides comparable even though src and dist live at
+# different absolute paths: `cd` into the root first so every path fed to
+# shasum is relative, never absolute.
+_payload_hash() {  # <root_dir> -> sha256 digest, empty if root doesn't exist
+  local root=$1
+  [ -d "$root" ] || return 0
+  (
+    cd "$root" 2>/dev/null || exit 1
+    local item
+    for item in lib hooks skills commands bin .claude-plugin; do
+      [ -e "$item" ] || continue
+      find "$item" -type f -print
+    done | LC_ALL=C sort | while IFS= read -r f; do
+      shasum -a 256 "$f"
+    done
+  ) | shasum -a 256 | awk '{print $1}'
+}
+
+cmd_version() {
+  # "What version am I running" is really three separate questions, and
+  # answering only one of them is misleading:
+  #   - What did I FETCH? The git commit at $src.
+  #   - What am I actually RUNNING? $DIST is a COPY made by _sync_dist, and
+  #     the harness adapters point their hooks at files under dist, not at
+  #     src. A half-finished install, or a src edit made after the last
+  #     install/update, leaves the two out of sync -- and `git log` at src
+  #     would then confidently report a version that is NOT the one actually
+  #     executing.
+  #   - What does the MANIFEST claim? .claude-plugin/plugin.json carries a
+  #     hardcoded "version" that nothing ever bumps, so on its own it lies as
+  #     soon as anyone updates.
+  # This command exists to print all three and say plainly whether dist
+  # matches src -- that mismatch check is the whole point: it catches a
+  # stale install, the same class of problem `doctor` was extended to catch.
+  local src rc=0
+  src="$VIZIER_HOME_DIR/src"
+
+  if [ -d "$src/.git" ]; then
+    local log
+    log=$(git -C "$src" log -1 --date=short --format='%h %ad %s' 2>/dev/null)
+    if [ -n "$log" ]; then
+      printf 'source:   %s (%s)\n' "$log" "$src"
+    else
+      printf 'source:   %s is a git repo but "git log" reported nothing\n' "$src"
+    fi
+  else
+    # Covers BOTH "src doesn't exist" and "src exists but was never git
+    # cloned" -- either way, say so plainly rather than printing nothing.
+    printf 'source:   %s is not a git repository -- no commit to report\n' "$src"
+  fi
+
+  # Compare CONTENT, not mtimes: a copy always has fresh timestamps, so
+  # comparing mtimes would report every fresh install as "changed" even when
+  # the bytes are byte-for-byte identical.
+  if [ -d "$DIST" ]; then
+    local src_hash dist_hash
+    src_hash=$(_payload_hash "$src")
+    dist_hash=$(_payload_hash "$DIST")
+    if [ -n "$src_hash" ] && [ "$src_hash" = "$dist_hash" ]; then
+      printf 'payload:  dist matches src\n'
+    else
+      printf 'payload:  dist DOES NOT MATCH src -- run vizier update (or vizier install) to refresh it\n'
+      rc=1
+    fi
+  else
+    printf 'payload:  not installed (no %s) -- run vizier install\n' "$DIST"
+  fi
+
+  # Read the manifest from dist when present -- that copy is the one
+  # actually in service -- and fall back to src only when dist has none yet.
+  # SAY which one was read: the two can disagree the same way the payload
+  # above can, and silently picking one would hide that.
+  local manifest manifest_from ver
+  if [ -f "$DIST/.claude-plugin/plugin.json" ]; then
+    manifest="$DIST/.claude-plugin/plugin.json"; manifest_from=dist
+  elif [ -f "$src/.claude-plugin/plugin.json" ]; then
+    manifest="$src/.claude-plugin/plugin.json"; manifest_from=src
+  fi
+  if [ -n "${manifest:-}" ]; then
+    ver=$(jq -r '.version // empty' "$manifest" 2>/dev/null)
+    if [ -n "$ver" ]; then
+      printf 'manifest: %s (from %s)\n' "$ver" "$manifest_from"
+    else
+      printf 'manifest: %s has no "version" field\n' "$manifest"
+    fi
+  else
+    printf 'manifest: no plugin.json found in dist or src\n'
+  fi
+
+  return "$rc"
+}
+
 cmd_doctor() {
   local problems=0 status reachable state caps
   for t in orca jq git gh; do
@@ -281,5 +377,6 @@ case "${1:-}" in
   update)    shift; cmd_update "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
   unlock)    shift; cmd_unlock "$@" ;;
-  *) printf 'usage: vizier install [--harness claude|cursor]|doctor|update|uninstall|unlock\n' >&2; exit 2 ;;
+  version)   shift; cmd_version "$@" ;;
+  *) printf 'usage: vizier install [--harness claude|cursor]|doctor|update|uninstall|unlock|version\n' >&2; exit 2 ;;
 esac
