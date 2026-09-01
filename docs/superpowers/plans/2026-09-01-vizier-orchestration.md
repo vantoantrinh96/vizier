@@ -128,9 +128,14 @@ Decided while writing the plan. Recorded so an implementer does not re-litigate 
 - `tests/helpers.sh` — helpers to seed projects, requests, and fake dispatch state.
 - `bin/vizier-adapter-claude.sh` — ship the four new skills.
 - `skills/identity/SKILL.md` — point at the new skills; no new rules.
-- `tests/run-all.sh` — register the new test files.
 
-**New tests:** `tests/request-lib.test.sh`, `tests/routing-lib.test.sh`, `tests/brief-lib.test.sh`, `tests/supervise-lib.test.sh`, `tests/loop.test.sh`.
+**New tests:** `tests/fake-orca.test.sh`, `tests/request-lib.test.sh`, `tests/routing-lib.test.sh`, `tests/brief-lib.test.sh`, `tests/supervise-lib.test.sh`, `tests/skills.test.sh`, `tests/loop.test.sh`.
+
+**Do NOT edit `tests/run-all.sh` to register a test file.** It runs
+`for t in *.test.sh` (line 48) and discovers new files by itself. Converting
+that glob into an explicit list is a regression: the next test file anyone adds
+would silently never run. The only reason to touch `run-all.sh` in this plan is
+if a task genuinely changes how the suite runs, and no task does.
 
 ---
 
@@ -462,14 +467,10 @@ The wake tests already drive `orchestration check` and `status`. They must not h
 Run: `bash tests/run-all.sh`
 Expected: PASS, same count as before plus this file's assertions.
 
-- [ ] **Step 7: Register the new test file**
-
-In `tests/run-all.sh`, add `fake-orca.test.sh` to the list of test files.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add tests/fake-orca/orca tests/helpers.sh tests/fake-orca.test.sh tests/run-all.sh
+git add tests/fake-orca/orca tests/helpers.sh tests/fake-orca.test.sh
 git commit -m "test: fake-orca covers the full Run/Task/Worker surface"
 ```
 
@@ -717,9 +718,8 @@ vizier_request_open_slugs() {
 Run: `bash tests/request-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the whole suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `request-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -727,7 +727,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/vizier-request-lib.sh tests/request-lib.test.sh tests/run-all.sh
+git add lib/vizier-request-lib.sh tests/request-lib.test.sh
 git commit -m "feat: request file lifecycle"
 ```
 
@@ -892,9 +892,8 @@ vizier_routing_table() {  # <project_id> -- name TAB health TAB setup TAB eligib
 Run: `bash tests/routing-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `routing-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -902,7 +901,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/vizier-routing-lib.sh tests/routing-lib.test.sh tests/run-all.sh
+git add lib/vizier-routing-lib.sh tests/routing-lib.test.sh
 git commit -m "feat: host routing eligibility"
 ```
 
@@ -1179,9 +1178,8 @@ write it as instructions to someone who has never seen the repo.
 Run: `bash tests/brief-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 6: Register and run the suite**
+- [ ] **Step 6: Run the whole suite**
 
-Add `brief-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -1189,7 +1187,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add lib/vizier-brief-lib.sh docs/project-file-format.md tests/brief-lib.test.sh tests/run-all.sh
+git add lib/vizier-brief-lib.sh docs/project-file-format.md tests/brief-lib.test.sh
 git commit -m "feat: four-layer brief assembly"
 ```
 
@@ -1393,9 +1391,8 @@ vizier_supervise_plan() {  # <mode> -- batch JSON lines on stdin
 Run: `bash tests/supervise-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `supervise-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -1403,7 +1400,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/vizier-supervise-lib.sh tests/supervise-lib.test.sh tests/run-all.sh
+git add lib/vizier-supervise-lib.sh tests/supervise-lib.test.sh
 git commit -m "feat: mailbox batch disposition rules"
 ```
 
@@ -1553,9 +1550,8 @@ Host pinning ends here. The next request routes from scratch.
 Run: `bash tests/skills.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `skills.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -1563,7 +1559,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add skills/request/SKILL.md tests/skills.test.sh tests/run-all.sh
+git add skills/request/SKILL.md tests/skills.test.sh
 git commit -m "feat: request lifecycle skill"
 ```
 
@@ -1705,7 +1701,7 @@ Expected: PASS.
 - [ ] **Step 5: Run the suite and commit**
 
 ```bash
-bash tests/run-all.sh
+bash
 git add skills/brief/SKILL.md tests/skills.test.sh
 git commit -m "feat: brief and dispatch skill"
 ```
@@ -1840,7 +1836,7 @@ PR URLs, and decisions the captain must make.
 
 ```bash
 bash tests/skills.test.sh
-bash tests/run-all.sh
+bash
 git add skills/supervise/SKILL.md tests/skills.test.sh
 git commit -m "feat: supervision skill"
 ```
@@ -1948,7 +1944,7 @@ pipeline. That is the captain's call, on the machine that owns the daemon.
 
 ```bash
 bash tests/skills.test.sh
-bash tests/run-all.sh
+bash
 git add skills/delivery/SKILL.md tests/skills.test.sh
 git commit -m "feat: delivery decision skill"
 ```
@@ -2127,9 +2123,8 @@ Expected: PASS. If the `--on Mac mini` assertion fails, the host is being
 re-derived somewhere instead of read from the request file — fix that, not the
 assertion.
 
-- [ ] **Step 3: Register and run the suite**
+- [ ] **Step 3: Run the whole suite**
 
-Add `loop.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh` — five times in a row.
 Expected: PASS every time, identical assertion count. A varying count means a
@@ -2138,7 +2133,7 @@ test depends on timing or on state left by a previous file.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/loop.test.sh tests/run-all.sh
+git add tests/loop.test.sh
 git commit -m "test: the coordination loop end to end"
 ```
 
