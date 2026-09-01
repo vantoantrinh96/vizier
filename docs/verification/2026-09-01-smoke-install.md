@@ -131,3 +131,75 @@ normal case. The lesson this smoke should have caught, and did not: an
 unverified claim from a reviewer was accepted and shipped as a refusal without
 being measured, and the row above recorded that refusal as if it were success
 instead of naming it a defect.
+
+## Real activation, Claude Code — PASS
+
+Run from a second interactive Claude Code session in `~/data/me/lumin/self-harness/no-mistakes`,
+after removing the `child_session` guard and refreshing the install to `1d95c70`.
+
+`/vizier:vizier hướng dẫn sử dụng no-mistakes tool` activated the session. Verified
+from a third session, not from the model's own report:
+
+```
+$ cat ~/.vizier/lock
+session_id=43af847f-0c06-4dca-9628-cdfb9b01ea0f
+harness=claude
+pid=36460
+since=1788238193
+$ kill -0 36460 && ps -o comm= -p 36460
+claude
+```
+
+The claiming session id differs from the observing session's, and the recorded pid is a
+live `claude` process — so the lock was written by the activation, not fabricated.
+
+Behaviour matched the spec on three points that were never explicitly tested:
+
+- It reported the ledger empty and `0 request đang mở` rather than inventing state.
+- It read `git remote get-url origin` in the cwd and offered the project as a **suggestion**
+  requiring the captain's confirmation — cwd is never authority.
+- It surfaced the missing Cursor entry as a non-blocking note and continued.
+
+## Cursor merge, real `~/.cursor/hooks.json` — PASS
+
+`vizier install --harness cursor` ran at 11:54 against the live file that the Orca app
+also maintains.
+
+| Check | Result |
+| --- | --- |
+| Backup written before the edit | `~/.vizier/backups/cursor-hooks.20260901-115439.0.json` |
+| Events in the file | 8, unchanged |
+| Entry counts | every event unchanged except `stop` 1 → 2 |
+| Orca's `stop` entry | still first, byte-identical |
+| `vizier` references | exactly 1 |
+| Cursor's own `hooks.json.bak` | untouched (0 `vizier` references) |
+
+Deleting only our `stop` entry from the current file and normalising both with `jq -S`
+reproduces the backup exactly — the merge added one entry and changed nothing else.
+
+## Cursor stop hook gates — PASS
+
+Driven directly with three payloads while the lock was held by a **Claude** session:
+
+| Payload | rc | stdout | stderr | lock |
+| --- | --- | --- | --- | --- |
+| valid stop, unknown `session_id` | 0 | empty | empty | unchanged |
+| stop with no `session_id` | 0 | empty | empty | unchanged |
+| not JSON at all | 0 | empty | empty | unchanged |
+
+`exit 0` with empty stdout is Cursor's silent no-op, so an installed-but-inactive
+Vizier cannot disturb a Cursor session.
+
+## Cursor activation — DOES NOT EXIST
+
+Cursor discovers our skill: typing `/vizier` in `cursor-agent` v2026.08.25 offers
+`/identity`, which exists only at `~/.claude/skills/vizier/skills/identity/SKILL.md`.
+Cursor scans Claude's skills directory — undocumented, but observed.
+
+It scans `skills/` only. `commands/vizier.md` is not discovered, so **Cursor has no
+`/vizier` entry point** and no way to claim the lock. Even given one,
+`bin/vizier-activate.sh` reads `CLAUDE_CODE_SESSION_ID`, which Cursor does not set.
+
+Two facts already measured constrain the fix: Cursor's `stop` and `beforeSubmitPrompt`
+payloads both carry `session_id`, so a hook can record the id without any environment
+variable. Designing that belongs to a plan of its own, not to Plan 1.
