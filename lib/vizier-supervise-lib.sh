@@ -42,7 +42,7 @@ _vizier_axi_outcome() {  # <body> -- prints each DISTINCT axi_outcome value foun
     | sort -u
 }
 
-vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|none> <reason>"
+vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|reply|none> <reason>"
   # Three separate jq reads rather than one @tsv row: a body legitimately
   # contains newlines (the axi_outcome line is on its own line), and @tsv
   # would escape them into the middle of a single field.
@@ -54,6 +54,27 @@ vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|none> <reason
   body=$(printf '%s' "$line" | jq -r '.body // ""' 2>/dev/null)
 
   [ -n "$type" ] || { printf 'none unparseable'; return 0; }
+
+  # `reply` EXISTS SO THE PLAN CAN SAY "A HUMAN OWES AN ANSWER". Before it,
+  # a question got `none not-terminal` -- the same disposition as a
+  # heartbeat -- and was then acked away with nothing owed to anyone. The
+  # vocabulary could not express the difference, so the only thing standing
+  # between a captain's decision and silence was the model remembering to
+  # re-read the raw JSON after the plan had already told it there was
+  # nothing to do. The spec requires escalation and question to be turned
+  # into a question with context, and an ask-user finding to be routed
+  # through `delivery`; neither is expressible as `none`.
+  #
+  # `reply` is NEVER a release. It is checked before the dispatch-id and
+  # mode logic on purpose: a question is not a terminal event no matter
+  # what its body says or which delivery mode the dispatch runs under.
+  #
+  # Exactly these two types, not a catch-all for "not worker_done": a
+  # heartbeat owes nobody anything and must stay `none`.
+  case "$type" in
+    question|escalation) printf 'reply %s' "$type"; return 0 ;;
+  esac
+
   [ "$type" = "worker_done" ] || { printf 'none not-terminal'; return 0; }
   # A dispatch id of only whitespace is exactly as stale as no dispatch id
   # at all -- `-n` only rejects the empty string, so a JSON producer that

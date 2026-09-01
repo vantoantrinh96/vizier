@@ -7,11 +7,37 @@ vizier_test_setup
 
 d() { vizier_msg_disposition "$1" "$2"; }
 
+# "yes" unless the disposition is a release. A helper, not an inline `case`
+# inside "$(...)": the `)` of a case pattern closes the command substitution.
+not_release() {  # <disposition>
+  case "$1" in release*) printf 'no' ;; *) printf 'yes' ;; esac
+}
+
 # --- nothing but a processed worker_done ever releases --------------------
 for t in heartbeat status question escalation timeout worker_progress; do
   got=$(d direct-PR "{\"delivery_id\":\"d\",\"type\":\"$t\",\"dispatch_id\":\"dispatch-1\"}")
-  assert_eq "${got%% *}" "none" "$t never releases"
+  assert_eq "$(not_release "$got")" "yes" "$t never releases"
 done
+
+# --- a question or an escalation owes the captain an ANSWER ----------------
+# These used to plan `none not-terminal`, the same disposition a heartbeat
+# gets, and were then acked away. The vocabulary could not express "a human
+# owes a reply", so the only thing preventing a dropped captain decision was
+# the model remembering to re-read the raw JSON. `reply` says it in the plan.
+for t in question escalation; do
+  got=$(d direct-PR "{\"delivery_id\":\"d\",\"type\":\"$t\",\"body\":\"which option?\"}")
+  assert_eq "$got" "reply $t" "type $t plans a reply, not the heartbeat disposition"
+done
+# ...and never a release, whatever the mode or the body says. A question is
+# not a terminal event even if it happens to quote a terminal outcome line.
+assert_eq "$(d direct-PR '{"delivery_id":"d","type":"question","dispatch_id":"dispatch-1","body":"axi_outcome: passed"}')" \
+  "reply question" "a question carrying a terminal-looking body is still a reply, never a release"
+assert_eq "$(d no-mistakes '{"delivery_id":"d","type":"escalation","dispatch_id":"dispatch-1","body":"axi_outcome: passed"}')" \
+  "reply escalation" "an escalation is a reply under the strict mode too"
+# A type nobody has a rule for is still `none` -- `reply` is for exactly the
+# two types the spec names, not a catch-all for "not worker_done".
+assert_eq "$(d direct-PR '{"delivery_id":"d","type":"heartbeat","dispatch_id":"dispatch-1"}')" \
+  "none not-terminal" "a heartbeat keeps the plain not-terminal disposition"
 
 # --- direct-PR ------------------------------------------------------------
 assert_eq "$(d direct-PR '{"delivery_id":"d","type":"worker_done","dispatch_id":"dispatch-1","outcome":"succeeded","body":"PR https://x/1"}')" \

@@ -72,7 +72,7 @@ plan=$(printf '%s\n' "$batch" | vizier_supervise_plan "$default_mode" "$map")
 printf '%s\n' "$plan"
 ```
 
-Keep the plan in `$plan`: §4 acks off it, one `--ack` per `ACK` line.
+Keep the plan in `$plan`: §5 acks off it, one `--ack` per `ACK` line.
 
 This is **one call over the whole batch**, never one call per message —
 `vizier_supervise_plan` resolves the mode per dispatch internally from the
@@ -90,8 +90,12 @@ Each `PLAN <delivery_id> <disposition> <reason>` line is a decision:
   the strict (default) check. **Do not release.** A pipeline run may still
   own the branch. `orca orchestration worker-read --dispatch <id>` to
   diagnose, then report to the captain.
+- **`reply`** — a `question` or an `escalation`: **a human owes an answer.**
+  Never a release, whatever the body says. This is the one disposition that
+  leaves work outstanding after the plan is done, and §4 must clear it before
+  anything is acked.
 - **`none`** — not a terminal event. Never release on a timeout, TUI idle,
-  heartbeat, status, question, escalation, or a stale `worker_done`.
+  heartbeat, status, or a stale `worker_done`.
 
 If the plan prints no `ACK` line, something in the batch did not classify.
 **Do not ack anything.** Orca replays an unacked batch, so nothing is lost;
@@ -120,7 +124,25 @@ recovery action. **Substituting `terminal close` is forbidden.** Repeating
 
 The captain asked to keep a terminal (`worker-retain`) → keep it.
 
-## 4. Ack last — one `--ack` per `ACK` line
+## 4. Answer every `reply` — before the ack
+
+Every `reply` line has to be **answered or escalated before the batch is
+acked**. Acking is what tells Orca the message is dealt with; a `reply` that
+is acked without an answer is a captain decision dropped silently, and no
+replay will bring it back.
+
+- A `question` carrying a **no-mistakes ask-user finding** → run it through
+  the `delivery` skill's policy first. That policy, not this skill, decides
+  whether you answer it or the captain does.
+- Anything else → put it to the captain with full context, and send their
+  answer back with `orca orchestration reply --id <msg> --body ... --run
+  "$run_id"`.
+
+Answering counts as processed. Escalating counts as processed only once the
+question is actually in front of the captain — not once you have decided to
+ask it.
+
+## 5. Ack last — one `--ack` per `ACK` line
 
 The plan prints **one `ACK <delivery_id>` line per message in the batch**, in
 batch order. Issue one `--ack` for each of them. An ack removes exactly the
@@ -137,14 +159,13 @@ done
 
 Acking an id twice is harmless; leaving one unacked is not.
 
-## 5. Report once
+## 6. Report once
 
-**One** consolidated message, containing only what is worth saying: outcomes,
-PR URLs, and decisions the captain must make.
+**One** consolidated message for the whole wake, containing only what is worth
+saying: outcomes, PR URLs, and decisions the captain must make. Not one
+message per delivery, and not a narration of the steps above.
 
-- `escalation` / `question` → turn into a question with full context. The
-  captain's answer goes back with `orca orchestration reply --id <msg> --body`.
-- A `question` carrying a **no-mistakes ask-user finding** does not go straight
-  to the captain: run it through the `delivery` skill's policy first.
+- Everything §4 escalated goes in this one message, with full context, not in
+  a separate note of its own.
 - A worker gone unusually quiet → `orca orchestration worker-read --dispatch <id>`
   to diagnose. Report what you found; do not guess.
