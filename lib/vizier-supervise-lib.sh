@@ -13,16 +13,33 @@
 # report and a manual release. Releasing a terminal whose pipeline still owns
 # the branch costs the branch.
 
-_vizier_axi_outcome() {  # <body> -- prints the value of the axi_outcome line
+_vizier_axi_outcome() {  # <body> -- prints each DISTINCT axi_outcome value found, one per line
   # Anchored to a line that STARTS with the exact key (after optional
   # whitespace). Free-text matching is not acceptable: a body reading "the
   # tests have not passed" contains the token `passed`, and releasing on that
   # would defeat the whole rule. The brief mandates this exact syntax -- see
   # vizier_brief_delivery no-mistakes -- so requiring it is not a guess.
+  #
+  # Every matching line is collected, not just the first. A body can
+  # legitimately (rewritten drafts left in) or accidentally (a stale line
+  # plus a fresh one) carry more than one; picking the first with `head -n 1`
+  # would release on whichever happened to come first, which is an accident
+  # of line order, not a decision. The caller (vizier_msg_disposition) holds
+  # rather than releases when more than one distinct value shows up.
+  #
+  # RESIDUAL GAP: this still cannot tell an instruction from a report. A body
+  # that quotes the required syntax once as an example and then contradicts
+  # it only in prose -- e.g. "report status as\naxi_outcome: passed\nwhen
+  # done. Currently still executing tests." -- has exactly one anchored
+  # line, so it releases. Nothing textual distinguishes an example from a
+  # real report of that one line; closing this requires the brief itself to
+  # tell the worker never to write the line except as its one real, final
+  # report (see vizier_brief_delivery no-mistakes), which is the actual
+  # mitigation for this case, not this matcher.
   local body="$1"
   printf '%s\n' "$body" \
     | sed -n 's/^[[:space:]]*axi_outcome:[[:space:]]*\([A-Za-z-][A-Za-z-]*\).*/\1/p' \
-    | head -n 1
+    | sort -u
 }
 
 vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|none> <reason>"
@@ -30,22 +47,40 @@ vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|none> <reason
   # contains newlines (the axi_outcome line is on its own line), and @tsv
   # would escape them into the middle of a single field.
   local mode="$1" line="$2"
-  local type dispatch body out
+  local type dispatch body
+  local values value_count outcome
   type=$(printf '%s' "$line" | jq -r '.type // ""' 2>/dev/null)
   dispatch=$(printf '%s' "$line" | jq -r '.dispatch_id // ""' 2>/dev/null)
   body=$(printf '%s' "$line" | jq -r '.body // ""' 2>/dev/null)
 
   [ -n "$type" ] || { printf 'none unparseable'; return 0; }
   [ "$type" = "worker_done" ] || { printf 'none not-terminal'; return 0; }
-  [ -n "$dispatch" ] || { printf 'none stale-no-dispatch'; return 0; }
+  # A dispatch id of only whitespace is exactly as stale as no dispatch id
+  # at all -- `-n` only rejects the empty string, so a JSON producer that
+  # sends `"   "` instead of omitting the field would have slipped past a
+  # plain `-n` check. Match on the presence of a non-whitespace character.
+  case "$dispatch" in
+    *[![:space:]]*) : ;;
+    *) printf 'none stale-no-dispatch'; return 0 ;;
+  esac
 
   if [ "$mode" = "no-mistakes" ]; then
-    out=$(_vizier_axi_outcome "$body")
-    case "$out" in
-      passed|checks-passed|failed|cancelled) printf 'release axi-outcome=%s' "$out" ;;
-      "")                                    printf 'hold no-axi-outcome' ;;
-      *)                                     printf 'hold axi-outcome=%s' "$out" ;;
-    esac
+    values=$(_vizier_axi_outcome "$body")
+    value_count=$(printf '%s\n' "$values" | sed '/^$/d' | wc -l | tr -d ' ')
+    if [ "$value_count" -eq 0 ]; then
+      printf 'hold no-axi-outcome'
+    elif [ "$value_count" -gt 1 ]; then
+      # More than one distinct value is ambiguous, not decidable -- see the
+      # RESIDUAL GAP note on _vizier_axi_outcome for why first-match-wins
+      # was wrong here.
+      printf 'hold axi-outcome=ambiguous'
+    else
+      outcome="$values"
+      case "$outcome" in
+        passed|checks-passed|failed|cancelled) printf 'release axi-outcome=%s' "$outcome" ;;
+        *)                                     printf 'hold axi-outcome=%s' "$outcome" ;;
+      esac
+    fi
     return 0
   fi
 
@@ -58,6 +93,12 @@ vizier_supervise_plan() {  # <mode> -- batch JSON lines on stdin
   local line id
   while IFS= read -r line; do
     [ -n "$line" ] || continue
+    # ASSUMES ORCA NEVER REPEATS A delivery_id WITHIN ONE BATCH. This is
+    # not re-checked here: a duplicate would print two PLAN lines for the
+    # same id and then ACK whichever came last, which is silently wrong
+    # rather than loud. Orca's mailbox contract guarantees unique ids, so
+    # this is a documented reliance on that guarantee, not a gap this
+    # function closes.
     id=$(printf '%s' "$line" | jq -r '.delivery_id // empty' 2>/dev/null)
     if [ -z "$id" ]; then
       plan="${plan}UNPARSEABLE

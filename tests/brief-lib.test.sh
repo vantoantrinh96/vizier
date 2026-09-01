@@ -52,6 +52,7 @@ assert_contains "$n" "axi_outcome:" "the exact outcome syntax is mandated"
 assert_contains "$n" "checks-passed" "terminal values listed"
 assert_contains "$n" "cancelled" "all four terminal values listed"
 assert_contains "$n" "never answer" "worker must not answer its own finding"
+assert_contains "$n" "never quote it earlier as an example" "worker told not to quote the outcome line as an example"
 
 # an unknown mode is a hard error, not a silent default
 vizier_brief_delivery local-only >/dev/null 2>&1

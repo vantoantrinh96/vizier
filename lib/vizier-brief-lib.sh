@@ -100,6 +100,11 @@ Delivery contract: mode=no-mistakes
   Include the PR URL in the body as well. Without that exact line your
   terminal will be held rather than released, because a pipeline run may
   still own the branch.
+- Write that line exactly once, as the LAST line of the body, and nowhere
+  else -- never quote it earlier as an example, a format reminder, or a
+  restatement of this instruction. The supervisor cannot tell your one real
+  report apart from a quoted example; only you writing it once, at the end,
+  makes it unambiguous.
 EOF
       ;;
     *)
