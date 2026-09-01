@@ -10,12 +10,22 @@ vizier_test_setup() {
   export VIZIER_TEST_TMP
   export VIZIER_HOME="$VIZIER_TEST_TMP/home"
   mkdir -p "$VIZIER_HOME/requests" "$VIZIER_HOME/projects"
-  # ABSOLUTE RULE: no test may read/write the REAL ~/.claude/skills or
-  # ~/.cursor/hooks.json. Set the default HERE, not in each test file, so
-  # that a doctor/install call running BEFORE a test file exports its own
-  # variable can never fall back to the real $HOME.
+  # ABSOLUTE RULE: no test may read/write the REAL ~/.claude/skills,
+  # ~/.cursor/hooks.json, or ~/.local/bin/vizier. bin/vizier resolves all
+  # three from env vars that default to those real paths, and any call made
+  # before a test file exports its own value reaches the real one. Set ALL
+  # FOUR location defaults HERE, not in each test file: this suite already
+  # deleted the captain's real ~/.local/bin/vizier symlink because
+  # cli.test.sh ran `uninstall` several lines before it got around to
+  # exporting VIZIER_BIN_DIR, and cmd_uninstall fell back to the real
+  # default in between. A test that forgets one of these damages the
+  # machine it runs on, not just the test run -- so this belongs in the
+  # harness, where no individual test can forget it, not repeated per test
+  # where someone will eventually "simplify" it back out.
   export VIZIER_CLAUDE_SKILLS_DIR="$VIZIER_TEST_TMP/claude-skills"
   export VIZIER_CURSOR_HOOKS_JSON="$VIZIER_TEST_TMP/cursor-hooks.json"
+  export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"
+  mkdir -p "$VIZIER_BIN_DIR"
   # This test runner itself COULD be running under a child session/subagent
   # (the variable has actually been observed set in this very project's CI)
   # -- if that leaked through, every activate test would eat FIX 5's

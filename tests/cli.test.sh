@@ -26,8 +26,6 @@ assert_contains "$out" "orchestration.contract.v1" "names the exact missing capa
 unset VIZIER_FAKE_ORCA_STATUS
 
 # install copies the payload into dist then calls the adapter
-export VIZIER_CLAUDE_SKILLS_DIR="$VIZIER_TEST_TMP/claude-skills"
-export VIZIER_CURSOR_HOOKS_JSON="$VIZIER_TEST_TMP/cursor-hooks.json"
 out=$(bash "$CLI" install --harness claude 2>&1); rc=$?
 assert_rc "$rc" 0 "install claude succeeds"
 [ -f "$VIZIER_HOME/dist/hooks/wake-claude.sh" ]; assert_rc $? 0 "the payload is in dist"
@@ -55,7 +53,7 @@ bash "$CLI" uninstall >/dev/null 2>&1
 [ -d "$VIZIER_CLAUDE_SKILLS_DIR/vizier" ]; assert_rc $? 1 "uninstall removes the adapter"
 
 # uninstall must also clean up bootstrap's own traces
-export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"; mkdir -p "$VIZIER_BIN_DIR" "$VIZIER_HOME/src"
+mkdir -p "$VIZIER_HOME/src"
 ln -sf /usr/bin/true "$VIZIER_BIN_DIR/vizier"
 bash "$CLI" uninstall >/dev/null 2>&1
 [ -L "$VIZIER_BIN_DIR/vizier" ]; assert_rc $? 1 "uninstall removes the symlink on PATH"

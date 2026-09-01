@@ -18,7 +18,6 @@ git -C "$WORK" push --quiet origin HEAD:refs/heads/main
 git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
 
 export VIZIER_REPO_URL="file://$ORIGIN"
-export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"
 
 out=$(sh "$VIZIER_TEST_REPO/install.sh" 2>&1); rc=$?
 assert_rc "$rc" 0 "bootstrap succeeds"
