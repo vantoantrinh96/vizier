@@ -1429,6 +1429,16 @@ git commit -m "feat: mailbox batch disposition rules"
 - Create: `skills/request/SKILL.md`
 - Test: `tests/skills.test.sh` (create; Tasks 7–9 add to it)
 
+**How these assertions work, and how they break.** `has` is a literal,
+case-sensitive substring match against the raw Markdown. Three things therefore
+break an assertion that looks correct: a capital letter at the start of a
+sentence (`Never silently` is not `never silently`), a pair of backticks inside
+the phrase (`` `no-mistakes` daemon `` does not contain `no-mistakes daemon`),
+and a shell command wrapped across a line continuation (`worker-start \` then
+`--task` does not contain `worker-start --task`). Five assertions in the first
+draft of this plan were unpassable for exactly these reasons. When you add one,
+grep the skill text for your needle before trusting it.
+
 **Interfaces:**
 - Consumes: `lib/vizier-request-lib.sh`, `lib/vizier-routing-lib.sh`.
 - Produces: the request file every other skill reads, and the `host` value every `worker-start` in the request inherits.
@@ -1462,7 +1472,7 @@ has $f "name: request" "skill is named"
 has $f "orca orchestration run-create --objective" "the exact run-create call"
 has $f "vizier_routing_table" "routing comes from the library"
 has $f "exactly once" "the host is asked exactly once"
-has $f "never silently" "no silent host substitution"
+has $f "Never silently" "no silent host substitution"
 has $f "orca project setup-clone" "setup-clone is proposed, not run"
 has $f "vizier_request_create" "the request file is written through the library"
 has $f "vizier_request_close" "closing goes through the library"
@@ -1602,12 +1612,12 @@ f=skills/brief/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "brief skill exists"
 has $f "vizier_brief_assemble" "the spec comes from the library, never hand-written"
 has $f "orca orchestration task-create --spec" "exact task-create"
-has $f "orca orchestration worker-start --task" "exact worker-start"
+has $f "orca orchestration worker-start" "exact worker-start"
 has $f "--worktree new-top-level" "isolation default"
 has $f "--setup run" "setup runs"
 has $f "--on" "the host is passed through"
 has $f "inherits the request's host" "host inheritance is stated"
-has $f "ask the captain" "an unknown delivery mode is asked, never guessed"
+has $f "Ask the captain" "an unknown delivery mode is asked, never guessed"
 has $f "--effort" "model hints are applied"
 has $f "requires --model" "effort depends on model"
 has $f "--retry-of" "retries chain"
@@ -1689,8 +1699,8 @@ orca orchestration worker-start \
 ```
 
 Model hints from the project file (`model_scout`, `effort_scout`, …) are applied
-as `--model <id> --effort <level>`. Orca **requires `--model` whenever
-`--effort` is given**, and accepts neither when reusing a terminal via
+as `--model <id> --effort <level>`. Orca **requires --model whenever
+--effort is given**, and accepts neither when reusing a terminal via
 `--terminal`.
 
 Record the dispatch in the request file:
@@ -1878,7 +1888,7 @@ f=skills/delivery/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "delivery skill exists"
 has $f "never call" "the first mate never drives a worker's run"
 has $f "axi respond" "the command it must not run is named"
-has $f "one precise decision" "the reply is a single decision"
+has $f "One precise decision" "the reply is a single decision"
 has $f "expand the contract" "the escalation test is stated"
 has $f "not authority" "a reviewer label is evidence, not authority"
 has $f "security" "security-sensitive findings escalate"
