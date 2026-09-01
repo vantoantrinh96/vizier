@@ -65,9 +65,19 @@ has $f "--terminal" "transfer reuses the terminal"
 has $f "worker-release --dispatch" "release is by dispatch"
 has $f "release_pending" "pending release receipts are handled"
 has $f "terminal close" "the forbidden substitution is named"
-has $f "one" "the captain gets one consolidated report"
-has $f "delivery" "questions route through the delivery policy"
-has $f "worker-read" "a quiet worker is diagnosed, not guessed at"
+# THESE THREE ANCHORS ARE DELIBERATELY LONG. They used to read "one",
+# "delivery" and "worker-read", and every one of them matched English prose
+# from somewhere else in the file: "one" matched "worker_done" and "none",
+# "delivery" matched `PLAN <delivery_id>`, "worker-read" matched §2's
+# diagnosis line. Proof they were worthless: the reviewer deleted the whole
+# "Report once" section -- the one-consolidated-report rule, the ask-user
+# routing, and the worker-read diagnosis rule -- replaced it with "Say
+# whatever, whenever, as many times as you like", and all 55 assertions
+# stayed green. Each anchor below is a phrase that occurs ONLY in the section
+# it is meant to pin.
+has $f '**One** consolidated message for the whole wake' "the captain gets one consolidated report"
+has $f 'the `delivery` skill'"'"'s policy first.' "an ask-user question routes through the delivery policy"
+has $f "A worker gone unusually quiet" "a quiet worker is diagnosed, not guessed at"
 
 # --- delivery -----------------------------------------------------------
 f=skills/delivery/SKILL.md
@@ -78,7 +88,10 @@ has $f "axi respond" "the command it must not run is named"
 has $f "One precise decision" "the reply is a single decision"
 has $f "expand the contract" "the escalation test is stated"
 has $f "not authority" "a reviewer label is evidence, not authority"
-has $f "security" "security-sensitive findings escalate"
+# Not the bare word "security": it also appears in "security-sensitive
+# choices" elsewhere and in any prose that mentions security at all. Pin the
+# escalation criterion itself.
+has $f "destructive, irreversible, or security-sensitive" "security-sensitive findings escalate"
 has $f "orca orchestration reply --id" "the exact reply command"
 has $f "smallest option" "escalations offer the smallest non-expanding option"
 has $f "daemon" "the shared-daemon rule is restated"
