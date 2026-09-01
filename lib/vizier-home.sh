@@ -109,9 +109,20 @@ _vizier_lock_take_stale() {  # <snapshot> [stale_path]
     # function check, not an env-var `eval` -- this file is sourced by the
     # wake hook after every turn of every session on the machine, and an
     # env-var-triggered `eval` there is a code-execution surface even when
-    # guarded by `${VAR:-}`. A function can only exist here because code
-    # already running in THIS shell defined it, so no environment variable
-    # can ever reach it.
+    # guarded by `${VAR:-}`, because the VALUE is the code that runs.
+    #
+    # This is NARROWER than an `eval` seam, but it is not airtight, and an
+    # earlier version of this comment wrongly claimed it was ("no
+    # environment variable can ever reach it"). Two things other than a
+    # function defined in THIS shell satisfy `command -v`: an exported
+    # bash function (`env 'BASH_FUNC__vizier_test_lock_pre_take_seam%%=()
+    # { ...; }' bash script.sh`), and an executable of that name on PATH.
+    # `declare -F` instead of `command -v` would close the PATH half; the
+    # BASH_FUNC_* half is not closable while the seam exists at all.
+    # Practical impact is nil -- anyone who can set either already has code
+    # execution in this shell -- but the sentence was the stated
+    # justification for the design, so it is stated accurately here rather
+    # than left as a false reassurance for the next reader.
     command -v _vizier_test_take_stale_seam >/dev/null 2>&1 && _vizier_test_take_stale_seam
     # It changed between our inspection and our move: a third session claimed
     # it legitimately. Put it back if the slot is still free, and refuse.
@@ -285,8 +296,13 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
   # instead of one fork and zero execs) AND wrong, since a plain `mv` into
   # place is not O_EXCL and would silently clobber a concurrent winner,
   # reintroducing the exact race this whole commit exists to close.
-  # Measured max (8 busy-loop processes, `perl Time::HiRes` polling the
-  # file's existence): see task-2b-report.md. A fresh claimant that lands
+  # Measured max width of that window (`perl Time::HiRes` polling the
+  # file's existence, 40 refreshes per rep, two reps): idle 6.19 / 8.08 ms,
+  # under 8 busy-loop processes 21.56 / 24.77 ms. (Review round 2 reported
+  # 23.30 / 28.88 ms and then retracted it; on these numbers its LOADED
+  # figure was roughly right and only its idle figure was an outlier, so
+  # the retraction over-corrected. Round 1's ~5.6 / ~14.5 ms was measured
+  # with fewer reps and reads low.) A fresh claimant that lands
   # IN whatever window remains sees an empty lock and is free to claim it
   # -- that claimant would then dispossess the true (about to be restored)
   # owner. That is the residual risk this fix accepts, not a case this fix
@@ -371,7 +387,20 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
     # found -- it would print `reason=create_failed` on a REFRESH whose
     # backup (the caller's own live lock) is restored moments later,
     # telling the caller they were refused when they in fact still hold it.
-    if _vizier_lock_restore_stale "$stale_target"; then
+    # `&& [ -f ... ]` is load-bearing, not belt-and-braces.
+    # _vizier_lock_restore_stale returns 0 for TWO different things:
+    # "the backup is back at the lock path" and "there was nothing to
+    # restore". The second is correct for the EXIT trap, which must be a
+    # harmless no-op when it fires before any `mv` happened -- but here
+    # the 0 is being read as proof that we hold the lock. When the backup
+    # is gone (create failed AND the backup vanished, e.g. an external
+    # cleaner, a signal-interrupted sequence, or a bug in take_stale) the
+    # ungated branch told a refresher `refreshed session_id=mine` rc 0
+    # with NO lock file on disk at all: vizier_lock_matches is then false
+    # forever after and the wake hook silently skips every single turn --
+    # the worst outcome this file exists to prevent, reported as success.
+    # Only the file actually being there proves the restore landed.
+    if _vizier_lock_restore_stale "$stale_target" && [ -f "$(vizier_lock_path)" ]; then
       success=1
       if [ "$verb" = refreshed ]; then
         # Our OWN lock came back intact -- from the caller's point of view

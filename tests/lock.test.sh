@@ -219,35 +219,48 @@ assert_rc "$?" 0 "restore-stale with a nonexistent path is a harmless no-op"
 # between the snapshot and the take-stale call, however the code in
 # between is shaped. Bracket the region with the two seams (right after
 # the snapshot, right before the take-stale subshell) and shadow
-# vizier_lock_get -- the only lock-file-reading primitive anything in that
-# region calls -- for its duration. The shadow still DOES the real read
-# (via the renamed original) so a legitimate call would not silently break
-# the test in some unrelated way; it just also leaves a mark.
+# vizier_lock_path for its duration.
+#
+# vizier_lock_path, NOT vizier_lock_get. Shadowing vizier_lock_get (this
+# test's first shape) leaves a hole big enough to drive two behaviourally
+# identical re-reads through -- `sed -n "s/^session_id=//p"
+# "$(vizier_lock_path)"` and `_vizier_lock_field session_id "$(cat
+# "$(vizier_lock_path)")"` both dispossess a live owner exactly the way the
+# vizier_lock_get mutant does, and both passed the whole suite. Every
+# possible read of the lock file has to name the file somehow, and
+# vizier_lock_path is the only thing in this library that says where it is,
+# so shadowing it catches ALL of them and not just the one written through
+# the named getter. Nothing in the bracketed region legitimately calls it:
+# the snapshot is taken before the first seam, and only _vizier_lock_field
+# (which works on the in-memory string) and `date` run between the seams.
+# The shadow still returns the real path (via the renamed original) so a
+# legitimate call would not silently break the test in some unrelated way;
+# it just also leaves a mark.
 rm -f "$(vizier_lock_path)"
 printf 'session_id=sess-a
 harness=claude
 pid=999999
 since=1
 ' > "$(vizier_lock_path)"
-marker="$VIZIER_TEST_TMP/lock-get-called-in-window"
+marker="$VIZIER_TEST_TMP/lock-path-called-in-window"
 rm -f "$marker"
 _vizier_test_lock_seam() {
-  eval "_vizier_test_lock_get_orig() $(declare -f vizier_lock_get | sed '1d')"
-  vizier_lock_get() {
+  eval "_vizier_test_lock_path_orig() $(declare -f vizier_lock_path | sed '1d')"
+  vizier_lock_path() {
     : > "$marker"
-    _vizier_test_lock_get_orig "$@"
+    _vizier_test_lock_path_orig "$@"
   }
 }
 _vizier_test_lock_pre_take_seam() {
-  eval "vizier_lock_get() $(declare -f _vizier_test_lock_get_orig | sed '1d')"
-  unset -f _vizier_test_lock_get_orig
+  eval "vizier_lock_path() $(declare -f _vizier_test_lock_path_orig | sed '1d')"
+  unset -f _vizier_test_lock_path_orig
 }
 out=$(vizier_lock_claim sess-a claude $$); rc=$?
 unset -f _vizier_test_lock_seam _vizier_test_lock_pre_take_seam
 assert_rc "$rc" 0 "an ordinary refresh (no interleave) still succeeds under the shadow"
 assert_contains "$out" "refreshed" "reports refreshed"
 assert_eq "$(test -e "$marker" && echo called || echo not-called)" "not-called" \
-  "vizier_lock_get is never called between the snapshot and the take-stale call"
+  "the lock file is never located, and so never re-read, between the snapshot and the take-stale call"
 
 # --- truthful message after a non-competitive create failure on refresh
 # (review round 3, Minor) ------------------------------------------------------
@@ -294,6 +307,68 @@ unset -f _vizier_test_lock_pre_create_seam
 assert_rc "$rc" 1 "a reclaim whose create fails still refuses (we never held it)"
 assert_contains "$out" "held_by=ghost" "names the restored (dead) owner, not a generic create_failed"
 assert_eq "$(vizier_lock_get session_id)" "ghost" "the dead owner's own lock is restored, unclaimed by us"
+
+# --- "the restore succeeded" must mean the lock is BACK, not merely that
+# there was nothing to put back ------------------------------------------------
+# _vizier_lock_restore_stale returns 0 for both "restored" and "nothing to
+# restore" -- correct for the EXIT trap, which must be a no-op when it fires
+# before any `mv` happened, but the synchronous refresh branch above used to
+# read that same 0 as proof it holds the lock. Force the two apart: make the
+# create fail AND remove the backup, so the restore is a rc-0 no-op with no
+# lock file anywhere. Ungated, this printed `refreshed session_id=sess-a`
+# rc 0 while the lock did not exist -- vizier_lock_matches false forever
+# after, wake hook silently skipping every turn.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a
+harness=claude
+pid=%s
+since=1
+' $$ > "$(vizier_lock_path)"
+_vizier_test_lock_pre_create_seam() {
+  _vizier_lock_create_exclusive() { return 1; }
+  # $stale_target is the claim subshell's own variable; the seam is called
+  # from inside that subshell, so removing it here is exactly the
+  # "backup went missing" state the gate has to notice.
+  rm -f "$stale_target"
+}
+out=$(vizier_lock_claim sess-a claude $$); rc=$?
+unset -f _vizier_test_lock_pre_create_seam
+assert_rc "$rc" 1 "a refresh whose backup vanished refuses instead of claiming success"
+assert_contains "$out" "refused" "and says refused, not refreshed"
+assert_eq "$(test -e "$(vizier_lock_path)" && echo yes || echo no)" "no" \
+  "the premise of the test: there really is no lock file to hold"
+vizier_lock_matches sess-a; assert_rc $? 1 \
+  "the report and reality agree -- a session told 'refused' does not match the lock"
+
+# --- a real signal inside the take -> create window ---------------------------
+# The take-stale/create sequence's INT/TERM/HUP trap has had no automated
+# coverage at all, and review round 3 changed the `success` guard's
+# semantics underneath it. Deliver a genuine SIGTERM from the pre-create
+# seam (the window is open at that point: the lock file has been moved
+# aside and not yet recreated) to the subshell that owns the trap, then
+# `wait` for it so delivery is deterministic rather than a race with the
+# create. The line after the wait must NEVER run: a bash signal trap
+# RESUMES execution by default, so the marker being written is exactly how
+# a dropped `exit 1` in that trap would show up.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a
+harness=claude
+pid=%s
+since=1
+' $$ > "$(vizier_lock_path)"
+resumed="$VIZIER_TEST_TMP/term-trap-resumed"
+rm -f "$resumed"
+_vizier_test_lock_pre_create_seam() { sh -c 'kill -TERM $PPID' & wait; : > "$resumed"; }
+out=$(vizier_lock_claim sess-a claude $$ 2>/dev/null); rc=$?
+unset -f _vizier_test_lock_pre_create_seam
+assert_rc "$rc" 1 "a SIGTERM inside the window ends the claim, it does not report success"
+assert_eq "$out" "" "and says nothing -- a half-finished claim must not print a verdict"
+assert_eq "$(test -e "$resumed" && echo resumed || echo exited)" "exited" \
+  "the TERM trap exits rather than resuming past the signal"
+assert_eq "$(vizier_lock_get session_id)" "sess-a" \
+  "the owner's own lock is restored by the trap, not left missing"
+assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "and no backup is orphaned on disk"
 
 # --- a create that fails for a NON-competitive reason must not claim
 # held_by= (review round 1, minor) -------------------------------------------
