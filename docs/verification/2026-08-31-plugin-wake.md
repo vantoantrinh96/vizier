@@ -96,7 +96,7 @@ after the measurement (sha256 matches: `ba94bfa2...5c7e35c7`).
   interactive session.
 - `cursor-agent` requires trust per workspace directory (`--trust` or an interactive decision).
   Since vizier "runs everywhere," that means every new directory where the captain types
-  `/vizier` hits a trust prompt once. This needs consideration in the Cursor adapter.
+  `/vizier:vizier` hits a trust prompt once. This needs consideration in the Cursor adapter.
 
 ## Probe left on the machine
 

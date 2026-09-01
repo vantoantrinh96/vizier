@@ -73,7 +73,7 @@ CLAUDE_CODE_CHILD_SESSION` -- is marked as a child session by Claude Code itself
 (measured: the variable is still present inside the spawned session after
 unsetting it in the parent). The activation script refused there (see Correction:
 that refusal is now known to be a defect, not correct behavior, and has been
-removed). So a genuine claim can only be observed by a person typing `/vizier` in
+removed). So a genuine claim can only be observed by a person typing `/vizier:vizier` in
 their own interactive session -- and, as recorded below, that person also hit the
 same refusal, because it fires on every ordinary session, not only on
 programmatically-started ones.

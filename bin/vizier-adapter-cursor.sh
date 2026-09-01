@@ -167,7 +167,7 @@ case "$action" in
     printf 'note: Cursor requires trust per workspace directory, so every new directory needs one trust step.\n'
     # FIX 9 -- say it straight AT INSTALL TIME, don't let the captain discover
     # it three days later: Cursor's wake now runs the full cycle, but
-    # ACTIVATION (`/vizier`) does not yet. `vizier-activate.sh` reads
+    # ACTIVATION (`/vizier:vizier`) does not yet. `vizier-activate.sh` reads
     # CLAUDE_CODE_SESSION_ID, a variable only Claude Code has; Cursor has no
     # equivalent way to get its own session id. Installing this entry only
     # gets the hook ready for when the activation path arrives, it is not
