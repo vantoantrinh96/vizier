@@ -34,7 +34,24 @@ lookup, since a wake event never carries the slug itself:
 
 ```bash
 slug=$(vizier_request_slug_for_run "$run_id")
+if [ -z "$slug" ]; then
+  printf 'vizier: wake for run_id=%s, but no OPEN request names that Run.\n' "$run_id" >&2
+  printf 'vizier: not processing this batch. Check ~/.vizier/requests/ -- the\n' >&2
+  printf 'vizier: request was probably closed while a worker was still running.\n' >&2
+fi
 ```
+
+**An empty `slug` stops this skill.** Say the above to the captain and go no
+further: do not read the batch, do not release anything, and above all **do
+not ack** — an unacked batch is replayed, so stopping here loses nothing,
+while acking a batch you cannot attribute to a request loses it for good.
+
+The guard is not decoration. `vizier_request_slug_for_run` returns rc 0 with
+empty output when nothing matches, so without it every later step runs against
+`vizier_request_path ""` and the only symptom is
+`sed: .../requests/.md: No such file` on stderr. That fails closed, but it
+fails closed *unexplained* — and an unexplained failure in a wake hook is
+indistinguishable from the hook not having fired.
 
 ## 1. Read the batch
 

@@ -53,6 +53,13 @@ f=skills/supervise/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "supervise skill exists"
 has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is defined, not assumed"
 has $f "vizier_supervise_plan" "dispositions come from the library"
+# vizier_request_slug_for_run returns rc 0 with EMPTY output when no open
+# request names the Run, so an unguarded skill runs the rest of its steps
+# against vizier_request_path "" and the only symptom is a bare
+# `sed: .../requests/.md: No such file` on stderr -- fails closed, but
+# unexplained, which in a wake hook is indistinguishable from not firing.
+has $f "no OPEN request names that Run" "an unresolvable run_id is named, not left to a sed error"
+has $f "**An empty \`slug\` stops this skill.**" "and it stops the skill rather than continuing"
 has $f "orca orchestration check" "the mailbox is read with check"
 has $f "--ack" "ack exists"
 has $f "only after" "ack comes only after processing"
