@@ -1220,7 +1220,18 @@ git commit -m "feat: four-layer brief assembly"
 - Consumes: `jq`, and the `axi_outcome:` line mandated by `vizier_brief_delivery no-mistakes` (Task 4).
 - Produces:
   - `vizier_msg_disposition <mode> <json_line>` → prints `<release|hold|none> <reason>`
-  - `vizier_supervise_plan <mode>` → reads a batch of JSON lines on stdin, prints `PLAN <delivery_id> <disposition> <reason>` per message, then — **only if every message produced a disposition** — one final `ACK <last_delivery_id>` line.
+  - `vizier_supervise_plan <default_mode> [<mode_map_file>]` → reads a batch of JSON lines on stdin, prints `PLAN <delivery_id> <disposition> <reason>` per message, then — **only if every message produced a disposition** — one `ACK <delivery_id>` line **per classified delivery**, in batch order.
+
+> **This interface changed during execution, twice.** As first written it took a
+> single `<mode>` for the whole batch, which let a mixed-mode batch release a
+> `no-mistakes` worker unchecked; the mode map fixed that while keeping the
+> all-or-nothing ack decision batch-wide. It also emitted one `ACK <last id>`
+> for the whole batch, which acked only the last delivery and left the rest to
+> be replayed on the next wake — re-releasing an already-released dispatch and
+> re-reporting the same PR. Both were found by review, not by the tests below.
+> **The task text and test snippets that follow are the original draft**, kept
+> as the historical record; `lib/vizier-supervise-lib.sh` and
+> `tests/supervise-lib.test.sh` are authoritative.
 - Produces no side effects: it never calls `orca`. The `supervise` skill executes the plan.
 
 **Why a plan and not an executor:** the spec's rule is "ack only after every message in the batch is processed". As prose in a skill that rule is forgettable. As a function that withholds the `ACK` line unless every message classified, it is enforced, and testable without a model.
