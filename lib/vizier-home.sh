@@ -129,20 +129,29 @@ _vizier_lock_take_stale() {  # <snapshot> [stale_path]
 # Restore a backup _vizier_lock_take_stale produced, guarded by `set -C` for
 # the same reason its own restore is: a legitimate new owner may already
 # occupy the slot by the time this runs, and an unguarded write would
-# silently steal it from them. A no-op if nothing was actually taken (the
-# path does not exist), which is what makes it safe to call unconditionally
-# from a trap that may fire before any `mv` ever happened. Used by
-# vizier_lock_claim on EVERY create-failure path, not only refresh: for a
-# reclaim the old owner was already dead so restoring it back is harmless
-# (it just stays reclaimable), but for a refresh the backup IS the caller's
-# own live lock -- discarding it unconditionally on a create failure that
-# had nothing to do with losing a race used to silently unlock a live first
-# mate.
+# silently steal it from them. A no-op (rc 0) if nothing was actually taken
+# (the path does not exist), which is what makes it safe to call
+# unconditionally from a trap that may fire before any `mv` ever happened.
+# RETURNS THE REAL OUTCOME OF THE GUARDED WRITE: 0 if the backup is now
+# (back) at the lock path, 1 if `set -C` blocked it because someone else's
+# lock is there instead. `rm -f "$stale"` always succeeds regardless of
+# which of those happened, so this must NOT be "the rc of the function",
+# a caller that only checked "did this function run without error" could
+# never tell a genuine restore apart from one `set -C` silently refused.
+# Used by vizier_lock_claim on EVERY create-failure path, not only refresh:
+# for a reclaim the old owner was already dead so restoring it back is
+# harmless (it just stays reclaimable), but for a refresh the backup IS the
+# caller's own live lock -- discarding it unconditionally on a create
+# failure that had nothing to do with losing a race used to silently unlock
+# a live first mate, and the caller needs to know the restore genuinely
+# worked before it can truthfully say so.
 _vizier_lock_restore_stale() {  # <stale_path>
-  local stale=$1
+  local stale=$1 rc
   [ -n "$stale" ] && [ -e "$stale" ] || return 0
   ( set -C; cat "$stale" > "$(vizier_lock_path)" ) 2>/dev/null
+  rc=$?
   rm -f "$stale"
+  return "$rc"
 }
 
 # Shared refusal for "we did not end up holding the lock". Prints
@@ -164,7 +173,7 @@ _vizier_lock_refuse_current() {
 }
 
 vizier_lock_claim() {  # <session_id> <harness> <pid>
-  local sid=$1 harness=$2 pid=$3 owner owner_pid snapshot since verb detail
+  local sid=$1 harness=$2 pid=$3 owner owner_pid snapshot since verb detail rc
   # The lock file is line-based key=value and read with sed, so a session_id
   # containing a newline would write a file that we ourselves cannot read back
   # -> a lone claimant gets refused for no obvious reason. Block it right at
@@ -268,17 +277,30 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
   #
   # What is left: the `mv` and `cat` inside _vizier_lock_take_stale (both
   # external execs the compare-and-swap genuinely needs) and the `set -C`
-  # subshell in create_exclusive. This is not proven to be the floor --
-  # a `mktemp` + `mv`-into-place swap in place of the `set -C` subshell
-  # would shave one more fork -- but going further than that (closing the
-  # window to zero) needs a second file (a mutex), which this task's brief
-  # explicitly rules out. Measured max (8 busy-loop processes, `perl
-  # Time::HiRes` polling the file's existence): see task-2b-report.md. A
-  # fresh claimant that lands IN whatever window remains sees an empty lock
-  # and is free to claim it -- that claimant would then dispossess the true
-  # (about to be restored) owner. That is the residual risk this fix
-  # accepts, not a case this fix misses.
+  # subshell in create_exclusive. This is not proven to be the floor, but
+  # going further (closing the window to zero) needs a second file (a
+  # mutex), which this task's brief explicitly rules out -- and NOT a
+  # `mktemp` + `mv`-into-place swap in place of the `set -C` subshell: that
+  # was considered and is worse on both counts (two forks and two execs
+  # instead of one fork and zero execs) AND wrong, since a plain `mv` into
+  # place is not O_EXCL and would silently clobber a concurrent winner,
+  # reintroducing the exact race this whole commit exists to close.
+  # Measured max (8 busy-loop processes, `perl Time::HiRes` polling the
+  # file's existence): see task-2b-report.md. A fresh claimant that lands
+  # IN whatever window remains sees an empty lock and is free to claim it
+  # -- that claimant would then dispossess the true (about to be restored)
+  # owner. That is the residual risk this fix accepts, not a case this fix
+  # misses.
   since=$(date +%s)
+
+  # Test-only seam #2, pairing with the one right after the snapshot above:
+  # fires immediately before the take-stale subshell, so a test can bracket
+  # the region between them and assert the real invariant -- "nothing in
+  # here does a fresh read of the lock file" -- instead of simulating one
+  # hard-coded interleave (review round 3, Important 1: a test built the
+  # second way cannot tell a correct reordering from a regression that
+  # moves the bug and the seam together).
+  command -v _vizier_test_lock_pre_take_seam >/dev/null 2>&1 && _vizier_test_lock_pre_take_seam
 
   # The take-stale -> create-or-restore sequence lives in its own subshell
   # so ITS trap belongs only to it, not to vizier_lock_claim's caller --
@@ -297,13 +319,26 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
   # _vizier_lock_restore_stale itself is a safe no-op if that path does not
   # exist yet (signal arrived before the `mv`) or no longer exists (we
   # already succeeded and cleaned it up).
+  #
+  # `( ... ) || rc=$?` at the very end, not a bare `( ... )` followed by
+  # `return $?`: under `set -e` a bare non-final subshell that exits
+  # non-zero triggers the CALLER's shell to abort immediately, skipping the
+  # `return` line entirely and turning an ordinary refusal into a crash of
+  # whoever sourced this file. No caller does that today (only install.sh
+  # uses `set -e` anywhere in this project, and it never calls this
+  # function), so this is latent, not live -- guarded anyway because the
+  # next caller that does isn't hypothetical, it just hasn't been written.
+  rc=0
   (
     stale_target="$(vizier_lock_path).stale.$$.$RANDOM"
     success=""
-    # `[ -n "$success" ] ||` guards both traps: once create_exclusive has
-    # actually succeeded, the backup must NEVER be restored over the fresh
-    # lock it just wrote, even if a signal lands in the sliver between that
-    # success and our own explicit `rm -f` two lines down.
+    # `[ -n "$success" ] ||` guards both traps: once this section has fully
+    # accounted for $stale_target -- either create_exclusive succeeded, or
+    # the synchronous restore-or-refuse below already ran -- the trap must
+    # never act on it again, both to avoid restoring over a fresh lock we
+    # just wrote and to avoid a pointless second restore attempt (harmless
+    # by itself, since _vizier_lock_restore_stale is idempotent, but
+    # pointless).
     trap '[ -n "$success" ] || _vizier_lock_restore_stale "$stale_target"' EXIT
     trap '[ -n "$success" ] || _vizier_lock_restore_stale "$stale_target"; exit 1' INT TERM HUP
 
@@ -311,6 +346,15 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
       _vizier_lock_refuse_current
       exit 1
     fi
+    # Test-only seam #3: fires after a successful take (the slot is free)
+    # and immediately before the create attempt, so a test can make ONLY
+    # the create fail -- for a reason that has nothing to do with losing a
+    # race -- without touching filesystem permissions (which would also
+    # block the restore this is meant to exercise). Lets tests/lock.test.sh
+    # verify the truthful-message fix below (review round 3, Minor: a
+    # refresh whose create fails but whose restore succeeds must say so,
+    # not `refused`).
+    command -v _vizier_test_lock_pre_create_seam >/dev/null 2>&1 && _vizier_test_lock_pre_create_seam
     if _vizier_lock_create_exclusive "$sid" "$harness" "$pid" "$since"; then
       success=1
       rm -f "$stale_target"
@@ -319,12 +363,45 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
     fi
     # Create failed for ANY reason -- lost race, or something else entirely
     # (e.g. the home going unwritable between the take and the create).
-    # The EXIT trap above restores $stale_target unconditionally; nothing
-    # further to do here except report why.
+    # Restore SYNCHRONOUSLY here, not only via the EXIT trap: the trap is
+    # the signal-safety net, but the ORDINARY failure path needs to know
+    # whether the restore actually worked before it can say anything
+    # truthful, and `_vizier_lock_refuse_current` reading the lock path
+    # before the restore has happened is exactly the bug review round 3
+    # found -- it would print `reason=create_failed` on a REFRESH whose
+    # backup (the caller's own live lock) is restored moments later,
+    # telling the caller they were refused when they in fact still hold it.
+    if _vizier_lock_restore_stale "$stale_target"; then
+      success=1
+      if [ "$verb" = refreshed ]; then
+        # Our OWN lock came back intact -- from the caller's point of view
+        # this was never really a loss, just a refresh that failed to
+        # advance `since`. Report it exactly as an ordinary successful
+        # refresh (same string, rc 0): the caller still holds the same
+        # session_id, which is the only thing that actually matters to it.
+        printf '%s %s\n' "$verb" "$detail"
+        exit 0
+      fi
+      # Reclaim: the ORIGINAL (dead) owner's lock came back, not ours --
+      # we genuinely do not hold it. _vizier_lock_refuse_current now reads
+      # the RESTORED file and correctly reports `held_by=<dead owner>`
+      # (more informative than the old always-`create_failed` message, and
+      # matches bin/vizier-activate.sh's `refused held_by=*` pattern, so
+      # the `vizier unlock` hint is offered exactly when there is
+      # something to unlock).
+      _vizier_lock_refuse_current
+      exit 1
+    fi
+    # The restore itself was blocked by set -C: someone else's lock is
+    # genuinely there now (a legitimate racer claimed the freed slot), or
+    # the failure is bad enough that even our own restore write can't land.
+    # Either way we definitely do not hold the lock; refuse_current reports
+    # whichever is true from the file as it stands.
+    success=1
     _vizier_lock_refuse_current
     exit 1
-  )
-  return $?
+  ) || rc=$?
+  return "$rc"
 }
 
 vizier_lock_release() {  # <session_id> -- only the true owner can remove it

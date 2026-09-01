@@ -173,7 +173,13 @@ assert_eq "$(vizier_lock_get session_id)" "third" \
 rm -f "$(vizier_lock_path)"
 printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 stale=$(_vizier_lock_take_stale "$(cat "$(vizier_lock_path)")")
-_vizier_lock_restore_stale "$stale"
+_vizier_lock_restore_stale "$stale"; rc=$?
+# Round 3, Minor: the function must return the TRUE outcome of the guarded
+# write, not the rc of the trailing `rm -f` (which is ~always 0) -- assert
+# the return code explicitly, not just the resulting file content, so a
+# regression back to "return whatever rm said" is caught even if it
+# happened to leave the right bytes on disk in this particular scenario.
+assert_rc "$rc" 0 "restore-stale returns 0 when the guarded write actually lands"
 assert_eq "$(vizier_lock_get session_id)" "sess-a" \
   "restore-stale gives the backup back when the slot is still free"
 assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
@@ -186,7 +192,8 @@ rm -f "$(vizier_lock_path)"
 printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 stale=$(_vizier_lock_take_stale "$(cat "$(vizier_lock_path)")")
 _vizier_lock_create_exclusive newcomer claude $$ >/dev/null  # a legitimate racer claims the freed slot
-_vizier_lock_restore_stale "$stale"
+_vizier_lock_restore_stale "$stale"; rc=$?
+assert_rc "$rc" 1 "restore-stale returns 1 when set -C blocks it, not the (always-0) rc of rm"
 assert_eq "$(vizier_lock_get session_id)" "newcomer" \
   "restore-stale does NOT clobber a legitimate new owner"
 assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
@@ -198,6 +205,95 @@ _vizier_lock_restore_stale ""
 assert_rc "$?" 0 "restore-stale with no path is a harmless no-op"
 _vizier_lock_restore_stale "$VIZIER_TEST_TMP/never-existed"
 assert_rc "$?" 0 "restore-stale with a nonexistent path is a harmless no-op"
+
+# --- assert the INVARIANT, not one hard-coded interleave (review round 3,
+# Important 1) ----------------------------------------------------------------
+# The reviewer proved round 2's composed-path tests could not see a
+# regression that moves the seam call along with the bug: reverting owner
+# derivation to a fresh vizier_lock_get read, with the round-2 seam left
+# exactly where round 2 put it, still passes the whole suite -- and that
+# mutant genuinely dispossesses a live owner. A test that simulates ONE
+# hard-coded interleave cannot distinguish "correct code" from "buggy code
+# plus a seam that moved with it, so it never fires downstream of the bug".
+# Assert the real invariant instead: NO read of the lock file happens
+# between the snapshot and the take-stale call, however the code in
+# between is shaped. Bracket the region with the two seams (right after
+# the snapshot, right before the take-stale subshell) and shadow
+# vizier_lock_get -- the only lock-file-reading primitive anything in that
+# region calls -- for its duration. The shadow still DOES the real read
+# (via the renamed original) so a legitimate call would not silently break
+# the test in some unrelated way; it just also leaves a mark.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a
+harness=claude
+pid=999999
+since=1
+' > "$(vizier_lock_path)"
+marker="$VIZIER_TEST_TMP/lock-get-called-in-window"
+rm -f "$marker"
+_vizier_test_lock_seam() {
+  eval "_vizier_test_lock_get_orig() $(declare -f vizier_lock_get | sed '1d')"
+  vizier_lock_get() {
+    : > "$marker"
+    _vizier_test_lock_get_orig "$@"
+  }
+}
+_vizier_test_lock_pre_take_seam() {
+  eval "vizier_lock_get() $(declare -f _vizier_test_lock_get_orig | sed '1d')"
+  unset -f _vizier_test_lock_get_orig
+}
+out=$(vizier_lock_claim sess-a claude $$); rc=$?
+unset -f _vizier_test_lock_seam _vizier_test_lock_pre_take_seam
+assert_rc "$rc" 0 "an ordinary refresh (no interleave) still succeeds under the shadow"
+assert_contains "$out" "refreshed" "reports refreshed"
+assert_eq "$(test -e "$marker" && echo called || echo not-called)" "not-called" \
+  "vizier_lock_get is never called between the snapshot and the take-stale call"
+
+# --- truthful message after a non-competitive create failure on refresh
+# (review round 3, Minor) ------------------------------------------------------
+# A refresh whose create fails for a reason that has nothing to do with
+# losing a race (simulated by shadowing _vizier_lock_create_exclusive to
+# fail outright, leaving the slot genuinely free -- NOT by touching
+# filesystem permissions, which would also block the restore this is
+# meant to exercise) must have its own backup restored and must SAY SO --
+# not print `refused reason=create_failed` while the caller in fact still
+# holds its own lock, which is what happened before this fix
+# (_vizier_lock_refuse_current used to run before the restore had happened).
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a
+harness=claude
+pid=%s
+since=1
+' $$ > "$(vizier_lock_path)"
+_vizier_test_lock_pre_create_seam() {
+  _vizier_lock_create_exclusive() { return 1; }
+}
+out=$(vizier_lock_claim sess-a claude $$); rc=$?
+unset -f _vizier_test_lock_pre_create_seam
+assert_rc "$rc" 0 "a refresh survives a non-competitive create failure (its own lock is restored)"
+assert_contains "$out" "refreshed" "says refreshed, not refused -- the caller genuinely still holds it"
+assert_eq "$(vizier_lock_get session_id)" "sess-a" "and the lock file itself proves it"
+assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "no orphaned backup left behind"
+
+# ... but a RECLAIM whose create fails the same way restores the ORIGINAL
+# (dead) owner's lock, not ours -- we genuinely never held it, so this one
+# correctly still refuses, now naming the actual (dead) owner instead of a
+# generic create_failed.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=ghost
+harness=claude
+pid=999999
+since=1
+' > "$(vizier_lock_path)"
+_vizier_test_lock_pre_create_seam() {
+  _vizier_lock_create_exclusive() { return 1; }
+}
+out=$(vizier_lock_claim thief claude $$); rc=$?
+unset -f _vizier_test_lock_pre_create_seam
+assert_rc "$rc" 1 "a reclaim whose create fails still refuses (we never held it)"
+assert_contains "$out" "held_by=ghost" "names the restored (dead) owner, not a generic create_failed"
+assert_eq "$(vizier_lock_get session_id)" "ghost" "the dead owner's own lock is restored, unclaimed by us"
 
 # --- a create that fails for a NON-competitive reason must not claim
 # held_by= (review round 1, minor) -------------------------------------------
