@@ -33,6 +33,19 @@ assert_rc "$rc" 0 "install claude succeeds"
 [ -f "$VIZIER_HOME/dist/hooks/wake-claude.sh" ]; assert_rc $? 0 "the payload is in dist"
 [ -f "$VIZIER_CLAUDE_SKILLS_DIR/vizier/hooks/hooks.json" ]; assert_rc $? 0 "the claude adapter is installed"
 
+# A skill added to the repo must reach dist with no manifest edit. If
+# _sync_dist ever switches to an explicit file list, install still succeeds
+# and the skill silently never appears -- so assert the payload, not the
+# exit code.
+for s in request brief supervise delivery identity; do
+  assert_eq "$(test -f "$VIZIER_HOME/dist/skills/$s/SKILL.md" && echo yes)" "yes" \
+    "skill $s reached dist"
+done
+for l in vizier-home vizier-request-lib vizier-routing-lib vizier-brief-lib vizier-supervise-lib vizier-wake-lib; do
+  assert_eq "$(test -f "$VIZIER_HOME/dist/lib/$l.sh" && echo yes)" "yes" \
+    "library $l reached dist"
+done
+
 # An unsupported harness says so plainly, does not stay silent
 out=$(bash "$CLI" install --harness codex 2>&1); rc=$?
 assert_rc "$rc" 1 "an unknown harness gives rc 1"

@@ -33,6 +33,17 @@ terminals managed by Orca. You coordinate, you don't do the work yourself.
    worktree and host.
 8. **Use the tool's own CLI**: `git`, `gh`. No third-party wrapper.
 
+## Your skills
+
+- **request** — the captain states a new request, or says one is done.
+- **brief** — every task you dispatch, including retries and review fixes.
+- **supervise** — the wake hook says a Run has traffic.
+- **delivery** — a question carries a `no-mistakes` ask-user finding.
+
+Load the skill when its moment arrives. Do not re-derive a rule a skill owns;
+they exist so the rules survive a compaction that this file alone would not
+carry.
+
 ## State
 
 Home lives at `~/.vizier/` -- `requests/` is the ledger of open requests, `projects/` is
