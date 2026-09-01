@@ -69,7 +69,25 @@ def main():
                 return "found"
         return True
 
+    shutdown_started = False
     def shutdown():
+        # Once shutdown begins it must run to completion. Disarm SIGINT/SIGTERM
+        # FIRST, before anything else: a second signal landing mid-cleanup
+        # (an outer supervisor re-sending SIGTERM, say) used to re-enter
+        # _on_term and raise KeyboardInterrupt out of the middle of
+        # os.waitpid() -- reproduced -- which aborted the reap and let the
+        # traceback stand in for a verdict. SIG_IGN, not restoring the
+        # default, because the default SIGINT action also raises and would
+        # reopen the same hole. And guard against a second call outright:
+        # `finally` still calls shutdown() even when a signal already drove
+        # it once via the except/finally path, and a stale pid must not be
+        # waited on twice.
+        nonlocal shutdown_started
+        if shutdown_started:
+            return
+        shutdown_started = True
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         # Ctrl-C through the pty first (the polite way to ask a TUI), then
         # escalate through signals and REAP. Without the reap + SIGKILL step,
         # an agent that installs its own TERM/INT/HUP handler would survive
@@ -133,4 +151,16 @@ def main():
     return 1
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (KeyboardInterrupt, Exception) as e:
+        # A crashed run that exits 0 is worse than the crash itself: a
+        # caller that only checks the exit code -- exactly the kind of
+        # wrapper this script exists to be driven by -- would read a
+        # traceback-as-output as a silent PASS. SystemExit isn't caught
+        # here (it's neither Exception nor KeyboardInterrupt), so the
+        # normal PASS/FAIL exit codes above pass through untouched; this
+        # only catches what would otherwise become an uncaught traceback,
+        # e.g. a signal that still slipped through as KeyboardInterrupt.
+        print(f"FAIL: {e}", file=sys.stderr)
+        raise SystemExit(1)
