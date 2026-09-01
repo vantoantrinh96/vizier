@@ -46,6 +46,16 @@ printf 'a preamble\n---\nrun_id: run_late\nstatus: open\n---\n' > "$(vizier_requ
 assert_eq "$(vizier_open_run_ids | grep -c run_late || true)" "0" "frontmatter not at the start of the file is skipped"
 rm -f "$(vizier_requests_dir)/body.md" "$(vizier_requests_dir)/late.md"
 
+# A trailing space on either fence is a hand-editing typo, not a different
+# file format. The closing fence already tolerated it; the NR==1 opening check
+# did not, so `--- ` on line 1 made the hook silently stop waiting on a live
+# Run -- indistinguishable from "no open requests".
+printf -- '--- \nrun_id: run_space\nstatus: open\n--- \nstatus: closed\n' \
+  > "$(vizier_requests_dir)/space.md"
+assert_eq "$(vizier_open_run_ids | grep -c run_space || true)" "1" \
+  "a trailing space on the fences still reads as an open request"
+rm -f "$(vizier_requests_dir)/space.md"
+
 # CRLF must not silently turn an open request into a not-open one
 printf -- '---\r\nrun_id: run_crlf\r\nstatus: open\r\n---\r\n' > "$(vizier_requests_dir)/crlf.md"
 assert_eq "$(vizier_open_run_ids | grep -c run_crlf || true)" "1" "CRLF frontmatter is still read correctly"

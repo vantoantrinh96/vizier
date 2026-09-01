@@ -24,6 +24,37 @@ assert_eq "$(vizier_brief_project platform | grep -c 'delivery:')" "0" \
 vizier_project_mode unknown-project >/dev/null 2>&1
 assert_eq "$?" "1" "no knowledge file -> rc 1 so the skill asks the captain"
 
+# --- a trailing space on a fence is an ordinary hand-editing accident -------
+# docs/project-file-format.md tells the captain to write these files by hand,
+# so `--- ` instead of `---` is a typo anyone makes. Under an exact `$0=="---"`
+# match it was silent AND catastrophic: vizier_brief_project returned empty
+# with rc 0, so vizier_brief_assemble's `(no project knowledge file yet)`
+# fallback never fired and the ENTIRE project layer -- build, test,
+# conventions, pitfalls -- vanished from every brief for that project.
+printf -- '--- \ndelivery: no-mistakes\n--- \nBuild with `make loose`.\n' \
+  > "$VIZIER_HOME/projects/loose-fence.md"
+assert_eq "$(vizier_project_mode loose-fence)" "no-mistakes" \
+  "a trailing space on a fence does not hide the delivery mode"
+assert_contains "$(vizier_brief_project loose-fence)" "make loose" \
+  "a trailing space on a fence does not empty brief layer 2"
+assert_eq "$(vizier_brief_project loose-fence | grep -c 'delivery:')" "0" \
+  "and the frontmatter still does not leak into the body"
+assert_contains "$(vizier_brief_assemble loose-fence direct-PR 'Task.')" "make loose" \
+  "the assembled brief really carries the project layer, not the fallback"
+
+# The closing fence alone is the worst version, and the one that motivated
+# this fix: the opening fence matches, so `inside` is set and never cleared,
+# and vizier_brief_project prints NOTHING while returning rc 0 -- which is
+# why the `(no project knowledge file yet)` fallback could not fire either.
+printf -- '---\ndelivery: direct-PR\n--- \nBuild with `make closer`.\n' \
+  > "$VIZIER_HOME/projects/loose-close.md"
+body=$(vizier_brief_project loose-close); rc=$?
+assert_rc "$rc" 0 "a readable project file still returns rc 0"
+assert_contains "$body" "make closer" \
+  "a trailing space on the CLOSING fence must not silently return an empty body"
+assert_contains "$(vizier_brief_assemble loose-close direct-PR 'Task.')" "make closer" \
+  "and the assembled brief is not silently missing its project layer"
+
 # --- layer 1 invariants ---------------------------------------------------
 inv=$(vizier_brief_invariant)
 assert_contains "$inv" "orchestration send --type worker_done" "exact done syntax"

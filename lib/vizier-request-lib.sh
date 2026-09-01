@@ -75,7 +75,16 @@ _vizier_request_frontmatter() {  # <slug>
   local f
   f=$(vizier_request_path "$1")
   [ -r "$f" ] || return 1
-  tr -d '\r' < "$f" | awk 'NR==1 && $0=="---" {inside=1; next} inside && $0=="---" {exit} inside'
+  # Trailing whitespace on a fence is tolerated: without it, a hand-written
+  # `--- ` left the reader inside the frontmatter for the whole file, and
+  # vizier_request_get answered from the BODY -- exactly the "a captain who
+  # writes 'status: closed' in a sentence must not close the request" case
+  # the header comment of this file says is prevented. wake-lib's reader has
+  # always matched this way; these two must agree.
+  tr -d '\r' < "$f" | awk '
+    NR==1 && $0 ~ /^---[[:space:]]*$/ {inside=1; next}
+    inside && $0 ~ /^---[[:space:]]*$/ {exit}
+    inside'
 }
 
 vizier_request_get() {  # <slug> <key>
@@ -91,9 +100,12 @@ vizier_request_set() {  # <slug> <key> <value>
   # awk, not sed -i: BSD and GNU disagree on -i, and the value may contain
   # slashes (a project_id does). Passing the value as an awk variable means
   # it is never re-parsed as a pattern.
+  # The writer's fence match must agree with the readers' (above), or a
+  # hand-edited `--- ` would make this rewrite a body line that happens to
+  # start with the key.
   tr -d '\r' < "$f" | awk -v k="$2" -v v="$3" '
-    NR==1 && $0=="---" { inside=1; print; next }
-    inside && $0=="---" { inside=0; print; next }
+    NR==1 && $0 ~ /^---[[:space:]]*$/ { inside=1; print; next }
+    inside && $0 ~ /^---[[:space:]]*$/ { inside=0; print; next }
     inside && index($0, k ":") == 1 { print k ": " v; next }
     { print }
   ' > "$t" || { rm -f "$t"; return 1; }

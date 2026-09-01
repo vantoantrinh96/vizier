@@ -77,6 +77,27 @@ printf -- '---\r\nrun_id: run-3\r\nproject: p\r\nproject_id: x\r\nhost: local\r\
 assert_eq "$(vizier_request_get crlf run_id)" "run-3" "CRLF file reads cleanly"
 assert_contains "$(vizier_request_open_slugs)" "crlf" "CRLF request counts as open"
 
+# --- a trailing space on a fence must not unscope the frontmatter ----------
+# The header comment of vizier-request-lib.sh promises every read stops at the
+# closing `---`, so a captain who writes "status: closed" in a sentence cannot
+# close the request. An exact `$0=="---"` match broke that promise for a fence
+# written `--- `: the reader never left the frontmatter and read the BODY's
+# status instead. Hand-edited files are the normal case here, so the fence
+# match has to tolerate trailing whitespace -- as wake-lib's already did.
+printf -- '--- \nrun_id: run-space\nproject: p\nstatus: open\n--- \nstatus: closed\n' \
+  > "$(vizier_request_path loose-fence)"
+assert_eq "$(vizier_request_get loose-fence status)" "open" \
+  "a trailing space on the fence does not let the body answer a frontmatter query"
+assert_eq "$(vizier_request_get loose-fence run_id)" "run-space" \
+  "and the real frontmatter is still readable"
+assert_contains "$(vizier_open_run_ids)" "run-space" \
+  "the wake hook still sees a hand-edited request as open"
+vizier_request_close loose-fence
+assert_eq "$(vizier_request_get loose-fence status)" "closed" \
+  "set rewrites the frontmatter key, not the body's lookalike line"
+assert_eq "$(grep -c '^status: closed' "$(vizier_request_path loose-fence)")" "2" \
+  "the body line is untouched: one rewritten key plus the original body line"
+
 # --- slug_for_run: the reverse lookup supervise/delivery use to translate a
 # wake event's run_id (all a wake message ever carries) back to the request
 # file that names it ---------------------------------------------------------

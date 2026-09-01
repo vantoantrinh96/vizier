@@ -20,7 +20,14 @@ _vizier_project_frontmatter() {  # <project>
   local f
   f=$(vizier_project_path "$1")
   [ -r "$f" ] || return 1
-  tr -d '\r' < "$f" | awk 'NR==1 && $0=="---" {inside=1; next} inside && $0=="---" {exit} inside'
+  # The fence match tolerates trailing whitespace on purpose. These files are
+  # hand-edited by the captain (docs/project-file-format.md says so), and an
+  # exact `$0=="---"` turned the ordinary typo `--- ` into a silent, total
+  # failure: the reader never left the frontmatter, or never entered it.
+  tr -d '\r' < "$f" | awk '
+    NR==1 && $0 ~ /^---[[:space:]]*$/ {inside=1; next}
+    inside && $0 ~ /^---[[:space:]]*$/ {exit}
+    inside'
 }
 
 vizier_project_field() {  # <project> <key>
@@ -39,9 +46,15 @@ vizier_brief_project() {  # <project> -- the body, frontmatter stripped
   local f
   f=$(vizier_project_path "$1")
   [ -r "$f" ] || return 1
+  # Same trailing-whitespace tolerance as _vizier_project_frontmatter, and for
+  # the same reason -- but the stakes here are higher: a closing `--- ` left
+  # `inside` set forever, so this printed NOTHING and returned rc 0. The rc 0
+  # is what made it silent: vizier_brief_assemble's `(no project knowledge
+  # file yet)` fallback keys off failure, so the whole project layer just
+  # disappeared from every brief for that project with nothing to notice.
   tr -d '\r' < "$f" | awk '
-    NR==1 && $0=="---" { inside=1; next }
-    inside && $0=="---" { inside=0; body=1; next }
+    NR==1 && $0 ~ /^---[[:space:]]*$/ { inside=1; next }
+    inside && $0 ~ /^---[[:space:]]*$/ { inside=0; body=1; next }
     !inside { print }
   '
 }

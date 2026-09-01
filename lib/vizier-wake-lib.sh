@@ -25,7 +25,7 @@ VIZIER_WAKE_POLL_MS="${VIZIER_WAKE_POLL_MS:-1000}"
 _vizier_frontmatter() {  # <file>
   awk '
     { gsub(/\r$/, "") }
-    NR==1 && $0 != "---" { exit }
+    NR==1 && $0 !~ /^---[[:space:]]*$/ { exit }
     /^---[[:space:]]*$/ { n++; if (n==2) exit; next }
     n==1 { print }
   ' "$1" 2>/dev/null | tr -d '\r'
