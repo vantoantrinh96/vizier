@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-. "$OFM_TEST_REPO/lib/ofm-home.sh"
-HOOK="$OFM_TEST_REPO/hooks/wake-claude.sh"
-export OFM_WAIT_TIMEOUT_MS=300
+vizier_test_setup
+. "$VIZIER_TEST_REPO/lib/vizier-home.sh"
+HOOK="$VIZIER_TEST_REPO/hooks/wake-claude.sh"
+export VIZIER_WAIT_TIMEOUT_MS=300
 
 payload() { printf '{"session_id":"%s","cwd":"/tmp","hook_event_name":"Stop"}' "$1"; }
 payload_active() {  # <session_id> -- stop_hook_active:true, used for the FIX 1 case
@@ -12,7 +12,7 @@ payload_active() {  # <session_id> -- stop_hook_active:true, used for the FIX 1 
 }
 mk_request() {
   printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\nx\n' \
-    "$2" "$3" > "$(ofm_requests_dir)/$1.md"
+    "$2" "$3" > "$(vizier_requests_dir)/$1.md"
 }
 
 # No lock: absolutely silent. This is the gate that protects every other session on the machine.
@@ -22,13 +22,13 @@ assert_eq "$out" "" "no lock prints nothing"
 assert_eq "$(fake_orca_calls)" "" "no lock calls orca zero times"
 
 # A different session's lock: still silent
-printf 'session_id=sess-other\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
+printf 'session_id=sess-other\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
 assert_rc "$rc" 0 "a mismatched session_id gives exit 0"
 assert_eq "$(fake_orca_calls)" "" "a mismatched session_id calls orca zero times"
 
 # The right owner but no open request: exit 0, still no orca call
-printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
+printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
 assert_rc "$rc" 0 "no open request gives exit 0"
 assert_eq "$(fake_orca_calls)" "" "no open request calls orca zero times"
@@ -52,7 +52,7 @@ assert_rc "$rc" 2 "the first report (stop_hook_active=false) exits 2"
 assert_contains "$err" "worker_done" "stderr carries the summary"
 stdout=$(payload sess-a | bash "$HOOK" 2>/dev/null);
 assert_eq "$stdout" "" "nothing is printed to stdout"
-assert_contains "$(cat "$(ofm_home)/last-wake" 2>/dev/null)" "worker_done" \
+assert_contains "$(cat "$(vizier_home)/last-wake" 2>/dev/null)" "worker_done" \
   "the first report must record the summary into last-wake for later identity comparison"
 
 # FIX 1 -- the SAME message (--peek doesn't ack, so it's still there) AND
@@ -83,11 +83,11 @@ assert_eq "$stdout" "" "the ceiling also prints nothing to stdout"
 # flag would exit 0 and silently swallow this case -- exactly the Critical
 # this catches.
 printf '%s\n' '{"type":"escalation","run_id":"run_a","outcome":"needs captain decision"}' \
-  > "$OFM_FAKE_ORCA_STATE/queue/run_a"
+  > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
 err=$(payload_active sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
 assert_rc "$rc" 2 "FIX 1: a message DIFFERENT from last-wake must exit 2 even with stop_hook_active=true, not be swallowed"
 assert_contains "$err" "escalation" "stderr must carry the NEW message's summary (not the old worker_done)"
-assert_contains "$(cat "$(ofm_home)/last-wake" 2>/dev/null)" "escalation" \
+assert_contains "$(cat "$(vizier_home)/last-wake" 2>/dev/null)" "escalation" \
   "last-wake must update to the new message after reporting it"
 
 # stop_hook_active:true but NO message (empty queue) is the timeout branch
@@ -95,7 +95,7 @@ assert_contains "$(cat "$(ofm_home)/last-wake" 2>/dev/null)" "escalation" \
 # infinitely on. Identity comparison does not touch this branch: exit 2 and
 # the re-arm line must remain intact regardless of what the flag or
 # last-wake currently hold.
-: > "$OFM_FAKE_ORCA_STATE/queue/run_a"
+: > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
 out=$(payload_active sess-a | bash "$HOOK" 2>&1); rc=$?
 assert_rc "$rc" 2 "stop_hook_active=true but no message (a timeout) still exits 2 (re-arm)"
 assert_contains "$out" "re-arm" "the timeout branch still wins with no message, regardless of stop_hook_active"
@@ -104,5 +104,5 @@ assert_contains "$out" "re-arm" "the timeout branch still wins with no message, 
 out=$(printf 'not json' | bash "$HOOK" 2>&1); rc=$?
 assert_rc "$rc" 0 "a garbage payload gives exit 0"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report

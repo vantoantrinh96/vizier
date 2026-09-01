@@ -2,10 +2,10 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-ofm_test_setup
+vizier_test_setup
 
-assert_contains "$OFM_HOME" "$OFM_TEST_TMP" "OFM_HOME is inside the temp directory"
-[ -d "$OFM_HOME" ]; assert_rc $? 0 "OFM_HOME was created"
+assert_contains "$VIZIER_HOME" "$VIZIER_TEST_TMP" "VIZIER_HOME is inside the temp directory"
+[ -d "$VIZIER_HOME" ]; assert_rc $? 0 "VIZIER_HOME was created"
 
 # fake-orca must come before the real orca on PATH
 resolved=$(command -v orca)
@@ -24,5 +24,5 @@ assert_contains "$out" "worker_done" "check returns the queued message"
 # every call gets logged
 assert_contains "$(fake_orca_calls)" "orchestration check --run run_a" "the call was logged"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report

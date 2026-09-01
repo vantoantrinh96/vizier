@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-AD="$OFM_TEST_REPO/bin/ofm-adapter-cursor.sh"
-DIST="$OFM_TEST_TMP/dist"; mkdir -p "$DIST/hooks"; printf 'x\n' > "$DIST/hooks/wake-cursor.sh"
-H="$OFM_TEST_TMP/cursor-hooks.json"
+vizier_test_setup
+AD="$VIZIER_TEST_REPO/bin/vizier-adapter-cursor.sh"
+DIST="$VIZIER_TEST_TMP/dist"; mkdir -p "$DIST/hooks"; printf 'x\n' > "$DIST/hooks/wake-cursor.sh"
+H="$VIZIER_TEST_TMP/cursor-hooks.json"
 
 # Mimics the captain's real file: Orca already has entries here beforehand.
 cat > "$H" <<'JSON'
@@ -33,7 +33,7 @@ assert_eq "$(jq -r '.hooks.stop[] | select(.command | contains("wake-cursor.sh")
 assert_eq "$(jq -r '.hooks.stop[] | select(.command | contains("wake-cursor.sh")) | .timeout' "$H")" "28800" "timeout is 28800"
 
 # A backup exists before writing
-ls "$OFM_HOME"/backups/cursor-hooks.*.json >/dev/null 2>&1; assert_rc $? 0 "a backup file exists"
+ls "$VIZIER_HOME"/backups/cursor-hooks.*.json >/dev/null 2>&1; assert_rc $? 0 "a backup file exists"
 
 # Idempotent: running three times still leaves exactly one entry
 bash "$AD" install "$DIST" "$H" >/dev/null
@@ -50,19 +50,19 @@ assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hook
 bash "$AD" verify "$DIST" "$H"; assert_rc $? 1 "verify reports the entry is gone"
 
 # A missing file is created fresh and valid, no crash
-H2="$OFM_TEST_TMP/fresh.json"
+H2="$VIZIER_TEST_TMP/fresh.json"
 bash "$AD" install "$DIST" "$H2"; assert_rc $? 0 "a new file is created"
 assert_eq "$(jq -r '.version' "$H2")" "1" "the new file has version 1"
 
 # Broken JSON must be REFUSED, absolutely never overwritten
-printf 'not json at all' > "$OFM_TEST_TMP/broken.json"
-out=$(bash "$AD" install "$DIST" "$OFM_TEST_TMP/broken.json" 2>&1); rc=$?
+printf 'not json at all' > "$VIZIER_TEST_TMP/broken.json"
+out=$(bash "$AD" install "$DIST" "$VIZIER_TEST_TMP/broken.json" 2>&1); rc=$?
 assert_rc "$rc" 1 "broken JSON gives rc 1"
 assert_contains "$out" "refus" "clearly states this is a refusal"
-assert_eq "$(cat "$OFM_TEST_TMP/broken.json")" "not json at all" "the broken file is untouched"
+assert_eq "$(cat "$VIZIER_TEST_TMP/broken.json")" "not json at all" "the broken file is untouched"
 
 # .hooks.stop as an object must be REFUSED, never coerced into an array
-HOBJ="$OFM_TEST_TMP/objstop.json"
+HOBJ="$VIZIER_TEST_TMP/objstop.json"
 printf '%s\n' '{"version":1,"hooks":{"stop":{"a":{"type":"command","command":"x"}}}}' > "$HOBJ"
 before=$(cat "$HOBJ")
 out=$(bash "$AD" install "$DIST" "$HOBJ" 2>&1); rc=$?
@@ -71,18 +71,18 @@ assert_contains "$out" "refused" "clearly states this is a refusal"
 assert_eq "$(cat "$HOBJ")" "$before" "the object-stop file is untouched"
 
 # A foreign entry whose .command is not a string is still KEPT, and does not break the install
-HNUM="$OFM_TEST_TMP/numcmd.json"
+HNUM="$VIZIER_TEST_TMP/numcmd.json"
 printf '%s\n' '{"version":1,"hooks":{"stop":[{"type":"command","command":123}]}}' > "$HNUM"
 bash "$AD" install "$DIST" "$HNUM" >/dev/null 2>&1; assert_rc $? 0 "a numeric .command entry does not block the install"
 assert_eq "$(jq '[.hooks.stop[] | select((.command|type)=="number")] | length' "$HNUM")" "1" "the foreign entry remains"
 assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select((.command|type)=="string" and (.command|contains($m)))] | length' "$HNUM")" "1" "our entry was added"
 
 # Three installs in a row must leave THREE distinct backups, not overwrite each other
-rm -rf "$OFM_HOME/backups"
+rm -rf "$VIZIER_HOME/backups"
 bash "$AD" install "$DIST" "$H" >/dev/null 2>&1
 bash "$AD" install "$DIST" "$H" >/dev/null 2>&1
 bash "$AD" install "$DIST" "$H" >/dev/null 2>&1
-assert_eq "$(ls "$OFM_HOME/backups" | wc -l | tr -d ' ')" "3" "three installs leave three separate backups"
+assert_eq "$(ls "$VIZIER_HOME/backups" | wc -l | tr -d ' ')" "3" "three installs leave three separate backups"
 
 # verify checks the shape, not just a count: an entry with the wrong timeout must FAIL
 bash "$AD" verify "$DIST" "$H"; assert_rc $? 0 "verify passes with a correct entry"
@@ -90,21 +90,21 @@ jq '(.hooks.stop[] | select(.command | contains("wake-cursor.sh")) | .timeout) =
 bash "$AD" verify "$DIST" "$H"; assert_rc $? 1 "verify fails when the timeout is wrong"
 
 # Target is a symlink: write through the link, don't replace the symlink itself
-HREAL="$OFM_TEST_TMP/real-hooks.json"; HLINK="$OFM_TEST_TMP/link-hooks.json"
+HREAL="$VIZIER_TEST_TMP/real-hooks.json"; HLINK="$VIZIER_TEST_TMP/link-hooks.json"
 printf '%s\n' '{"version":1,"hooks":{}}' > "$HREAL"; ln -sf "$HREAL" "$HLINK"
 bash "$AD" install "$DIST" "$HLINK" >/dev/null 2>&1
 [ -L "$HLINK" ]; assert_rc $? 0 "the symlink is still a symlink after install"
 assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select(.command|contains($m))] | length' "$HREAL")" "1" "content was written to the real file through the link"
 
 # Two-level symlink chain: write through to the final real file, both links preserved
-R2="$OFM_TEST_TMP/chain-real.json"; L1="$OFM_TEST_TMP/chain-1.json"; L2="$OFM_TEST_TMP/chain-2.json"
+R2="$VIZIER_TEST_TMP/chain-real.json"; L1="$VIZIER_TEST_TMP/chain-1.json"; L2="$VIZIER_TEST_TMP/chain-2.json"
 printf '%s\n' '{"version":1,"hooks":{}}' > "$R2"; ln -sf "$R2" "$L1"; ln -sf "$L1" "$L2"
 bash "$AD" install "$DIST" "$L2" >/dev/null 2>&1; assert_rc $? 0 "install through a two-link chain"
 [ -L "$L2" ] && [ -L "$L1" ]; assert_rc $? 0 "both links are still links"
 assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select((.command|type)=="string" and (.command|contains($m)))] | length' "$R2")" "1" "content reached the real file at the end of the chain"
 
 # FIX 3 -- the read-back-after-retry gate USED TO BE A TAUTOLOGY: it called
-# `ofm_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" ...`,
+# `vizier_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" ...`,
 # both reads of the SAME file RIGHT AFTER the retry had just finished
 # writing, so they always produced the same number -- that gate could never
 # detect a lost update on the RETRY PASS, no matter what actually happened.
@@ -114,21 +114,21 @@ assert_eq "$(jq --arg m wake-cursor.sh '[.hooks.stop[] | select((.command|type)=
 # finishes, the wrapper INSERTS an extra foreign entry into $H -- exactly
 # like another process `mv`-ing over it right after us. No wall-clock wait
 # needed at all, since everything is sequential within the same function call.
-AD_MV_DIR="$OFM_TEST_TMP/mvshadow"; mkdir -p "$AD_MV_DIR"
-HRACE="$OFM_TEST_TMP/race-hooks.json"
+AD_MV_DIR="$VIZIER_TEST_TMP/mvshadow"; mkdir -p "$AD_MV_DIR"
+HRACE="$VIZIER_TEST_TMP/race-hooks.json"
 cat > "$HRACE" <<'JSON'
 {"version":1,"hooks":{"stop":[{"type":"command","command":"/Users/x/.orca/agent-hooks/cursor-hook.sh","timeout":10}]}}
 JSON
 cat > "$AD_MV_DIR/mv" <<'SH'
 #!/usr/bin/env bash
 set -u
-target="${OFM_TEST_MV_TARGET:-}"
+target="${VIZIER_TEST_MV_TARGET:-}"
 match=0
 if [ "$#" -eq 2 ] && [ -n "$target" ] && [ "$2" = "$target" ]; then
-  case "$1" in *.ofm.*) match=1 ;; esac
+  case "$1" in *.vizier.*) match=1 ;; esac
 fi
 if [ "$match" != 1 ]; then exec /bin/mv "$@"; fi
-n_file="${OFM_TEST_MV_STATE:?}"
+n_file="${VIZIER_TEST_MV_STATE:?}"
 n=$(( $(cat "$n_file" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "$n" > "$n_file"
 /bin/mv "$1" "$2"
@@ -139,29 +139,29 @@ jq --arg cmd "race-writer-$n" '.hooks.stop += [{type:"command",command:$cmd,time
 exit 0
 SH
 chmod +x "$AD_MV_DIR/mv"
-export OFM_TEST_MV_TARGET="$HRACE"
-export OFM_TEST_MV_STATE="$OFM_TEST_TMP/mv-race-n"
-rm -f "$OFM_TEST_MV_STATE"
+export VIZIER_TEST_MV_TARGET="$HRACE"
+export VIZIER_TEST_MV_STATE="$VIZIER_TEST_TMP/mv-race-n"
+rm -f "$VIZIER_TEST_MV_STATE"
 out=$(PATH="$AD_MV_DIR:$PATH" bash "$AD" install "$DIST" "$HRACE" 2>&1); rc=$?
 assert_rc "$rc" 1 "FIX 3: a REAL race happening again on the retry is DETECTED and refused"
 assert_contains "$out" "refused" "clearly states this is a refusal"
-assert_eq "$(cat "$OFM_TEST_MV_STATE")" "2" "both the first merge and the retry ran (the retry was actually triggered)"
+assert_eq "$(cat "$VIZIER_TEST_MV_STATE")" "2" "both the first merge and the retry ran (the retry was actually triggered)"
 # The OLD (tautological) gate would never reach this refused branch: it
 # always compared `_count_others "$H"` against itself AFTER race-writer-2
 # had already finished writing, so it always saw a "match" and reported a
 # successful install -- exactly the bug FIX 3 fixes.
-unset OFM_TEST_MV_TARGET OFM_TEST_MV_STATE
+unset VIZIER_TEST_MV_TARGET VIZIER_TEST_MV_STATE
 
 # The lost-update decision rule, checked with pre-built numbers. The race
 # itself can't be reproduced in a unit test, but the RULE must be checkable.
-. "$OFM_TEST_REPO/lib/ofm-merge-lib.sh"
-ofm_no_lost_update 3 3 1; assert_rc $? 0 "no mismatch, ours is exactly one -> ok"
-ofm_no_lost_update 3 4 1; assert_rc $? 1 "the other party's entries increased -> mismatch"
-ofm_no_lost_update 3 2 1; assert_rc $? 1 "the other party's entries decreased -> mismatch"
-ofm_no_lost_update 3 3 0; assert_rc $? 1 "ours disappeared -> mismatch"
-ofm_no_lost_update 3 3 2; assert_rc $? 1 "ours doubled -> mismatch"
-ofm_no_lost_update 3 "" 1; assert_rc $? 1 "an empty count counts as a mismatch, not as equal"
-ofm_no_lost_update "" "" 1; assert_rc $? 1 "both empty still counts as a mismatch"
+. "$VIZIER_TEST_REPO/lib/vizier-merge-lib.sh"
+vizier_no_lost_update 3 3 1; assert_rc $? 0 "no mismatch, ours is exactly one -> ok"
+vizier_no_lost_update 3 4 1; assert_rc $? 1 "the other party's entries increased -> mismatch"
+vizier_no_lost_update 3 2 1; assert_rc $? 1 "the other party's entries decreased -> mismatch"
+vizier_no_lost_update 3 3 0; assert_rc $? 1 "ours disappeared -> mismatch"
+vizier_no_lost_update 3 3 2; assert_rc $? 1 "ours doubled -> mismatch"
+vizier_no_lost_update 3 "" 1; assert_rc $? 1 "an empty count counts as a mismatch, not as equal"
+vizier_no_lost_update "" "" 1; assert_rc $? 1 "both empty still counts as a mismatch"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report

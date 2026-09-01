@@ -3,7 +3,7 @@
 # touches the network or the real app. Implements only the surface the tests
 # need, nothing more.
 set -u
-STATE="${OFM_FAKE_ORCA_STATE:?fake-orca needs OFM_FAKE_ORCA_STATE}"
+STATE="${VIZIER_FAKE_ORCA_STATE:?fake-orca needs VIZIER_FAKE_ORCA_STATE}"
 printf '%s\n' "$*" >> "$STATE/calls.log"
 
 run_id=""
@@ -39,7 +39,7 @@ case "$1 ${2:-}" in
     exit 0
     ;;
   "status --json"|"status")
-    printf '%s\n' "${OFM_FAKE_ORCA_STATUS:-{\"ok\":true,\"result\":{\"reachable\":true,\"state\":\"ready\",\"capabilities\":[\"orchestration.contract.v1\"]}}}"
+    printf '%s\n' "${VIZIER_FAKE_ORCA_STATUS:-{\"ok\":true,\"result\":{\"reachable\":true,\"state\":\"ready\",\"capabilities\":[\"orchestration.contract.v1\"]}}}"
     exit 0
     ;;
 esac
