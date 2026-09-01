@@ -200,9 +200,17 @@ cmd_doctor() {
   done
   if command -v orca >/dev/null 2>&1; then
     status=$(orca status --json 2>/dev/null)
-    reachable=$(printf '%s' "$status" | jq -r '.result.reachable // false' 2>/dev/null)
-    state=$(printf '%s' "$status" | jq -r '.result.state // "unknown"' 2>/dev/null)
-    caps=$(printf '%s' "$status" | jq -r '(.result.capabilities // []) | join(",")' 2>/dev/null)
+    # FIX -- verified against the LIVE Orca app (orca status --json), not
+    # assumed from the code that was already here: reachable/state/
+    # capabilities live under `.result.runtime`, one level deeper than the
+    # old `.result.*` paths. The old paths always missed, so a perfectly
+    # healthy machine reported reachable=false state=unknown and a missing
+    # orchestration.contract.v1 capability. The fake-orca fixture used to
+    # emit the same flat shape the parser expected, so the test suite agreed
+    # with the bug and stayed green -- see tests/fake-orca/orca.
+    reachable=$(printf '%s' "$status" | jq -r '.result.runtime.reachable // false' 2>/dev/null)
+    state=$(printf '%s' "$status" | jq -r '.result.runtime.state // "unknown"' 2>/dev/null)
+    caps=$(printf '%s' "$status" | jq -r '(.result.runtime.capabilities // []) | join(",")' 2>/dev/null)
     if [ "$reachable" != "true" ] || [ "$state" != "ready" ]; then
       printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, then wait for the app to be ready)\n' "$reachable" "$state"
       problems=$((problems + 1))
@@ -212,7 +220,7 @@ cmd_doctor() {
     # `x-orchestration.contract.v1`, i.e. report success while the real
     # capability is actually missing.
     if ! printf '%s' "$status" | jq -e --arg c orchestration.contract.v1 \
-         '((.result.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
+         '((.result.runtime.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
       printf 'NOT_READY: Orca is missing capability orchestration.contract.v1 (fix: update the Orca app)\n'
       problems=$((problems + 1))
     fi

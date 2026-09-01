@@ -39,7 +39,15 @@ case "$1 ${2:-}" in
     exit 0
     ;;
   "status --json"|"status")
-    printf '%s\n' "${VIZIER_FAKE_ORCA_STATUS:-{\"ok\":true,\"result\":{\"reachable\":true,\"state\":\"ready\",\"capabilities\":[\"orchestration.contract.v1\"]}}}"
+    # Shape verified against the LIVE Orca app: reachable/state/capabilities
+    # live under result.runtime, not directly under result. Values below are
+    # placeholders (this repo is public) -- never the real runtimeId or pid.
+    # NOTE: the default is built in a plain variable first, then substituted
+    # with a simple ${VAR:-$other_var} -- bash's brace matching for
+    # ${VAR:-literal-with-braces} miscounts literal { / } inside the default
+    # word, which silently corrupts JSON containing nested objects.
+    default_status='{"id":"local-status","ok":true,"result":{"target":{"kind":"local"},"app":{"running":true,"pid":0,"desktopWindowStatus":"available"},"runtime":{"state":"ready","reachable":true,"runtimeId":"00000000-0000-0000-0000-000000000000","appVersion":"0.0.0","capabilities":["runtime.status.compat.v1","runtime.environments.v1","orchestration.contract.v1"]}}}'
+    printf '%s\n' "${VIZIER_FAKE_ORCA_STATUS:-$default_status}"
     exit 0
     ;;
 esac

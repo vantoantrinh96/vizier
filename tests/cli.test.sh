@@ -12,14 +12,14 @@ assert_rc "$rc" 0 "a clean doctor gives rc 0"
 assert_contains "$out" "orca" "doctor mentions orca"
 
 # Orca not ready makes doctor fail and states clearly how to fix it
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":false,"state":"starting","capabilities":[]}}'
+export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"runtime":{"reachable":false,"state":"starting","capabilities":[]}}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "Orca not ready gives rc 1"
 assert_contains "$out" "NOT_READY" "reports NOT_READY"
 assert_contains "$out" "orca open" "suggests the fix command"
 
 # Missing a required capability also fails
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":true,"state":"ready","capabilities":["other.v1"]}}'
+export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"runtime":{"reachable":true,"state":"ready","capabilities":["other.v1"]}}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "missing capability gives rc 1"
 assert_contains "$out" "orchestration.contract.v1" "names the exact missing capability"
@@ -88,10 +88,21 @@ out=$( cd "$DECOY" && VIZIER_SKIP_GH_AUTH=1 "$LINKDIR/vizier" doctor 2>&1 ); rc=
 assert_rc "$rc" 0 "doctor runs fine through a symlink"
 
 # Capability must match EXACTLY, not as a substring
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v10"]}}'
+export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"runtime":{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v10"]}}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "capability v10 must NOT count as v1"
 assert_contains "$out" "orchestration.contract.v1" "names the still-missing capability"
+unset VIZIER_FAKE_ORCA_STATUS
+
+# REGRESSION: the real orca app nests reachable/state/capabilities under
+# result.runtime, not directly under result. A status document in the OLD
+# flat shape (the one the parser used to read, and the fixture used to
+# emit) must now be treated as not-ready, proving doctor actually reads the
+# nested path and no longer accepts the shape it used to wrongly accept.
+export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v1"]}}'
+out=$(bash "$CLI" doctor 2>&1); rc=$?
+assert_rc "$rc" 1 "doctor rejects the OLD flat status shape (reachable/state/capabilities directly under result)"
+assert_contains "$out" "NOT_READY" "the old flat shape is reported NOT_READY, not silently accepted as ready"
 unset VIZIER_FAKE_ORCA_STATUS
 
 # A symlink chain deeper than the ceiling must REPORT AN ERROR, not silently use a half-resolved path
