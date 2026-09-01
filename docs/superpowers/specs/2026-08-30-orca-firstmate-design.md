@@ -99,7 +99,7 @@ Home is deliberately separate from the plugin: removing or upgrading the plugin 
 **Install once, use everywhere.** One command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vantoantrinh96/orca-firstmate/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vantoantrinh96/vizier/main/install.sh | sh
 vizier doctor
 vizier install
 ```

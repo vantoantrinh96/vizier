@@ -47,7 +47,7 @@ assert_eq "$("$VIZIER_BIN_DIR/vizier")" "stub-v2" "a dirty src gets restored"
 grep -q 'OWNER_PLACEHOLDER' "$VIZIER_TEST_REPO/install.sh"; assert_rc $? 1 "no owner placeholder remains"
 default_url=$(sed -n 's/^REPO_URL="\${VIZIER_REPO_URL:-\(.*\)}"$/\1/p' "$VIZIER_TEST_REPO/install.sh")
 assert_contains "$default_url" "github.com" "the default points at GitHub"
-assert_contains "$default_url" "orca-firstmate" "the default points at the right repo"
+assert_contains "$default_url" "vizier" "the default points at the right repo"
 # `github.com` alone does NOT distinguish: the SSH string
 # `git@github.com:...` also contains it. Must catch the actual SSH marker.
 case "$default_url" in *git@*) assert_eq "ssh" "https" "the default must NOT be in SSH form" ;; esac

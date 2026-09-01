@@ -2208,7 +2208,7 @@ test uses a local bare repo over `file://` so it runs offline, with no need for 
 
 - [ ] **Step 0: Cross-check the repo URL**
 
-Already confirmed: the remote is `git@github.com:vantoantrinh96/orca-firstmate.git`, and `gh repo
+Already confirmed: the remote is `git@github.com:vantoantrinh96/vizier.git`, and `gh repo
 view` confirms the repo is **PUBLIC**. Run it again to make sure it hasn't changed:
 
 ```bash
@@ -2276,7 +2276,7 @@ assert_contains "$default_url" "https://github.com/" "the default is HTTPS, not 
 # `github.com` alone does NOT distinguish: the SSH string `git@github.com:...`
 # also contains it. Must catch the actual SSH marker.
 case "$default_url" in *git@*) assert_eq "ssh" "https" "the default must NOT be in SSH form" ;; esac
-assert_contains "$default_url" "orca-firstmate" "the default points at the right repo"
+assert_contains "$default_url" "vizier" "the default points at the right repo"
 case "$default_url" in *git@*) assert_eq "ssh" "https" "the default must NOT be in SSH form" ;; esac
 
 # Target on PATH is already a DIRECTORY: must be REFUSED, must not report success.
@@ -2347,11 +2347,11 @@ set -eu
 # The repo is public on GitHub, so both clone and curl need no auth.
 #
 # USE HTTPS, NOT SSH. The checkout's own remote is in SSH form
-# (git@github.com:vantoantrinh96/orca-firstmate.git), but bootstrap runs on a
+# (git@github.com:vantoantrinh96/vizier.git), but bootstrap runs on a
 # fresh machine via `curl | sh` where there's no guarantee of an SSH key for
 # that account -- and since the repo is already public, an HTTPS clone needs
 # no auth at all. Take the owner/name from the remote, emit it as HTTPS.
-REPO_URL="${VIZIER_REPO_URL:-https://github.com/vantoantrinh96/orca-firstmate.git}"
+REPO_URL="${VIZIER_REPO_URL:-https://github.com/vantoantrinh96/vizier.git}"
 
 HOME_DIR="${VIZIER_HOME:-$HOME/.vizier}"
 SRC="$HOME_DIR/src"

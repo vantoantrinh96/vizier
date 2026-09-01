@@ -15,11 +15,11 @@ set -eu
 # The repo is public on GitHub, so both clone and curl need no auth.
 #
 # USE HTTPS, NOT SSH. The checkout's own remote is in SSH form
-# (git@github.com:vantoantrinh96/orca-firstmate.git), but bootstrap runs on a
+# (git@github.com:vantoantrinh96/vizier.git), but bootstrap runs on a
 # fresh machine via `curl | sh` where there's no guarantee of an SSH key for
 # that account -- and since the repo is already public, an HTTPS clone needs
 # no auth at all. Take the owner/name from the remote, emit it as HTTPS.
-REPO_URL="${VIZIER_REPO_URL:-https://github.com/vantoantrinh96/orca-firstmate.git}"
+REPO_URL="${VIZIER_REPO_URL:-https://github.com/vantoantrinh96/vizier.git}"
 
 HOME_DIR="${VIZIER_HOME:-$HOME/.vizier}"
 SRC="$HOME_DIR/src"
