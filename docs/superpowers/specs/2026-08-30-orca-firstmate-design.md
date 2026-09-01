@@ -73,15 +73,39 @@ vizier/
     delivery/SKILL.md        # delivery mode, delivery contract, ask-user policy
     identity/SKILL.md        # identity + hard rules; both /vizier:vizier and PostCompact load it
   hooks/
-    hooks.json               # Stop (asyncRewake) + PostCompact
-    wake.sh                  # Stop: gate on lock -> wait on mailbox -> exit 2 (~60 lines)
-    reidentify.sh            # PostCompact: if the lock matches, reprints identity to stderr
+    hooks.json               # Claude: Stop (asyncRewake) -> wake-claude.sh, PostCompact -> reidentify-claude.sh
+    wake-claude.sh           # Claude Stop: gate on lock -> wait on mailbox -> exit 2
+    wake-cursor.sh           # Cursor Stop: same gate, but PARKS (Cursor runs hooks synchronously; exit 2 is a no-op there)
+    reidentify-claude.sh     # Claude PostCompact: if the lock matches, reprints identity to stderr
+  lib/
+    vizier-home.sh           # home paths + the single first-mate lock; every other lib requires it first
+    vizier-request-lib.sh    # the Request file: create, get, close, slug<->run_id lookup
+    vizier-routing-lib.sh    # host discovery and eligibility (reports; decides nothing)
+    vizier-brief-lib.sh      # assembles the four brief layers into --spec; owns the project mode map
+    vizier-supervise-lib.sh  # pure batch -> PLAN/ACK planner; never calls orca
+    vizier-wake-lib.sh       # scans open requests, waits on several Run mailboxes at once
+    vizier-merge-lib.sh      # the decision rule for merging into a config file another tool owns
+  bin/
+    vizier                   # install/update/uninstall/doctor CLI -- INSTALL AND DIAGNOSTIC TIME ONLY
+    vizier-activate.sh       # what /vizier:vizier runs: claims the lock for this session
+    vizier-adapter-claude.sh # installs the payload as a Claude plugin in its own directory
+    vizier-adapter-cursor.sh # surgical merge into ~/.cursor/hooks.json (Cursor rejects plugin hooks)
+  install.sh                 # curl | sh bootstrap: fetch into $VIZIER_HOME/src, symlink bin/vizier on PATH
   tests/
     fake-orca/               # fake orca on PATH returning sample JSON
     *.test.sh
   docs/superpowers/specs/    # this spec and later specs
   docs/verification/         # real-run evidence with the app version
 ```
+
+`lib/` is in this listing because it is load-bearing for the skills, not just
+for the hooks: `vizier install` copies this whole tree to `$VIZIER_HOME/dist`,
+and every skill opens with the same preamble --
+`VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"` followed by
+`. "$VIZIER_DIST/lib/<lib>.sh"` -- because the harness does not export
+`VIZIER_DIST` itself. A skill that assumes the variable is already set sources
+`/lib/...`, gets `command not found` for every library function, and then
+fails in whatever way that particular skill swallows a missing function.
 
 ### Home (what gets generated at runtime)
 
@@ -242,7 +266,7 @@ orca orchestration check --wait --types worker_done,escalation,question --timeou
 
 Blocks until there's a message for the Run; FIFO; replays the same Delivery until `--ack`; JSON keepalive every 15s to stderr (filter on `_keepalive`). Works across hosts.
 
-**The Claude Code half** -- `hooks/wake.sh` registered in the plugin's `hooks/hooks.json` as a Stop hook with `"asyncRewake": true`, a long timeout (following firstmate's lead: 28800s). Claude Code fires the Stop hook on **every** Stop of **every** session on the machine and does not dedupe, so the gate ordering is mandatory, cheap first then expensive:
+**The Claude Code half** -- `hooks/wake-claude.sh` registered in the plugin's `hooks/hooks.json` as a Stop hook with `"asyncRewake": true`, a long timeout (following firstmate's lead: 28800s). Claude Code fires the Stop hook on **every** Stop of **every** session on the machine and does not dedupe, so the gate ordering is mandatory, cheap first then expensive:
 
 - `session_id` in the stdin payload **doesn't match** `~/.vizier/lock` -> exit 0. One file read; this is what keeps the hook silent in every other Claude Code session.
 - Matches the lock but no request has `status: open` -> exit 0, silent, costs nothing.
@@ -349,7 +373,7 @@ Deliberately kept short. The distro's entire dependency surface:
 
 ## Testing
 
-- **fake-orca**: the `tests/fake-orca/orca` script placed ahead on PATH, returning sample JSON checked against the real schema (taken from `orca agent-context --json` and real output on the captain's machine). Lifecycle tests need no app: routing excludes a not-ready host, brief assembles exactly 4 layers, hook exits 0 with no open request / exits 2 with a message, supervise doesn't ack before the batch is fully processed. Three more cases for delivery: `no-mistakes`-mode brief generates the exact `Delivery contract:` line and a DoD that waits for an axi outcome; supervise **does not** release when a `no-mistakes` task's `worker_done` lacks an outcome; a `question` carrying an ask-user finding goes into the `delivery` policy instead of being acked outright. And three cases for the entry point: `wake.sh` exits 0 when `session_id` doesn't match the lock; `/vizier:vizier` refuses when the lock has a live owner; `/vizier:vizier` reclaims the lock when the owner is dead.
+- **fake-orca**: the `tests/fake-orca/orca` script placed ahead on PATH, returning sample JSON checked against the real schema (taken from `orca agent-context --json` and real output on the captain's machine). Lifecycle tests need no app: routing excludes a not-ready host, brief assembles exactly 4 layers, hook exits 0 with no open request / exits 2 with a message, supervise doesn't ack before the batch is fully processed. Three more cases for delivery: `no-mistakes`-mode brief generates the exact `Delivery contract:` line and a DoD that waits for an axi outcome; supervise **does not** release when a `no-mistakes` task's `worker_done` lacks an outcome; a `question` carrying an ask-user finding goes into the `delivery` policy instead of being acked outright. And three cases for the entry point: the wake hook (`wake-claude.sh`, and `wake-cursor.sh` for the Cursor half) exits 0 when `session_id` doesn't match the lock; `/vizier:vizier` refuses when the lock has a live owner; `/vizier:vizier` reclaims the lock when the owner is dead.
 - **Real smoke test** (run by hand, with real Orca): open a request -> 1 echo task -> worker runs -> `worker_done` -> hook wakes -> release -> close the request. One variant with `--on "Mac mini"`.
 - Record real smoke-test results into `docs/verification/` with the app version checked (following firstmate's practice of version-stamped evidence, since Orca has no protocol version marker -- capabilities in `orca status` serve as the compatibility gate).
 
@@ -369,6 +393,6 @@ Deliberately kept short. The distro's entire dependency surface:
 - **The Stop hook's `asyncRewake` is Claude Code behavior**; changing harness loses the wake mechanism -- accepted: this distro picks Claude Code as v1's sole harness. Verified on 2.1.236 as a plugin (`docs/verification/2026-08-31-plugin-wake.md`); Claude Code's docs document this field for a command hook but **don't** say whether a plugin hook honors it, so this is behavior that needs re-measuring on every new version.
 - **The Cursor adapter writes to a shared file.** Verified the wake mechanism runs the full loop at user-level `~/.cursor/hooks.json`, but that also means `install` must edit a file Orca is using. A bad merge breaks Orca's supervision, not just ours. Mitigation: idempotent merge keyed on our own key, back up before writing, and `doctor` re-checks that our entry is still intact.
 - **The Cursor TUI reports a different version than `--version`.** The TUI prints `2026.08.25-3e8eec8` while `--version` prints `2026.08.11-e8db854`. Don't gate compatibility on `--version`.
-- **The plugin hook runs in every Claude Code session on the machine.** A broken `wake.sh` is a machine-wide bug, not just a first mate bug. Mitigation: the lock gate stands before everything else, and every uncertain branch exits 0.
+- **The plugin hook runs in every Claude Code session on the machine.** A broken `wake-claude.sh` is a machine-wide bug, not just a first mate bug. Mitigation: the lock gate stands before everything else, and every uncertain branch exits 0.
 - The Orca app must be running -- `orca open` at session start if it isn't.
 - **An added dependency on `no-mistakes`** for the mode of the same name: outcome names and `axi` command names can change between versions. Mitigation built into the design: the distro **never parses axi's TOON output** -- the worker drives the pipeline and declares its own outcome in `worker_done`, so the coupling surface is only the four terminal outcome names, not the whole schema.
