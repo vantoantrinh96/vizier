@@ -1,40 +1,45 @@
 #!/usr/bin/env bash
-# Kích hoạt phiên này thành first mate. /firstmate gọi đúng script này.
-# In một dòng kết quả; rc 0 = phiên này là first mate, rc 1 = bị từ chối.
+# Activates this session as the first mate. /firstmate calls exactly this
+# script. Prints one result line; rc 0 = this session is the first mate,
+# rc 1 = refused.
 set -u
 
-# SESSION ID LẤY TỪ MÔI TRƯỜNG, KHÔNG TỪ MODEL. Đã đo trên máy captain: Claude
-# Code đặt CLAUDE_CODE_SESSION_ID (UUID 36 ký tự, trùng tên file transcript của
-# phiên) trong môi trường mọi lệnh shell — còn model thì KHÔNG có đường nào biết
-# session id của chính nó. Nếu để model tự điền, nó sẽ bịa một giá trị không bao
-# giờ khớp `session_id` trong payload mà hook nhận, và khi đó CẢ wake hook LẪN
-# PostCompact hook câm vĩnh viễn trong khi lock vẫn bị giữ — hỏng toàn bộ sản
-# phẩm, im lặng. Thà từ chối kích hoạt.
+# SESSION ID COMES FROM THE ENVIRONMENT, NOT FROM THE MODEL. Measured on the
+# captain's machine: Claude Code sets CLAUDE_CODE_SESSION_ID (a 36-character
+# UUID, matching the session's transcript file name) in the environment of
+# every shell command -- while the model has NO way at all to know its own
+# session id. If the model were left to fill it in, it would make up a value
+# that never matches the `session_id` in the payload the hook receives, and
+# then BOTH the wake hook AND the PostCompact hook would go silent forever
+# while the lock stayed held -- the whole product broken, silently. Better to
+# refuse activation.
 # Usage: ofm-activate.sh [harness] [session_id_override]
 harness=${1:-claude}
 session_id=${2:-${CLAUDE_CODE_SESSION_ID:-}}
 
-# FIX 5 — MỘT PHIÊN CON/SUBAGENT KÍCH HOẠT LÀ HỎNG IM LẶNG TOÀN PHẦN. Claude
-# Code đặt CLAUDE_CODE_CHILD_SESSION trong môi trường của một phiên con (task
-# con, subagent) — session id của NÓ khác với session id mà hook Stop nhận
-# được cho phiên đó (hoặc hook không fire cho phiên con theo cách first mate
-# cần), nên lock ghi từ đây không bao giờ khớp lại được: cả wake hook lẫn
-# PostCompact hook câm vĩnh viễn trong khi lock vẫn bị giữ, y hệt lớp lỗi mà
-# quy tắc "session id từ môi trường, không từ model" ở trên đã chặn cho ca
-# thiếu session id. Từ chối tường minh còn hơn để captain phát hiện ba ngày
-# sau rằng first mate của họ chưa từng thức dậy lần nào.
+# FIX 5 -- A CHILD SESSION/SUBAGENT ACTIVATING IS A TOTAL SILENT BREAKAGE.
+# Claude Code sets CLAUDE_CODE_CHILD_SESSION in the environment of a child
+# session (a subtask, a subagent) -- ITS session id differs from the session
+# id the Stop hook receives for that session (or the hook doesn't fire for
+# the child session in the way the first mate needs), so a lock written from
+# here could never match again: both the wake hook and the PostCompact hook
+# would go silent forever while the lock stayed held, exactly the same class
+# of bug that the "session id from the environment, not from the model" rule
+# above already blocks for the missing-session-id case. An explicit refusal
+# beats letting the captain discover three days later that their first mate
+# never once woke up.
 if [ -n "${CLAUDE_CODE_CHILD_SESSION:-}" ]; then
   printf 'refused reason=child_session\n' >&2
-  printf 'phiên này là con/subagent (CLAUDE_CODE_CHILD_SESSION đã đặt): session id của nó\n' >&2
-  printf 'không khớp payload mà hook Stop của phiên CHA nhận, nên kích hoạt ở đây hỏng\n' >&2
-  printf 'im lặng toàn phần. Gõ /firstmate ở đúng phiên cha, không phải ở đây.\n' >&2
+  printf 'this session is a child/subagent (CLAUDE_CODE_CHILD_SESSION is set): its session id\n' >&2
+  printf 'does not match the payload received by the PARENT session Stop hook, so activating\n' >&2
+  printf 'here breaks completely, silently. Type /firstmate in the actual parent session, not here.\n' >&2
   exit 2
 fi
 
 if [ -z "$session_id" ]; then
   printf 'refused reason=no_session_id\n' >&2
-  printf 'không đọc được session id (CLAUDE_CODE_SESSION_ID rỗng): phiên này\n' >&2
-  printf 'không chạy dưới Claude Code, hoặc harness chưa được hỗ trợ.\n' >&2
+  printf 'could not read a session id (CLAUDE_CODE_SESSION_ID is empty): this session\n' >&2
+  printf 'is not running under Claude Code, or the harness is not supported yet.\n' >&2
   exit 2
 fi
 
@@ -42,12 +47,13 @@ LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib 
 # shellcheck source=/dev/null
 . "$LIB/ofm-home.sh"
 
-# PID phải là tiến trình HARNESS sống lâu, không phải shell tạm đang gọi script.
-# $PPID là shell của Bash tool và có thể chết ngay sau đó, khiến `kill -0` coi
-# một first mate đang sống là đã chết và cho phiên khác cướp lock — đúng hỏng
-# hóc mà quy tắc liveness gọi là tệ hơn một lock kẹt. Đã đo: CLAUDE_PID và
-# ofm_harness_pid cho cùng một pid, nên ưu tiên biến môi trường rồi mới đi bộ
-# cây tiến trình, và KHÔNG có đường lùi nào khác.
+# PID must be the long-lived HARNESS process, not the transient shell calling
+# this script. $PPID is the Bash tool's shell and can die right afterward,
+# which would make `kill -0` treat a first mate that's still alive as dead
+# and let another session steal the lock -- exactly the failure the liveness
+# rule calls worse than a stuck lock. Measured: CLAUDE_PID and
+# ofm_harness_pid give the same pid, so prefer the environment variable and
+# only then walk the process tree, and there is NO other fallback.
 pid=${CLAUDE_PID:-}
 case "$pid" in ''|*[!0-9]*) pid=$(ofm_harness_pid "$harness") ;; esac
 case "$pid" in
@@ -56,21 +62,23 @@ case "$pid" in
     exit 2 ;;
 esac
 
-# Chỉ tạo home SAU khi mọi phép từ chối đã qua: một lần kích hoạt bị từ chối
-# không nên để lại thư mục nào mà lần kích hoạt thành công sau thấy lạ.
+# Only create the home AFTER every refusal check has passed: a refused
+# activation should not leave behind any directory that a later, successful
+# activation would find unfamiliar.
 mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
 
 claim_out=$(ofm_lock_claim "$session_id" "$harness" "$pid"); claim_rc=$?
 printf '%s\n' "$claim_out"
-# FIX 4 — chủ cũ có thể là một lock KẸT-NHƯNG-SỐNG: `CLAUDE_PID` là pid của
-# tiến trình `claude`, không phải của phiên, nên sau `/clear` hoặc resume, pid
-# đó còn sống nhưng session_id bên trong đã đổi — `ofm_lock_claim` từ chối
-# vĩnh viễn vì liveness không bao giờ đoán chết (đúng thiết kế), và command
-# brief cấm agent tự xoá file lock. Captain cần biết đường thoát TƯỜNG MINH
-# ngay tại chỗ họ va phải nó, không phải đi lục docs.
+# FIX 4 -- the previous owner might be a STUCK-BUT-ALIVE lock: `CLAUDE_PID`
+# is the pid of the `claude` process, not of the session, so after `/clear`
+# or a resume that pid is still alive but the session_id inside it has
+# changed -- `ofm_lock_claim` refuses forever because liveness never guesses
+# dead (by design), and the command brief forbids the agent from deleting
+# the lock file itself. The captain needs to know the EXPLICIT way out right
+# where they run into it, not have to go dig through docs.
 case "$claim_out" in
   refused\ held_by=*)
-    printf 'nếu bạn chắc phiên trên đã xong việc, gỡ lock bằng: orca-firstmate unlock\n' >&2
+    printf 'if you are sure the session above is done, remove the lock with: orca-firstmate unlock\n' >&2
     ;;
 esac
 exit "$claim_rc"

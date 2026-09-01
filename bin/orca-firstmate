@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# orca-firstmate — CLI cài đặt và chẩn đoán.
+# orca-firstmate -- install and diagnostics CLI.
 #
-# LUẬT CỨNG: script này CHỈ chạy lúc cài và lúc chẩn đoán. Không đường runtime
-# nào được gọi nó. Sau khi cài, first mate nói chuyện thẳng với `orca`.
+# HARD RULE: this script runs ONLY at install time and diagnostic time. No
+# runtime path may call it. After install, the first mate talks directly to
+# `orca`.
 set -u
 
-# $0 CÓ THỂ LÀ SYMLINK. `install.sh` cài CLI này đúng bằng một symlink trên
-# PATH, nên đó là đường gọi thật duy nhất — và khi đó `dirname "$0"` trỏ vào
-# thư mục bin trên PATH, không phải nơi script thật nằm. Hậu quả đã tái hiện
-# được: REPO_DIR sai -> source lib thất bại -> `ofm_home` không tồn tại ->
-# `$(ofm_home)` rỗng -> mọi đường dẫn suy ra từ nó trỏ sai, và guard chống tự
-# huỷ quay sang thao tác trên thư mục hiện hành của người gọi. Đi hết chuỗi
-# link TRƯỚC khi suy ra bất cứ đường dẫn nào.
+# $0 CAN BE A SYMLINK. `install.sh` installs this CLI as exactly a symlink on
+# PATH, so that is the only real invocation path -- and in that case
+# `dirname "$0"` points at the bin directory on PATH, not at where the real
+# script lives. The consequence has been reproduced: wrong REPO_DIR -> lib
+# source fails -> `ofm_home` doesn't exist -> `$(ofm_home)` is empty -> every
+# path derived from it points somewhere wrong, and the anti-self-destruct
+# guard ends up operating on the caller's current directory instead. Walk the
+# whole link chain BEFORE deriving any path from it.
 _self=$0
 _hops=0
 while [ -L "$_self" ] && [ "$_hops" -lt 16 ]; do
@@ -22,31 +24,35 @@ while [ -L "$_self" ] && [ "$_hops" -lt 16 ]; do
   esac
   _hops=$((_hops + 1))
 done
-# Chạm trần thì BÁO LỖI, không đi tiếp với đường dẫn giải dở. Đi tiếp là suy
-# thoái im lặng — đúng loại lỗi đã cắn dự án này ba lần (cd "" thành no-op,
-# trap tín hiệu chạy tiếp, guard nối chuỗi trước khi kiểm) — và ở đây nó có thể
-# cho ra một REPO_DIR sai mà vẫn hợp lệ.
+# Hitting the ceiling means REPORTING AN ERROR, not continuing with a
+# half-resolved path. Continuing is a silent degradation -- exactly the kind
+# of bug that has bitten this project three times (cd "" becoming a no-op, a
+# signal trap continuing execution, a guard concatenating its arguments
+# before validating them) -- and here it could produce a REPO_DIR that is
+# wrong but still looks valid.
 [ -L "$_self" ] && {
-  printf 'error: chuỗi symlink quá sâu (>16 hop) từ %s\n' "$0" >&2; exit 2; }
+  printf 'error: symlink chain too deep (>16 hops) from %s\n' "$0" >&2; exit 2; }
 SELF_DIR="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)" || {
-  printf 'error: không xác định được thư mục của script\n' >&2; exit 2; }
+  printf 'error: could not determine the script directory\n' >&2; exit 2; }
 REPO_DIR="$(cd "$SELF_DIR/.." 2>/dev/null && pwd)" || {
-  printf 'error: không xác định được thư mục gốc\n' >&2; exit 2; }
+  printf 'error: could not determine the repo root\n' >&2; exit 2; }
 
-# Source THẤT BẠI PHẢI CHẾT. Bash chỉ in cảnh báo rồi chạy tiếp, và `set -u`
-# không bắt hàm không tồn tại — đó chính là cách một `ofm_home` khuyết biến
-# thành đường dẫn rỗng và guard trỏ sai chỗ.
+# A FAILED SOURCE MUST BE FATAL. Bash only prints a warning and keeps going,
+# and `set -u` does not catch a missing function -- that is exactly how a
+# missing `ofm_home` turns into an empty path and the guard ends up pointed
+# at the wrong place.
 [ -r "$REPO_DIR/lib/ofm-home.sh" ] || {
-  printf 'error: không đọc được %s/lib/ofm-home.sh\n' "$REPO_DIR" >&2; exit 2; }
+  printf 'error: could not read %s/lib/ofm-home.sh\n' "$REPO_DIR" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$REPO_DIR/lib/ofm-home.sh"
 
 OFM_HOME_DIR=$(ofm_home)
-[ -n "$OFM_HOME_DIR" ] || { printf 'error: home rỗng\n' >&2; exit 2; }
+[ -n "$OFM_HOME_DIR" ] || { printf 'error: home is empty\n' >&2; exit 2; }
 
-# Đường dẫn chuẩn hoá CHỈ khi thư mục thật sự tồn tại. `cd ""` là no-op im lặng
-# trong bash và trả về thư mục hiện hành — đúng cái đã biến guard thành mìn.
-_canon() {  # <path> -> đường dẫn chuẩn nếu tồn tại, rỗng nếu không
+# Canonicalize a path ONLY when the directory truly exists. `cd ""` is a
+# silent no-op in bash and returns the current directory -- exactly what
+# turned this guard into a landmine.
+_canon() {  # <path> -> canonical path if it exists, empty if not
   [ -n "$1" ] && [ -d "$1" ] || return 0
   (cd "$1" 2>/dev/null && pwd)
 }
@@ -56,18 +62,20 @@ CLAUDE_SKILLS="${OFM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 CURSOR_HOOKS="${OFM_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
 
 _sync_dist() {
-  # TỪ CHỐI khi đang chạy từ chính bản đã cài: _sync_dist xoá $DIST rồi chép từ
-  # $REPO_DIR, mà khi chạy từ dist thì hai đường dẫn đó là một -> tự huỷ.
-  # So sánh trên đường dẫn CHUẨN của thư mục CÓ THẬT. Nếu dist chưa tồn tại thì
-  # REPO_DIR không thể nằm trong nó, nên guard không cần nổ — và quan trọng hơn,
-  # không có nhánh nào để một giá trị rỗng lọt vào phép so.
+  # REFUSE when running from the installed copy itself: _sync_dist deletes
+  # $DIST then copies from $REPO_DIR, and when running from dist those two
+  # paths are the same one -> self-destruction.
+  # Compare on the CANONICAL path of a directory that ACTUALLY EXISTS. If
+  # dist doesn't exist yet, REPO_DIR can't possibly be inside it, so the
+  # guard doesn't need to fire -- and, more importantly, there is no branch
+  # where an empty value can sneak into the comparison.
   local dist_canon
   dist_canon=$(_canon "$DIST")
   if [ -n "$dist_canon" ]; then
     case "$REPO_DIR/" in
       "$dist_canon"/*|"$dist_canon/")
-        printf 'refused: đang chạy từ bản đã cài (%s).\n' "$REPO_DIR" >&2
-        printf '  chạy install/update từ source checkout: %s/src/bin/orca-firstmate install\n' "$OFM_HOME_DIR" >&2
+        printf 'refused: running from the installed copy (%s).\n' "$REPO_DIR" >&2
+        printf '  run install/update from the source checkout: %s/src/bin/orca-firstmate install\n' "$OFM_HOME_DIR" >&2
         return 1 ;;
     esac
   fi
@@ -100,132 +108,142 @@ cmd_doctor() {
     state=$(printf '%s' "$status" | jq -r '.result.state // "unknown"' 2>/dev/null)
     caps=$(printf '%s' "$status" | jq -r '(.result.capabilities // []) | join(",")' 2>/dev/null)
     if [ "$reachable" != "true" ] || [ "$state" != "ready" ]; then
-      printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, rồi chờ app sẵn sàng)\n' "$reachable" "$state"
+      printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, then wait for the app to be ready)\n' "$reachable" "$state"
       problems=$((problems + 1))
     fi
-    # Membership CHÍNH XÁC, không phải substring: `*orchestration.contract.v1*`
-    # sẽ khớp cả `orchestration.contract.v10` và `x-orchestration.contract.v1`,
-    # tức báo đạt trong khi capability thật vắng mặt.
+    # EXACT membership, not a substring: `*orchestration.contract.v1*` would
+    # also match `orchestration.contract.v10` and
+    # `x-orchestration.contract.v1`, i.e. report success while the real
+    # capability is actually missing.
     if ! printf '%s' "$status" | jq -e --arg c orchestration.contract.v1 \
          '((.result.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
-      printf 'NOT_READY: Orca thiếu capability orchestration.contract.v1 (fix: cập nhật app Orca)\n'
+      printf 'NOT_READY: Orca is missing capability orchestration.contract.v1 (fix: update the Orca app)\n'
       problems=$((problems + 1))
     fi
   fi
   if [ -z "${OFM_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
-    printf 'NOT_READY: gh chưa đăng nhập (fix: gh auth login)\n'
+    printf 'NOT_READY: gh is not logged in (fix: gh auth login)\n'
     problems=$((problems + 1))
   fi
-  # FIX 6 — doctor TRƯỚC ĐÂY CHỈ KIỂM TOOLCHAIN, chưa từng hỏi "có gì được cài
-  # chưa". Một máy đã qua doctor+install từ lâu mà bản Claude bị gỡ tay (hoặc
-  # chưa từng cài) vẫn báo "ok" ở đây trong khi /firstmate không tồn tại. Đây
-  # là NOTE, KHÔNG PHẢI problem: không cộng vào `problems`, không kéo rc xuống
-  # 1 — một máy chỉ dùng MỘT trong hai harness là hợp lệ (report, không refuse).
+  # FIX 6 -- doctor USED TO ONLY CHECK THE TOOLCHAIN, and never asked "is
+  # anything actually installed". A machine that ran doctor+install long ago,
+  # whose Claude copy was later removed by hand (or was never installed),
+  # still reports "ok" here while /firstmate doesn't exist. This is a NOTE,
+  # NOT a problem: it does not add to `problems`, does not pull rc down to
+  # 1 -- a machine that uses only ONE of the two harnesses is valid (report,
+  # don't refuse).
   if [ ! -d "$CLAUDE_SKILLS/orca-firstmate" ]; then
-    printf 'NOTE: chưa cài adapter Claude ở %s (fix: orca-firstmate install --harness claude)\n' "$CLAUDE_SKILLS"
+    printf 'NOTE: Claude adapter not installed at %s (fix: orca-firstmate install --harness claude)\n' "$CLAUDE_SKILLS"
   fi
-  # `verify` của adapter Cursor trước đây là dead code: không nơi nào gọi nó
-  # ngoài test. Gọi nó ở đây khi cursor-agent CÓ MẶT trên máy — đó là dấu hiệu
-  # một entry Cursor ĐƯỢC MONG ĐỢI tồn tại đúng hình dạng, không phải ép buộc
-  # phải cài Cursor (máy không có cursor-agent thì không kiểm gì cả, im lặng
-  # hợp lệ). Chạy adapter từ REPO_DIR (luôn có sẵn cạnh CLI này), không từ
-  # $DIST: doctor không gọi _sync_dist nên $DIST/bin có thể chưa tồn tại lần
-  # đầu chạy, còn logic verify chỉ so sánh CHUỖI đường dẫn $DIST kỳ vọng, nên
-  # không cần $DIST thật sự có mặt trên đĩa.
+  # The Cursor adapter's `verify` used to be dead code: nothing called it
+  # outside of tests. Call it here when cursor-agent IS PRESENT on the
+  # machine -- that's the signal that a Cursor entry is EXPECTED to exist in
+  # the right shape, not a requirement to install Cursor (a machine without
+  # cursor-agent checks nothing here, silently and validly). Run the adapter
+  # from REPO_DIR (always present next to this CLI), not from $DIST: doctor
+  # doesn't call _sync_dist, so $DIST/bin may not exist yet on a first run,
+  # and the verify logic only compares the expected $DIST path as a STRING,
+  # so $DIST doesn't actually need to be present on disk.
   if command -v cursor-agent >/dev/null 2>&1; then
     if ! bash "$REPO_DIR/bin/ofm-adapter-cursor.sh" verify "$DIST" "$CURSOR_HOOKS" >/dev/null 2>&1; then
-      printf 'NOTE: cursor-agent có trên máy nhưng entry Cursor ở %s thiếu hoặc sai hình dạng (fix: orca-firstmate install --harness cursor)\n' "$CURSOR_HOOKS"
+      printf 'NOTE: cursor-agent is on this machine but the Cursor entry at %s is missing or malformed (fix: orca-firstmate install --harness cursor)\n' "$CURSOR_HOOKS"
     fi
   fi
   if [ "$problems" -eq 0 ]; then
-    printf 'doctor: ok — orca ready, jq/git/gh sẵn sàng\n'
+    printf 'doctor: ok -- orca ready, jq/git/gh available\n'
     return 0
   fi
   return 1
 }
 
-# FIX 9 — MỘT `install` TRẦN KHÔNG ĐƯỢC ĐỤNG CURSOR. Nửa Cursor CHƯA CÓ đường
-# kích hoạt: `ofm-activate.sh` đọc CLAUDE_CODE_SESSION_ID, một biến chỉ Claude
-# Code có, nên một entry Cursor cài "mặc định kèm theo" chỉ đọc lock rồi
-# exit 0 mãi mãi — KHÔNG CHỨC NĂNG — trong khi vẫn nhận trọn rủi ro lớn nhất
-# của distro: ghi vào ~/.cursor/hooks.json, file Orca đang dùng chung. Bản cũ
-# coi "cài cả hai nếu cả hai có mặt" là default (`want=all`); giờ default
-# CHỈ LÀ claude. Muốn Cursor phải xin tường minh bằng `--harness cursor`.
+# FIX 9 -- A BARE `install` MUST NOT TOUCH CURSOR. The Cursor half has NO
+# activation path yet: `ofm-activate.sh` reads CLAUDE_CODE_SESSION_ID, a
+# variable only Claude Code has, so a Cursor entry installed "by default
+# alongside it" would just read the lock and exit 0 forever -- NO FUNCTION --
+# while still taking on the distro's single biggest risk: writing to
+# ~/.cursor/hooks.json, a file Orca shares. The old version treated "install
+# both if both are present" as the default (`want=all`); the default is now
+# ONLY claude. Cursor must be requested explicitly with `--harness cursor`.
 cmd_install() {
   local want=claude explicit=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --harness) want=${2:?--harness cần giá trị}; explicit=1; shift 2 ;;
+      --harness) want=${2:?--harness needs a value}; explicit=1; shift 2 ;;
       *) printf 'unknown flag: %s\n' "$1" >&2; return 2 ;;
     esac
   done
   case "$want" in
     claude|cursor) ;;
-    *) printf 'error: harness "%s" chưa hỗ trợ. v1 chỉ có claude và cursor.\n' "$want" >&2; return 1 ;;
+    *) printf 'error: harness "%s" is not supported. v1 only has claude and cursor.\n' "$want" >&2; return 1 ;;
   esac
   _sync_dist || return 1
   local did=0
   if [ "$want" = claude ]; then
-    # Không ép cài khi bare install (explicit=0) và máy không có `claude`:
-    # gate bằng detect y như bản cũ. `--harness claude` tường minh thì vẫn ép,
-    # để captain thấy lỗi thật của adapter thay vì bị detect nuốt mất.
+    # Don't force-install on a bare install (explicit=0) when the machine
+    # has no `claude`: gate on detect, same as before. An explicit
+    # `--harness claude` still forces it, so the captain sees the adapter's
+    # real error instead of it being swallowed by detect.
     if bash "$DIST/bin/ofm-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$explicit" -eq 1 ]; then
       bash "$DIST/bin/ofm-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
       did=$((did + 1))
       [ "$explicit" -eq 1 ] || \
-        printf 'lưu ý: bỏ qua Cursor — install trần chỉ cài Claude. Muốn cài Cursor: orca-firstmate install --harness cursor\n'
+        printf 'note: skipping Cursor -- a bare install only installs Claude. To install Cursor: orca-firstmate install --harness cursor\n'
     fi
   fi
   if [ "$want" = cursor ]; then
     bash "$DIST/bin/ofm-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
     did=$((did + 1))
   fi
-  [ "$did" -gt 0 ] || { printf 'không tìm thấy harness nào được hỗ trợ trên máy\n' >&2; return 1; }
-  printf 'xong. Mở một phiên mới rồi gõ /firstmate.\n'
+  [ "$did" -gt 0 ] || { printf 'no supported harness found on this machine\n' >&2; return 1; }
+  printf 'done. Open a new session and type /firstmate.\n'
 }
 
 cmd_unlock() {
-  # FIX 4 — KHÔNG CÓ LỐI THOÁT KHỎI MỘT LOCK KẸT-NHƯNG-SỐNG. `CLAUDE_PID` là
-  # pid của TIẾN TRÌNH `claude`, không phải của phiên: sau `/clear` hoặc resume,
-  # pid đó vẫn còn sống nhưng session_id bên trong nó đã đổi, nên
-  # `ofm_lock_matches` không bao giờ khớp lại và `ofm_lock_claim` từ chối vĩnh
-  # viễn (đúng thiết kế: "CHỈ liveness quyết định", không đoán chết). Command
-  # brief cấm agent tự xoá file lock. Vậy phải có MỘT cửa thoát tường minh, do
-  # captain tự gọi khi họ biết chắc phiên cũ đã xong việc — không đoán hộ, chỉ
-  # thực hiện đúng việc captain yêu cầu. Không cần tham số: luôn gỡ lock hiện
-  # tại, bất kể ai đang giữ.
+  # FIX 4 -- THERE WAS NO WAY OUT OF A STUCK-BUT-ALIVE LOCK. `CLAUDE_PID` is
+  # the pid of the `claude` PROCESS, not of the session: after `/clear` or a
+  # resume, that pid is still alive but the session_id inside it has
+  # changed, so `ofm_lock_matches` never matches again and `ofm_lock_claim`
+  # refuses forever (by design: "ONLY liveness decides", never guessing
+  # dead). The command brief forbids the agent from deleting the lock file
+  # itself. So there must be ONE explicit exit door, called by the captain
+  # themselves when they know for certain the old session is done -- no
+  # guessing on their behalf, just carrying out exactly what the captain
+  # asked. No parameters needed: always clears the current lock, regardless
+  # of who holds it.
   local holder pid
   holder=$(ofm_lock_get session_id)
   if [ -z "$holder" ]; then
-    printf 'không có lock nào đang giữ\n'
+    printf 'no lock is currently held\n'
     return 0
   fi
   pid=$(ofm_lock_get pid)
   rm -f "$(ofm_lock_path)"
-  printf 'đã gỡ lock: session_id=%s pid=%s\n' "$holder" "$pid"
+  printf 'lock removed: session_id=%s pid=%s\n' "$holder" "$pid"
 }
 
 cmd_update() {
-  # FIX 7 — `update` TRƯỚC ĐÂY CHỈ LÀ BÍ DANH CỦA `install`: nó chép lại đúng
-  # payload đang có trong SRC checkout hiện tại rồi báo "xong", không hề kéo
-  # gì mới từ remote. Captain gõ `orca-firstmate update` tưởng đang lên bản
-  # mới nhất, nhưng thực ra chỉ đang cài lại y hệt bản cũ — im lặng sai, đúng
-  # kiểu lỗi tệ nhất. `git fetch` + `reset --hard origin/HEAD` TRƯỚC khi
-  # `_sync_dist` (bên trong cmd_install) chép từ REPO_DIR: chạy qua symlink
-  # bootstrap, REPO_DIR ở đây LÀ `$OFM_HOME_DIR/src` (xem chú thích $0 CÓ THỂ
-  # LÀ SYMLINK phía trên), nên reset xong rồi mới sync là kéo đúng bản mới vào
-  # dist. Cùng công thức với install.sh (POSIX sh) dùng lúc bootstrap — không
-  # bịa cách khác cho CLI này.
+  # FIX 7 -- `update` USED TO BE JUST AN ALIAS FOR `install`: it re-copied
+  # exactly the payload already present in the current SRC checkout and
+  # reported "done", never pulling anything new from the remote at all. The
+  # captain types `orca-firstmate update` believing they're getting the
+  # latest, but they're actually just reinstalling the exact same old copy --
+  # a silent wrong, the worst kind of bug. `git fetch` + `reset --hard
+  # origin/HEAD` BEFORE `_sync_dist` (inside cmd_install) copies from
+  # REPO_DIR: run through the bootstrap symlink, REPO_DIR here IS
+  # `$OFM_HOME_DIR/src` (see the "$0 CAN BE A SYMLINK" note above), so
+  # resetting first and syncing after pulls the real new copy into dist.
+  # Same recipe install.sh (POSIX sh) uses at bootstrap time -- no inventing
+  # a different way for this CLI.
   local src
   src="$OFM_HOME_DIR/src"
   if [ -d "$src/.git" ]; then
-    git -C "$src" fetch --quiet origin || { printf 'error: fetch thất bại tại %s\n' "$src" >&2; return 1; }
-    # origin/HEAD có thể chưa được đặt (clone cũ) — hỏi lại remote, lỗi ở đây
-    # không chặn, y hệt install.sh.
+    git -C "$src" fetch --quiet origin || { printf 'error: fetch failed at %s\n' "$src" >&2; return 1; }
+    # origin/HEAD may not be set yet (an old clone) -- ask the remote again,
+    # a failure here does not block, same as install.sh.
     git -C "$src" remote set-head origin -a >/dev/null 2>&1 || true
-    git -C "$src" reset --quiet --hard origin/HEAD || { printf 'error: reset thất bại tại %s\n' "$src" >&2; return 1; }
+    git -C "$src" reset --quiet --hard origin/HEAD || { printf 'error: reset failed at %s\n' "$src" >&2; return 1; }
   else
-    printf 'error: %s không phải git repo, không update được (chạy lại install.sh để bootstrap)\n' "$src" >&2
+    printf 'error: %s is not a git repo, cannot update (rerun install.sh to bootstrap)\n' "$src" >&2
     return 1
   fi
   cmd_install "$@"
@@ -235,24 +253,26 @@ cmd_uninstall() {
   [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
   [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
   rm -rf "$DIST"
-  # Dọn cả những gì install.sh tạo ra, nếu không captain gỡ xong vẫn còn một
-  # lệnh chết trên PATH trỏ vào clone đã mồ côi.
+  # Also clean up whatever install.sh created, otherwise the captain finishes
+  # uninstalling and still has a dead command on PATH pointing at an orphaned
+  # clone.
   local bin_link="${OFM_BIN_DIR:-$HOME/.local/bin}/orca-firstmate"
   [ -L "$bin_link" ] && rm -f "$bin_link"
-  # KHÔNG xoá thư mục đang chứa chính script này: bash đọc script theo từng
-  # đoạn, xoá giữa lúc chạy là hành vi không xác định. In lệnh cho captain.
+  # DO NOT delete the directory currently holding this very script: bash
+  # reads a script in chunks, and deleting it mid-run is undefined behavior.
+  # Print the command for the captain instead.
   local src src_canon
   src="$OFM_HOME_DIR/src"
   src_canon=$(_canon "$src")
   case "$REPO_DIR/" in
     "${src_canon:-$src}"/*|"${src_canon:-$src}/")
-      printf 'đã gỡ adapter, payload và symlink. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
-      printf 'còn lại source checkout (không tự xoá được vì lệnh này đang chạy từ đó):\n'
+      printf 'removed the adapter, payload, and symlink. requests/ and projects/ are kept at %s\n' "$(ofm_home)"
+      printf 'the source checkout remains (cannot self-delete because this command is running from it):\n'
       printf '  rm -rf %s\n' "$src"
       return 0 ;;
   esac
   rm -rf "$src"
-  printf 'đã gỡ adapter, payload, symlink và clone. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
+  printf 'removed the adapter, payload, symlink, and clone. requests/ and projects/ are kept at %s\n' "$(ofm_home)"
 }
 
 case "${1:-}" in

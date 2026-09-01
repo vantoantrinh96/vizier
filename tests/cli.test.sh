@@ -36,7 +36,7 @@ assert_rc "$rc" 0 "install claude thành công"
 # Harness chưa hỗ trợ thì báo thẳng, không im lặng
 out=$(bash "$CLI" install --harness codex 2>&1); rc=$?
 assert_rc "$rc" 1 "harness lạ thì rc 1"
-assert_contains "$out" "chưa hỗ trợ" "nói thẳng là chưa hỗ trợ"
+assert_contains "$out" "is not supported" "nói thẳng là chưa hỗ trợ"
 
 # FIX 9 — install TRẦN (không --harness) không được đụng Cursor. File đích
 # Cursor phải hoàn toàn không tồn tại/không bị sửa sau một install trần, kể cả
@@ -46,7 +46,7 @@ out=$(bash "$CLI" install 2>&1); rc=$?
 assert_rc "$rc" 0 "install trần thành công (chỉ cài Claude)"
 [ -f "$OFM_CLAUDE_SKILLS_DIR/orca-firstmate/hooks/hooks.json" ]; assert_rc $? 0 "install trần vẫn cài Claude"
 [ -e "$OFM_CURSOR_HOOKS_JSON" ]; assert_rc $? 1 "FIX 9: install trần KHÔNG đụng tới file đích Cursor"
-assert_contains "$out" "bỏ qua Cursor" "install trần nói rõ đã bỏ qua Cursor và cách xin cài nó"
+assert_contains "$out" "skipping Cursor" "install trần nói rõ đã bỏ qua Cursor và cách xin cài nó"
 
 # uninstall giữ nguyên state
 mkdir -p "$OFM_HOME/requests"; printf 'x\n' > "$OFM_HOME/requests/keep.md"
@@ -130,7 +130,7 @@ assert_eq "$(ofm_lock_get session_id)" "" "unlock thật sự xoá lock"
 # Gọi lại khi không còn lock: không nổ, báo rõ không có gì để gỡ
 out=$(bash "$CLI" unlock 2>&1); rc=$?
 assert_rc "$rc" 0 "unlock khi không có lock vẫn rc 0"
-assert_contains "$out" "không có lock" "nói rõ không có lock nào"
+assert_contains "$out" "no lock" "nói rõ không có lock nào"
 
 ofm_test_teardown
 ofm_test_report

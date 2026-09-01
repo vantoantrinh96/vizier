@@ -58,7 +58,7 @@ rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
 mkdir -p "$OFM_BIN_DIR/orca-firstmate"
 out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
 assert_rc "$rc" 1 "đích là thư mục thì rc 1"
-assert_contains "$out" "không phải symlink" "nói rõ lý do"
+assert_contains "$out" "not a symlink" "nói rõ lý do"
 rmdir "$OFM_BIN_DIR/orca-firstmate"
 
 # FIX 10 (ca đã tái hiện) — Đích trên PATH là một SYMLINK TRỎ TỚI MỘT THƯ MỤC
