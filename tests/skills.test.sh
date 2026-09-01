@@ -43,6 +43,10 @@ has $f "--effort" "model hints are applied"
 has $f "requires --model" "effort depends on model"
 has $f "--retry-of" "retries chain"
 has $f "never retry blind" "receipts are read"
+has $f "this is not a question" "exactly one open request needs no question"
+has $f "which request this task belongs to" "more than one open request asks the captain"
+has $f "route the captain to the request skill" "no open request routes to request, not a guess"
+has $f "never authority" "the working directory is not used to choose the request"
 
 # --- supervise --------------------------------------------------------
 f=skills/supervise/SKILL.md

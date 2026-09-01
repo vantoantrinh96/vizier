@@ -15,7 +15,23 @@ VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 . "$VIZIER_DIST/lib/vizier-brief-lib.sh"
 ```
 
-## 0. Read the request
+## 0. Establish which request this task belongs to
+
+`slug` is not already in scope either — nothing sets it before this point.
+Never infer it from the working directory: the same rule applies here as
+everywhere else in this project — the working directory is a suggestion,
+never authority.
+
+```bash
+open=$(vizier_request_open_slugs)
+n=$(printf '%s\n' "$open" | sed '/^$/d' | wc -l | tr -d ' ')
+```
+
+- **Exactly one** open request → that is the slug (`slug=$open`). State it in one line; with only one possible answer, this is not a question.
+- **More than one** open → ask the captain which request this task belongs to, listing each slug from `vizier_request_open_slugs` with the first line of its body, so the choice is meaningful.
+- **None** open → there is nothing to brief against. Say so, and route the captain to the request skill to open one — never create a Request from inside `brief`.
+
+## 1. Read the request
 
 `run_id` and `project` are not already in scope — this skill can run long
 after `request` opened the Request, in a separate turn. Read both from the
@@ -26,7 +42,7 @@ run_id=$(vizier_request_get "$slug" run_id)
 project=$(vizier_request_get "$slug" project)
 ```
 
-## 1. Settle the delivery mode — before writing anything
+## 2. Settle the delivery mode — before writing anything
 
 ```bash
 mode=$(vizier_project_mode "$project") || mode=""
@@ -41,7 +57,7 @@ mode=$(vizier_project_mode "$project") || mode=""
 
 Mode is locked in **per task, at creation time**. It never changes mid-task.
 
-## 2. Assemble the brief
+## 3. Assemble the brief
 
 ```bash
 spec=$(vizier_brief_assemble "$project" "$mode" "<the concrete task and its definition of done>")
@@ -50,13 +66,13 @@ spec=$(vizier_brief_assemble "$project" "$mode" "<the concrete task and its defi
 Never hand-write a spec. The four layers exist so that layer 1 (the
 invariants) cannot be forgotten, and a hand-written spec forgets it first.
 
-## 3. Create the task
+## 4. Create the task
 
 ```bash
 task=$(orca orchestration task-create --spec "$spec" --task-title "<short title>" --run "$run_id" --json | jq -r '.result.task.id')
 ```
 
-## 4. Start the worker
+## 5. Start the worker
 
 The host **inherits the request's host** — read it from the request file, never
 re-ask, never substitute:
@@ -85,7 +101,7 @@ as `--model <id> --effort <level>`. Orca **requires --model whenever
 Record the dispatch in the request file:
 `vizier_request_note "$slug" "task <id> -> dispatch <id> (<mode>)"`.
 
-## 5. When worker-start fails
+## 6. When worker-start fails
 
 The receipt is the instruction. It carries `stage`/`failedStage`, `setup`,
 `effects`, `residualResources`, and a recovery command.
