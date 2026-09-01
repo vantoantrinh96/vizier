@@ -4,25 +4,25 @@ set -u
 
 ofm_test_setup
 
-assert_contains "$OFM_HOME" "$OFM_TEST_TMP" "OFM_HOME nằm trong thư mục tạm"
-[ -d "$OFM_HOME" ]; assert_rc $? 0 "OFM_HOME đã được tạo"
+assert_contains "$OFM_HOME" "$OFM_TEST_TMP" "OFM_HOME is inside the temp directory"
+[ -d "$OFM_HOME" ]; assert_rc $? 0 "OFM_HOME was created"
 
-# fake-orca phải đứng trước orca thật trên PATH
+# fake-orca must come before the real orca on PATH
 resolved=$(command -v orca)
-assert_contains "$resolved" "fake-orca" "orca giải ra fake-orca"
+assert_contains "$resolved" "fake-orca" "orca resolves to fake-orca"
 
-# check không có message thì trả rỗng và rc 0
+# check with no message returns empty and rc 0
 out=$(orca orchestration check --run run_a --peek --json); rc=$?
-assert_rc "$rc" 0 "check rỗng trả rc 0"
-assert_eq "$out" "" "check rỗng không in gì"
+assert_rc "$rc" 0 "empty check returns rc 0"
+assert_eq "$out" "" "empty check prints nothing"
 
-# queue rồi check thì trả đúng dòng đó
+# queue then check returns exactly that line
 fake_orca_queue run_a '{"type":"worker_done","outcome":"succeeded","body":"PR opened"}'
 out=$(orca orchestration check --run run_a --peek --json)
-assert_contains "$out" "worker_done" "check trả message đã queue"
+assert_contains "$out" "worker_done" "check returns the queued message"
 
-# mọi lệnh đều được ghi log
-assert_contains "$(fake_orca_calls)" "orchestration check --run run_a" "lệnh được ghi log"
+# every call gets logged
+assert_contains "$(fake_orca_calls)" "orchestration check --run run_a" "the call was logged"
 
 ofm_test_teardown
 ofm_test_report

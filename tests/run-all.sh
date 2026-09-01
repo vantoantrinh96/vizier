@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Chạy mọi tests/*.test.sh, báo cáo gộp. Exit khác 0 nếu có file nào fail.
+# Runs every tests/*.test.sh, reports a combined result. Exits non-zero if any file fails.
 set -u
 cd "$(dirname "$0")" || exit 1
 failed=0

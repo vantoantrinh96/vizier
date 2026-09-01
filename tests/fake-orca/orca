@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# orca giả cho test. Ghi log mọi lệnh, phục vụ message đã queue, và KHÔNG
-# BAO GIỜ chạm mạng hay app thật. Chỉ hiện thực đúng bề mặt các test cần.
+# Fake orca for tests. Logs every call, serves queued messages, and NEVER
+# touches the network or the real app. Implements only the surface the tests
+# need, nothing more.
 set -u
-STATE="${OFM_FAKE_ORCA_STATE:?fake-orca cần OFM_FAKE_ORCA_STATE}"
+STATE="${OFM_FAKE_ORCA_STATE:?fake-orca needs OFM_FAKE_ORCA_STATE}"
 printf '%s\n' "$*" >> "$STATE/calls.log"
 
 run_id=""
@@ -26,8 +27,8 @@ case "$1 ${2:-}" in
       exit 0
     fi
     if [ "$wait_mode" = 1 ]; then
-      # Mô phỏng chờ: ngủ tối đa timeout rồi trả rỗng, giống hệt một lần
-      # timeout thật. Test dùng timeout rất nhỏ.
+      # Simulate waiting: sleep up to the timeout then return empty, exactly
+      # like a real timeout. Tests use a very small timeout.
       slept=0
       while [ "$slept" -lt "${timeout_ms:-0}" ]; do
         [ -s "$q" ] && { cat "$q"; exit 0; }

@@ -1,6 +1,7 @@
-# tests/helpers.sh — môi trường test tách biệt. Source, đừng chạy.
-# Mọi test chạy trong một OFM_HOME tạm và một PATH có fake-orca đứng trước,
-# nên không test nào chạm vào home hay Orca thật của captain.
+# tests/helpers.sh -- isolated test environment. Source it, don't run it.
+# Every test runs inside a temporary OFM_HOME and a PATH with fake-orca
+# ahead of the real one, so no test ever touches the captain's real home or
+# real Orca.
 OFM_TEST_FAILURES=0
 OFM_TEST_ASSERTS=0
 
@@ -9,17 +10,18 @@ ofm_test_setup() {
   export OFM_TEST_TMP
   export OFM_HOME="$OFM_TEST_TMP/home"
   mkdir -p "$OFM_HOME/requests" "$OFM_HOME/projects"
-  # LUẬT TUYỆT ĐỐI: không test nào được đọc/ghi ~/.claude/skills hay
-  # ~/.cursor/hooks.json THẬT. Đặt default ở ĐÂY, không ở từng file test, để
-  # một doctor/install call chạy TRƯỚC khi file test tự export biến của riêng
-  # nó vẫn không bao giờ rơi về $HOME thật.
+  # ABSOLUTE RULE: no test may read/write the REAL ~/.claude/skills or
+  # ~/.cursor/hooks.json. Set the default HERE, not in each test file, so
+  # that a doctor/install call running BEFORE a test file exports its own
+  # variable can never fall back to the real $HOME.
   export OFM_CLAUDE_SKILLS_DIR="$OFM_TEST_TMP/claude-skills"
   export OFM_CURSOR_HOOKS_JSON="$OFM_TEST_TMP/cursor-hooks.json"
-  # Bộ chạy test này CÓ THỂ tự nó đang chạy dưới một phiên con/subagent (biến
-  # đã thật sự thấy set trong CI của chính dự án này) — nếu để lọt qua, mọi
-  # test activate sẽ ăn nhầm refusal của FIX 5 dù đang test một nhánh khác
-  # hẳn. Test env phải sạch biến harness thật của TIẾN TRÌNH CHẠY TEST, không
-  # phải của kịch bản đang được test.
+  # This test runner itself COULD be running under a child session/subagent
+  # (the variable has actually been observed set in this very project's CI)
+  # -- if that leaked through, every activate test would eat FIX 5's
+  # refusal by mistake while testing a completely different branch. The
+  # test environment must be clear of the real harness variable of the
+  # PROCESS RUNNING THE TESTS, not of the scenario under test.
   unset CLAUDE_CODE_CHILD_SESSION
   export OFM_FAKE_ORCA_STATE="$OFM_TEST_TMP/fake-orca"
   mkdir -p "$OFM_FAKE_ORCA_STATE/queue"
@@ -56,7 +58,7 @@ assert_rc() {  # <got_rc> <want_rc> <label>
 
 assert_contains() {  # <haystack> <needle> <label>
   OFM_TEST_ASSERTS=$((OFM_TEST_ASSERTS+1))
-  case "$1" in *"$2"*) ;; *) _ofm_fail "$1" "chứa '$2'" "$3" ;; esac
+  case "$1" in *"$2"*) ;; *) _ofm_fail "$1" "contains '$2'" "$3" ;; esac
 }
 
 ofm_test_report() {
