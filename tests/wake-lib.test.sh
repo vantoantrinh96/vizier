@@ -5,60 +5,61 @@ ofm_test_setup
 . "$OFM_TEST_REPO/lib/ofm-home.sh"
 . "$OFM_TEST_REPO/lib/ofm-wake-lib.sh"
 
-# Nhịp poll production là 1000ms; test hạ xuống để chạy nhanh.
+# Production's poll cadence is 1000ms; the test lowers it to run fast.
 export OFM_WAKE_POLL_MS=50
 
 mk_request() {  # <slug> <run_id> <status>
-  printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\nyêu cầu gốc\n' \
+  printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\noriginal request\n' \
     "$2" "$3" > "$(ofm_requests_dir)/$1.md"
 }
 
-assert_eq "$(ofm_open_run_ids)" "" "không có request thì không có run"
+assert_eq "$(ofm_open_run_ids)" "" "no requests means no runs"
 
 mk_request one run_a open
 mk_request two run_b closed
-assert_eq "$(ofm_open_run_ids)" "run_a" "chỉ lấy request open"
+assert_eq "$(ofm_open_run_ids)" "run_a" "only picks up open requests"
 
 mk_request three run_c open
 got=$(ofm_open_run_ids | sort | tr '\n' ',')
-assert_eq "$got" "run_a,run_c," "lấy được nhiều run open"
+assert_eq "$got" "run_a,run_c," "picks up multiple open runs"
 
-# Hết giờ mà không có message thì in rỗng, rc vẫn 0
+# A timeout with no message prints empty, rc is still 0
 out=$(ofm_open_run_ids | ofm_wait_any_run 200); rc=$?
-assert_rc "$rc" 0 "hết giờ vẫn rc 0"
-assert_eq "$out" "" "hết giờ thì không in gì"
+assert_rc "$rc" 0 "a timeout still gives rc 0"
+assert_eq "$out" "" "a timeout prints nothing"
 
-# Message ở run thứ hai vẫn được bắt: chờ song song, không tuần tự
+# A message on the second run is still caught: waiting in parallel, not sequentially
 fake_orca_queue run_c '{"type":"worker_done","run_id":"run_c","outcome":"succeeded","body":"PR https://x/1"}'
 out=$(ofm_open_run_ids | ofm_wait_any_run 3000)
-assert_contains "$out" "worker_done" "bắt được message của run thứ hai"
-assert_contains "$out" "run_c" "tóm tắt nêu run id"
+assert_contains "$out" "worker_done" "catches the second run's message"
+assert_contains "$out" "run_c" "the summary names the run id"
 
-# Tóm tắt luôn gói về một dòng
+# The summary is always wrapped into one line
 lines=$(printf '%s' "$out" | wc -l | tr -d ' ')
-assert_eq "$lines" "0" "tóm tắt là đúng một dòng, không newline cuối"
+assert_eq "$lines" "0" "the summary is exactly one line, no trailing newline"
 
-# Frontmatter là nguồn duy nhất: "status: open" trong phần văn xuôi không tính
+# Frontmatter is the only source of truth: "status: open" in the prose body does not count
 printf -- '---\nrun_id: run_body\nstatus: closed\n---\nstatus: open\n' > "$(ofm_requests_dir)/body.md"
-assert_eq "$(ofm_open_run_ids | grep -c run_body || true)" "0" "status trong văn xuôi không tính"
-# File không mở bằng `---` thì bỏ qua hẳn
-printf 'lời nói đầu\n---\nrun_id: run_late\nstatus: open\n---\n' > "$(ofm_requests_dir)/late.md"
-assert_eq "$(ofm_open_run_ids | grep -c run_late || true)" "0" "frontmatter không ở đầu file thì bỏ qua"
+assert_eq "$(ofm_open_run_ids | grep -c run_body || true)" "0" "status in the prose body does not count"
+# A file not opened with `---` is skipped entirely
+printf 'a preamble\n---\nrun_id: run_late\nstatus: open\n---\n' > "$(ofm_requests_dir)/late.md"
+assert_eq "$(ofm_open_run_ids | grep -c run_late || true)" "0" "frontmatter not at the start of the file is skipped"
 rm -f "$(ofm_requests_dir)/body.md" "$(ofm_requests_dir)/late.md"
 
-# CRLF không được âm thầm biến một request đang mở thành không-mở
+# CRLF must not silently turn an open request into a not-open one
 printf -- '---\r\nrun_id: run_crlf\r\nstatus: open\r\n---\r\n' > "$(ofm_requests_dir)/crlf.md"
-assert_eq "$(ofm_open_run_ids | grep -c run_crlf || true)" "1" "frontmatter CRLF vẫn đọc được"
+assert_eq "$(ofm_open_run_ids | grep -c run_crlf || true)" "1" "CRLF frontmatter is still read correctly"
 rm -f "$(ofm_requests_dir)/crlf.md"
 
-# ofm_summarize: newline lọt qua .type hay .run_id cũng phải bị gói về một dòng
+# ofm_summarize: a newline slipping through .type or .run_id must also get wrapped into one line
 s=$(ofm_summarize '{"type":"worker\ndone","run_id":"r\n1","body":"a\nb"}')
-assert_eq "$(printf '%s' "$s" | grep -c . )" "1" "tóm tắt luôn đúng một dòng dù mọi trường có newline"
+assert_eq "$(printf '%s' "$s" | grep -c . )" "1" "the summary is always exactly one line even when every field has a newline"
 
-# Giết CẢ PROCESS GROUP — đúng cách harness thật kết thúc hook. Giết riêng pid
-# của subshell ngoài KHÔNG lan tới subshell trong (đã đo: leaked=1), nên phép đo
-# đó không phản ánh production. `set -m` ở ĐÂY, trong test, để job nền thành
-# group leader; library thì tuyệt đối không được bật nó.
+# Kill the WHOLE PROCESS GROUP -- exactly how the real harness ends a hook.
+# Killing only the outer subshell's pid does NOT propagate to the inner
+# subshell (measured: leaked=1), so that measurement wouldn't reflect
+# production. `set -m` HERE, in the test, makes the background job its own
+# group leader; the library must absolutely never turn it on.
 printf -- '---\nrun_id: run_orphanprobe\nstatus: open\n---\nx\n' > "$(ofm_requests_dir)/orphan.md"
 set -m
 ( printf 'run_orphanprobe\n' | ofm_wait_any_run 30000 >/dev/null 2>&1 ) & waiter=$!
@@ -67,19 +68,20 @@ sleep 0.8
 kill -TERM -"$waiter" 2>/dev/null || kill -TERM "$waiter" 2>/dev/null || true
 sleep 0.8
 leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "$leaked" "0" "giết process group thì không còn orca mồ côi"
-# `pgrep -f run_orphanprobe` CHỈ khớp argv của con orca, nên nó từng báo 0 trong
-# khi shell bọc vẫn sống và quay vòng poll. Đếm cả process group mới thấy được:
-# $waiter là pgid vì khối này chạy dưới `set -m`.
+assert_eq "$leaked" "0" "killing the process group leaves no orphaned orca"
+# `pgrep -f run_orphanprobe` ONLY matches the child orca's argv, so it used to
+# report 0 while the wrapping shell was still alive and spinning its poll
+# loop. Counting the whole process group is what actually catches it:
+# $waiter is the pgid because this block runs under `set -m`.
 remaining=$(pgrep -g "$waiter" 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "$remaining" "0" "cả process group biến mất, không riêng con orca"
+assert_eq "$remaining" "0" "the whole process group is gone, not just the child orca"
 pkill -f 'run_orphanprobe' 2>/dev/null || true
 rm -f "$(ofm_requests_dir)/orphan.md"
 
-# Dòng keepalive bị bỏ qua, không bị coi là message
+# A keepalive line is dropped, not treated as a message
 fake_orca_queue run_a '{"_keepalive":true}'
 out=$(printf 'run_a\n' | ofm_wait_any_run 300)
-assert_eq "$out" "" "keepalive không tính là message"
+assert_eq "$out" "" "a keepalive does not count as a message"
 
 ofm_test_teardown
 ofm_test_report
