@@ -84,6 +84,14 @@ assert_contains "$n" "checks-passed" "terminal values listed"
 assert_contains "$n" "cancelled" "all four terminal values listed"
 assert_contains "$n" "never answer" "worker must not answer its own finding"
 assert_contains "$n" "never quote it earlier as an example" "worker told not to quote the outcome line as an example"
+# The OTHER half of that sentence, and the half that actually narrows the
+# residual gap in _vizier_axi_outcome: the matcher cannot tell one real report
+# from one quoted example, so "exactly once, at the END, and nowhere else" is
+# the only thing that makes a single anchored line unambiguous. Pinning only
+# the "never quote it as an example" clause would let the positional rule be
+# dropped while this test stayed green.
+assert_contains "$n" "as the LAST line of the body" "worker told WHERE the outcome line goes, not just where it must not appear"
+assert_contains "$n" "exactly once" "worker told the outcome line appears exactly once"
 
 # an unknown mode is a hard error, not a silent default
 vizier_brief_delivery local-only >/dev/null 2>&1

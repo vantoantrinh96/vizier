@@ -48,14 +48,62 @@ assert_contains "$(fake_orca_calls)" "--on Mac mini" "dispatch inherited the req
 assert_eq "$(grep -c '^## ' "$VIZIER_FAKE_ORCA_STATE/spec.$task")" "4" "the stored spec has four layers"
 assert_contains "$(cat "$VIZIER_FAKE_ORCA_STATE/spec.$task")" "gh-axi" "invariants reached the worker"
 
-# --- worker reports done --------------------------------------------------
-fake_orca_queue "$run" "{\"delivery_id\":\"d1\",\"type\":\"worker_done\",\"dispatch_id\":\"$dispatch\",\"outcome\":\"succeeded\",\"body\":\"PR https://x/1\"}"
-plan=$(orca orchestration check --run "$run" --peek --json | vizier_supervise_plan "$mode")
-assert_contains "$plan" "PLAN d1 release ok" "a successful worker_done plans a release"
-assert_eq "$(printf '%s\n' "$plan" | tail -1)" "ACK d1" "and the batch is ackable"
+# brief section 5 records the dispatch in the request file. Nothing downstream
+# works without it, so the loop has to actually write it, not assume it.
+vizier_request_note "$slug" "task $task -> dispatch $dispatch ($mode)"
 
+# --- the wake arrives COLD: a run_id and nothing else ----------------------
+# This is the join the whole supervise path hangs off, and it was the one link
+# the loop test skipped -- it carried $slug forward in a variable, which no
+# real wake ever does. supervise starts from an independent wake event with
+# `run=<run_id>` in it and must translate that back to a request file before
+# it can read the project, the mode map, or the host.
+wake_slug=$(vizier_request_slug_for_run "$run")
+assert_eq "$wake_slug" "$slug" "a cold wake translates run_id back to the request's slug"
+
+# Everything from here uses ONLY what the wake could have known.
+f=$(vizier_request_path "$wake_slug")
+map="$VIZIER_TEST_TMP/loop-mode-map"
+# supervise's own extraction line, grepped out of the shipped skill rather
+# than retyped -- same reason as tests/supervise-mode-map.test.sh.
+sed_line=$(grep -m1 "^sed -n '" "$VIZIER_TEST_REPO/skills/supervise/SKILL.md")
+eval "$sed_line"
+assert_eq "$(cat "$map")" "$(printf '%s\t%s' "$dispatch" "$mode")" \
+  "the mode map is built from the note brief wrote, keyed by the real dispatch id"
+
+# supervise resolves the default mode through the request file it just found.
+# This call is the reason supervise must source brief-lib: unsourced it is
+# `command not found`, rc 127, swallowed by `|| default_mode=""`.
+default_mode=$(vizier_project_mode "$(vizier_request_get "$wake_slug" project)") || default_mode=""
+assert_eq "$default_mode" "direct-PR" "the cold wake recovers the project's delivery mode"
+
+# --- a real batch: a terminal message AND the traffic around it ------------
+# The loop used to process exactly one worker_done per batch, so no
+# non-terminal type had ever been through it. That is what let a question be
+# planned `none not-terminal` -- a heartbeat's disposition -- and then acked
+# away with a captain decision owed and nobody holding it.
+fake_orca_queue "$run" '{"delivery_id":"d0","type":"heartbeat"}'
+fake_orca_queue "$run" "{\"delivery_id\":\"d1\",\"type\":\"worker_done\",\"dispatch_id\":\"$dispatch\",\"outcome\":\"succeeded\",\"body\":\"PR https://x/1\"}"
+fake_orca_queue "$run" '{"delivery_id":"d2","type":"question","body":"ship it behind a flag?"}'
+fake_orca_queue "$run" '{"delivery_id":"d3","type":"escalation","body":"the pipeline wants a schema change"}'
+plan=$(orca orchestration check --run "$run" --peek --json | vizier_supervise_plan "$default_mode" "$map")
+assert_contains "$plan" "PLAN d0 none not-terminal" "a heartbeat is not a terminal event"
+assert_contains "$plan" "PLAN d1 release ok" "a successful worker_done plans a release"
+assert_contains "$plan" "PLAN d2 reply question" "a question owes the captain an answer"
+assert_contains "$plan" "PLAN d3 reply escalation" "so does an escalation"
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK ')" "4" "every delivery in the batch is ackable"
+
+# Only the terminal one releases. The negative matters more than the positive:
+# a bug that treated a question as terminal would show up here and nowhere
+# else in this file.
 orca orchestration worker-release --dispatch "$dispatch" --json >/dev/null
-orca orchestration check --run "$run" --ack d1 --json >/dev/null
+assert_eq "$(fake_orca_calls | grep -c 'worker-release --dispatch')" "1" \
+  "exactly one release for a four-message batch with one terminal in it"
+
+printf '%s\n' "$plan" | sed -n 's/^ACK //p' | while IFS= read -r ack_id; do
+  [ -n "$ack_id" ] || continue
+  orca orchestration check --run "$run" --ack "$ack_id" --json >/dev/null
+done
 assert_eq "$(orca orchestration check --run "$run" --peek --json | wc -l | tr -d ' ')" "0" "mailbox drained"
 
 # --- close ----------------------------------------------------------------
