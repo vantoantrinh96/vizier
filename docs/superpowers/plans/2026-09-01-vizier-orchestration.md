@@ -818,7 +818,10 @@ assert_contains "$(fake_orca_calls)" "project setups --project github:acme/platf
 # --- the table ------------------------------------------------------------
 fake_orca_set_status "Mac mini" ready true
 t=$(vizier_routing_table github:acme/platform)
-assert_eq "$(printf '%s' "$t" | wc -l | tr -d ' ')" "3" "one row per host"
+# printf '%s\n', not '%s': command substitution strips the trailing newline,
+# so `wc -l` over a bare '%s' counts one fewer line than there are rows and
+# this assertion can never pass.
+assert_eq "$(printf '%s\n' "$t" | wc -l | tr -d ' ')" "3" "one row per host"
 assert_eq "$(printf '%s\n' "$t" | awk -F'\t' '$1=="this machine"{print $4}')" "yes" "local eligible"
 assert_eq "$(printf '%s\n' "$t" | awk -F'\t' '$1=="Mac mini"{print $4}')" "no" "healthy host with a pending setup is NOT eligible"
 assert_eq "$(printf '%s\n' "$t" | awk -F'\t' '$1=="Broken box"{print $4}')" "no" "unreachable host is not eligible"
