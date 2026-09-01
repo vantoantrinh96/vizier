@@ -53,26 +53,50 @@ _vizier_lock_write() {  # <session_id> <harness> <pid>
   mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
-# Read the lock BACK after writing, and report success only when we are truly
-# the owner. Why this is needed: the read-decide-write sequence in
-# vizier_lock_claim is not atomic, so two sessions that both see an empty lock (or
-# both see a dead owner) both write and both believe they won -- exactly the
-# worst failure of this design: two sessions writing requests/ at once. Reading
-# back turns that into an invariant -- "NEVER more than one session believes it
-# holds the lock" -- without adding any mutex file or leftover mutex state.
-_vizier_lock_confirm() {  # <session_id> <verb> <detail>
-  local sid=$1 verb=$2 detail=$3 winner
-  if vizier_lock_matches "$sid"; then
-    printf '%s %s\n' "$verb" "$detail"
-    return 0
+# Returns 0 only if WE created the file. No temp file, no read-back: the
+# create IS the decision. `set -C` (noclobber) makes bash's `>` open with
+# O_CREAT|O_EXCL, so of any number of processes racing this at once, the
+# filesystem itself lets exactly one `>` succeed -- there is no window
+# between "decide we should write" and "write" for a second racer to land
+# in, because deciding and writing are the same syscall.
+_vizier_lock_create_exclusive() {  # <session_id> <harness> <pid>
+  local f
+  f=$(vizier_lock_path)
+  mkdir -p "$(vizier_home)" || return 1
+  ( set -C
+    printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' \
+      "$1" "$2" "$3" "$(date +%s)" > "$f"
+  ) 2>/dev/null
+}
+
+# Take the CURRENT lock file out of the way, but only if it is still byte-for
+# -byte the file we inspected and judged dead. Prints nothing; rc 0 means the
+# slot is now ours to create into. `mv` of one specific path succeeds for
+# exactly one racer -- the losers find the file already gone -- so the move
+# itself is the atomic step; the content comparison after it is what catches
+# a third session that legitimately claimed the slot between our inspection
+# and our move.
+_vizier_lock_take_stale() {  # <snapshot>
+  local f stale
+  f=$(vizier_lock_path)
+  stale="$f.stale.$$.$RANDOM"
+  mv "$f" "$stale" 2>/dev/null || return 1
+  if [ "$(cat "$stale" 2>/dev/null)" != "$1" ]; then
+    # It changed between our inspection and our move: a third session claimed
+    # it legitimately. Put it back if the slot is still free, and refuse.
+    # Restoring through `set -C` matters -- an unguarded `>` here would
+    # overwrite whoever took the slot in the meantime, which is the very theft
+    # this function exists to prevent.
+    ( set -C; cat "$stale" > "$f" ) 2>/dev/null
+    rm -f "$stale"
+    return 1
   fi
-  winner=$(vizier_lock_get session_id)
-  printf 'refused held_by=%s pid=%s\n' "${winner:-unknown}" "$(vizier_lock_get pid)"
-  return 1
+  rm -f "$stale"
+  return 0
 }
 
 vizier_lock_claim() {  # <session_id> <harness> <pid>
-  local sid=$1 harness=$2 pid=$3 owner owner_pid
+  local sid=$1 harness=$2 pid=$3 owner owner_pid snapshot
   # The lock file is line-based key=value and read with sed, so a session_id
   # containing a newline would write a file that we ourselves cannot read back
   # -> a lone claimant gets refused for no obvious reason. Block it right at
@@ -85,6 +109,9 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
   owner=$(vizier_lock_get session_id)
   if [ -n "$owner" ]; then
     if [ "$owner" = "$sid" ]; then
+      # Only one session can hold this session id, so there is no second
+      # racer to lose to here -- the read-modify-write in _vizier_lock_write
+      # is safe on this path alone.
       _vizier_lock_write "$sid" "$harness" "$pid" || return 1
       printf 'refreshed session_id=%s\n' "$sid"
       return 0
@@ -106,12 +133,31 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
       printf 'refused held_by=%s pid=%s\n' "$owner" "$owner_pid"
       return 1
     fi
-    _vizier_lock_write "$sid" "$harness" "$pid" || return 1
-    _vizier_lock_confirm "$sid" reclaimed "from=$owner dead_pid=$owner_pid"
-    return $?
+    # Snapshot BEFORE acting: this is what _vizier_lock_take_stale compares
+    # against after it moves the file out of the way, to detect a third
+    # session that legitimately claimed the lock between our liveness check
+    # and our move.
+    snapshot=$(cat "$(vizier_lock_path)" 2>/dev/null)
+    if ! _vizier_lock_take_stale "$snapshot"; then
+      owner=$(vizier_lock_get session_id)
+      printf 'refused held_by=%s pid=%s\n' "${owner:-unknown}" "$(vizier_lock_get pid)"
+      return 1
+    fi
+    if ! _vizier_lock_create_exclusive "$sid" "$harness" "$pid"; then
+      owner=$(vizier_lock_get session_id)
+      printf 'refused held_by=%s pid=%s\n' "${owner:-unknown}" "$(vizier_lock_get pid)"
+      return 1
+    fi
+    printf 'reclaimed from=%s dead_pid=%s\n' "$owner" "$owner_pid"
+    return 0
   fi
-  _vizier_lock_write "$sid" "$harness" "$pid" || return 1
-  _vizier_lock_confirm "$sid" claimed "session_id=$sid"
+  if ! _vizier_lock_create_exclusive "$sid" "$harness" "$pid"; then
+    owner=$(vizier_lock_get session_id)
+    printf 'refused held_by=%s pid=%s\n' "${owner:-unknown}" "$(vizier_lock_get pid)"
+    return 1
+  fi
+  printf 'claimed session_id=%s\n' "$sid"
+  return 0
 }
 
 vizier_lock_release() {  # <session_id> -- only the true owner can remove it

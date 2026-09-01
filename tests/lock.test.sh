@@ -42,24 +42,71 @@ case "$hp" in ''|*[!0-9]*) assert_eq "$hp" "<numeric pid>" "finds bash's ancesto
 kill -0 "${hp:-0}" 2>/dev/null; assert_rc $? 0 "the returned ancestor pid is alive"
 assert_eq "$(vizier_harness_pid definitely-not-a-real-harness-xyz)" "" "returns empty when nothing is found"
 
-# Anti-race invariant: many sessions claiming an empty lock at once means NO
-# MORE THAN ONE session believes it holds the lock. Not asserting "exactly
-# one" here, because the last writer can write after the last reader's
-# read-back; the real invariant is "no more than one".
+# --- exclusive create ------------------------------------------------------
 rm -f "$(vizier_lock_path)"
-race="$VIZIER_TEST_TMP/race"; mkdir -p "$race"
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  ( vizier_lock_claim "race-$i" claude $$ > "$race/$i.out" 2>&1 ) &
+_vizier_lock_create_exclusive sess-x claude $$
+assert_rc "$?" 0 "exclusive create succeeds into an empty slot"
+assert_eq "$(vizier_lock_get session_id)" "sess-x" "and writes our session"
+
+before=$(shasum -a 256 "$(vizier_lock_path)" | awk '{print $1}')
+_vizier_lock_create_exclusive sess-y claude $$
+assert_rc "$?" 1 "exclusive create REFUSES when the slot is taken"
+after=$(shasum -a 256 "$(vizier_lock_path)" | awk '{print $1}')
+assert_eq "$after" "$before" "and leaves the existing lock byte-identical"
+
+# --- take-stale: the file we take must be the file we judged ---------------
+printf 'session_id=old\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
+snap=$(cat "$(vizier_lock_path)")
+_vizier_lock_take_stale "$snap"
+assert_rc "$?" 0 "take-stale succeeds when the file is unchanged"
+assert_eq "$(test -e "$(vizier_lock_path)" && echo present || echo gone)" "gone" \
+  "and leaves the slot free to create into"
+
+# the case that prevents stealing from a live owner
+printf 'session_id=old\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
+snap=$(cat "$(vizier_lock_path)")
+printf 'session_id=newcomer\nharness=claude\npid=%s\nsince=2\n' $$ > "$(vizier_lock_path)"
+_vizier_lock_take_stale "$snap"
+assert_rc "$?" 1 "take-stale REFUSES when the file changed under it"
+assert_eq "$(vizier_lock_get session_id)" "newcomer" \
+  "and restores the newcomer's lock rather than stealing it"
+assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "and leaves no stale file behind"
+
+# --- the end-to-end rule the whole fix exists to enforce -------------------
+# A claimant that saw a dead owner must NOT overwrite a lock a third session
+# has since legitimately taken. This is the bug that mattered most: the
+# previous design overwrote unconditionally.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=ghost\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
+snap=$(cat "$(vizier_lock_path)")
+# simulate the interleaving: a live session takes the lock after our snapshot
+printf 'session_id=live-one\nharness=claude\npid=%s\nsince=2\n' $$ > "$(vizier_lock_path)"
+out=$(_vizier_lock_take_stale "$snap" && _vizier_lock_create_exclusive thief claude $$ && echo stole || echo refused)
+assert_eq "$out" "refused" "a stale snapshot never dispossesses a live owner"
+assert_eq "$(vizier_lock_get session_id)" "live-one" "the live owner still holds it"
+
+# Anti-race invariant, run 20 times: many sessions claiming an empty lock at
+# once must produce EXACTLY ONE winner, every time. This now holds because
+# the create is atomic (`set -C` / O_CREAT|O_EXCL) -- at most one process's
+# create can succeed into a given empty slot, so at most one can print
+# "claimed", and the empty-lock branch only prints "claimed" on a create it
+# won. One trial passes even with the old bug on an idle machine; twenty
+# trials under load is what turns a 1-in-4 flake into a near-certain detector.
+race_trial=1
+while [ "$race_trial" -le 20 ]; do
+  rm -f "$(vizier_lock_path)"
+  race="$VIZIER_TEST_TMP/race-$race_trial"; mkdir -p "$race"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    ( vizier_lock_claim "race-$i" claude $$ > "$race/$i.out" 2>&1 ) &
+  done
+  wait
+  wins=$(grep -l '^claimed' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+  assert_eq "$wins" "1" "trial $race_trial: exactly one session wins the empty lock"
+  losers=$(grep -l '^refused' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+  assert_eq "$losers" "9" "trial $race_trial: the other nine sessions are all refused, none errors while writing"
+  race_trial=$((race_trial + 1))
 done
-wait
-# EXACTLY ONE, not "no more than one": the last `mv` that succeeds, by
-# definition, has no one writing after it, so its own read-back must see
-# itself. A previous version asserted <=1 and measured 0 -- but that was a
-# tmp-name collision, not the race.
-wins=$(grep -l '^claimed' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "$wins" "1" "exactly one session wins the empty lock"
-losers=$(grep -l '^refused' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
-assert_eq "$losers" "9" "the other nine sessions are all refused, none errors while writing"
 
 # A session_id containing a newline would corrupt the lock file, so it must be blocked right at the door
 rm -f "$(vizier_lock_path)"
