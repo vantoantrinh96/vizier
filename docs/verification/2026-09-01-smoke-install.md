@@ -23,7 +23,7 @@ repository. This document records what happened when it did.
 | `~/.cursor/hooks.json` | byte-identical before and after; the bare install skipped Cursor as designed |
 | Claude Code plugin load | `vizier@skills-dir`, status `loaded`; components `identity` and `vizier` |
 | `${CLAUDE_PLUGIN_ROOT}` | **resolved** -- the model ran `"/Users/toantv/.claude/skills/vizier/bin/vizier-activate.sh" claude` |
-| child-session guard | fired in the real world: `refused reason=child_session`, exit 2 |
+| child-session guard (since removed, see Correction below) | fired in the real world: `refused reason=child_session`, exit 2 -- this was NOT a success: it was the guard blocking the captain's only real activation attempt outright, the defect described in the Correction section |
 | the command file's rc rules | followed: the model stopped on rc 2, did not retry, did not touch the lock |
 
 The `${CLAUDE_PLUGIN_ROOT}` row is the one that mattered most. The variable is
@@ -71,14 +71,16 @@ and an interrupted run exits non-zero with a one-line `FAIL:`.
 started programmatically -- `claude -p`, with or without `env -u
 CLAUDE_CODE_CHILD_SESSION` -- is marked as a child session by Claude Code itself
 (measured: the variable is still present inside the spawned session after
-unsetting it in the parent). The activation script correctly refuses there. So a
-genuine claim can only be observed by a person typing `/vizier` in their own
-interactive session.
+unsetting it in the parent). The activation script refused there (see Correction:
+that refusal is now known to be a defect, not correct behavior, and has been
+removed). So a genuine claim can only be observed by a person typing `/vizier` in
+their own interactive session -- and, as recorded below, that person also hit the
+same refusal, because it fires on every ordinary session, not only on
+programmatically-started ones.
 
 Everything up to that last step is verified: the plugin loads, the path resolves,
-the script runs, the guard works, and the model follows the instructions. The
-unobserved step is `vizier_lock_claim` writing the lock and the wake loop that
-follows it.
+and the script runs. The unobserved step is `vizier_lock_claim` writing the lock
+and the wake loop that follows it.
 
 **The wake loop against a real Orca Run** is likewise unobserved, because it
 depends on a lock that only a parent session can create. The wake MECHANISM was
@@ -89,3 +91,43 @@ composition of that mechanism with a lock, an open request and a real message.
 
 **Cursor was not installed.** A bare install skips it by design, and its
 activation path does not exist yet.
+
+## Correction (2026-09-01, after this smoke): the child-session guard was a defect, and it has been removed
+
+The row above recording the child-session guard firing was written as if the
+refusal were a working safeguard. It was not: the guard fired on the captain's
+own ordinary interactive session -- typing the slash command in the actual
+first-mate session, not in any subagent -- and refused it with `refused
+reason=child_session`. That is not a guard doing its job; it is the product
+refusing its only real activation path outright.
+
+**Why the guard existed.** A reviewer reported that a subagent session sets
+`CLAUDE_CODE_CHILD_SESSION=1` and carries a *different* session id from its
+parent, so activating from inside a subagent would write a lock the parent's
+Stop hook could never match -- a silent total failure. That claim was accepted
+and coded into `bin/vizier-activate.sh` as an explicit refusal without
+measuring the other half of it: whether a subagent's session id actually
+differs from its parent's.
+
+**What was actually measured.** On the captain's machine:
+
+- Ordinary top-level interactive session: `CLAUDE_CODE_CHILD_SESSION=1`,
+  `CLAUDE_CODE_SESSION_ID=fddb6e1c-322f-...`, `CLAUDE_PID=60217`.
+- A subagent dispatched from that same session: **identical** --
+  `CLAUDE_CODE_CHILD_SESSION=1`, the **same**
+  `CLAUDE_CODE_SESSION_ID=fddb6e1c-322f-...`, the same `CLAUDE_PID=60217`.
+
+The variable does not distinguish a subagent from its parent -- it appears to
+mark the shell as a child of the session, which is true of every tool-run
+command -- and a subagent shares its parent's session id, so a lock claimed
+from a subagent matches the parent session's hook payload exactly. The failure
+the guard was built to prevent cannot happen. The guard had no true-positive
+case and blocked every genuine activation, including the captain's.
+
+**Conclusion.** The guard's premise was false. It has been removed from
+`bin/vizier-activate.sh`, and `tests/activate.test.sh` now asserts that
+activation succeeds with `CLAUDE_CODE_CHILD_SESSION` set, since that is the
+normal case. The lesson this smoke should have caught, and did not: an
+unverified claim from a reviewer was accepted and shipped as a refusal without
+being measured, and the row above recorded that refusal as if it were success
+instead of naming it a defect.

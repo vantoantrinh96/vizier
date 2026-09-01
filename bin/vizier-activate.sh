@@ -17,24 +17,23 @@ set -u
 harness=${1:-claude}
 session_id=${2:-${CLAUDE_CODE_SESSION_ID:-}}
 
-# FIX 5 -- A CHILD SESSION/SUBAGENT ACTIVATING IS A TOTAL SILENT BREAKAGE.
-# Claude Code sets CLAUDE_CODE_CHILD_SESSION in the environment of a child
-# session (a subtask, a subagent) -- ITS session id differs from the session
-# id the Stop hook receives for that session (or the hook doesn't fire for
-# the child session in the way the first mate needs), so a lock written from
-# here could never match again: both the wake hook and the PostCompact hook
-# would go silent forever while the lock stayed held, exactly the same class
-# of bug that the "session id from the environment, not from the model" rule
-# above already blocks for the missing-session-id case. An explicit refusal
-# beats letting the captain discover three days later that their first mate
-# never once woke up.
-if [ -n "${CLAUDE_CODE_CHILD_SESSION:-}" ]; then
-  printf 'refused reason=child_session\n' >&2
-  printf 'this session is a child/subagent (CLAUDE_CODE_CHILD_SESSION is set): its session id\n' >&2
-  printf 'does not match the payload received by the PARENT session Stop hook, so activating\n' >&2
-  printf 'here breaks completely, silently. Type /vizier in the actual parent session, not here.\n' >&2
-  exit 2
-fi
+# NO CLAUDE_CODE_CHILD_SESSION GUARD HERE, ON PURPOSE. A reviewer claimed a
+# subagent session sets CLAUDE_CODE_CHILD_SESSION and carries a DIFFERENT
+# session id than its parent, so activating from inside a subagent would
+# write a lock the parent's Stop hook could never match -- a silent total
+# failure. That claim was accepted without measuring it, and a refusal was
+# added here on that basis. It was then measured directly on the captain's
+# machine: in an ordinary top-level interactive session, CLAUDE_CODE_CHILD_SESSION=1,
+# CLAUDE_CODE_SESSION_ID=fddb6e1c-322f-...; in a subagent dispatched from that
+# same session, CLAUDE_CODE_CHILD_SESSION=1 and CLAUDE_CODE_SESSION_ID is the
+# SAME fddb6e1c-322f-... -- identical in both. The variable does not
+# distinguish a subagent from its parent (it appears to mark the shell as a
+# child of the session, which is true for every tool-run command), and a
+# subagent shares the parent's session id, so a lock claimed from a subagent
+# matches the parent session's hook payload exactly. There is no case where
+# this variable being set causes the failure the removed guard was written to
+# prevent. Do not reintroduce a refusal on CLAUDE_CODE_CHILD_SESSION without
+# first measuring session ids across a real parent/subagent pair yourself.
 
 if [ -z "$session_id" ]; then
   printf 'refused reason=no_session_id\n' >&2

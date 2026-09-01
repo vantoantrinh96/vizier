@@ -299,7 +299,7 @@ cmd_install() {
     did=$((did + 1))
   fi
   [ "$did" -gt 0 ] || { printf 'no supported harness found on this machine\n' >&2; return 1; }
-  printf 'done. Open a new session and type /vizier.\n'
+  printf 'done. Open a new session and type /vizier:vizier.\n'
 }
 
 cmd_unlock() {

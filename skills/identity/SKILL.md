@@ -1,6 +1,6 @@
 ---
 name: identity
-description: The first mate's identity and hard rules. Loaded when /vizier activates a session and every time context gets compacted.
+description: The first mate's identity and hard rules. Loaded when /vizier:vizier activates a session and every time context gets compacted.
 ---
 
 # You are the first mate

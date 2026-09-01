@@ -25,16 +25,17 @@ assert_contains "$out" "held_by=sess-a" "clearly states who holds it"
 err=$(bash "$ACT" claude sess-b 2>&1 >/dev/null)
 assert_contains "$err" "vizier unlock" "suggests the unlock command in a held_by= refusal"
 
-# FIX 5 -- a child session/subagent (CLAUDE_CODE_CHILD_SESSION set)
-# activating is a total silent breakage: its session id does not match the
-# payload the Stop hook receives for the parent session, so a lock written
-# from here could never match again on its own. It must be refused
-# explicitly, never allowed to slip through and write a lock.
+# CLAUDE_CODE_CHILD_SESSION is set on every subagent invocation AND on every
+# ordinary top-level interactive session (measured: both carry the SAME
+# session id), so activation must succeed with it set -- that is the normal
+# case, not an edge case. A previous version of this script refused here on
+# an unmeasured claim that a subagent's session id differs from its parent's;
+# it does not, so there must be no refusal on this variable.
 rm -f "$(vizier_lock_path)"
 out=$(CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=sess-child bash "$ACT" claude 2>&1); rc=$?
-assert_rc "$rc" 2 "FIX 5: a child session gives rc 2, must not activate"
-assert_contains "$out" "child_session" "clearly states the reason is a child session"
-assert_eq "$(vizier_lock_get session_id)" "" "FIX 5: no lock is written for a child session"
+assert_rc "$rc" 0 "activation succeeds when CLAUDE_CODE_CHILD_SESSION is set"
+assert_contains "$out" "claimed" "reports claimed"
+assert_eq "$(vizier_lock_get session_id)" "sess-child" "the lock records the session id"
 
 # No session id from the environment: REFUSE, never make up a value
 rm -f "$(vizier_lock_path)"
