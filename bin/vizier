@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+# vizier -- install and diagnostics CLI.
+#
+# HARD RULE: this script runs ONLY at install time and diagnostic time. No
+# runtime path may call it. After install, the first mate talks directly to
+# `orca`.
+set -u
+
+# $0 CAN BE A SYMLINK. `install.sh` installs this CLI as exactly a symlink on
+# PATH, so that is the only real invocation path -- and in that case
+# `dirname "$0"` points at the bin directory on PATH, not at where the real
+# script lives. The consequence has been reproduced: wrong REPO_DIR -> lib
+# source fails -> `vizier_home` doesn't exist -> `$(vizier_home)` is empty -> every
+# path derived from it points somewhere wrong, and the anti-self-destruct
+# guard ends up operating on the caller's current directory instead. Walk the
+# whole link chain BEFORE deriving any path from it.
+_self=$0
+_hops=0
+while [ -L "$_self" ] && [ "$_hops" -lt 16 ]; do
+  _t=$(readlink "$_self") || break
+  case "$_t" in
+    /*) _self=$_t ;;
+    *)  _self="$(dirname "$_self")/$_t" ;;
+  esac
+  _hops=$((_hops + 1))
+done
+# Hitting the ceiling means REPORTING AN ERROR, not continuing with a
+# half-resolved path. Continuing is a silent degradation -- exactly the kind
+# of bug that has bitten this project three times (cd "" becoming a no-op, a
+# signal trap continuing execution, a guard concatenating its arguments
+# before validating them) -- and here it could produce a REPO_DIR that is
+# wrong but still looks valid.
+[ -L "$_self" ] && {
+  printf 'error: symlink chain too deep (>16 hops) from %s\n' "$0" >&2; exit 2; }
+SELF_DIR="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)" || {
+  printf 'error: could not determine the script directory\n' >&2; exit 2; }
+REPO_DIR="$(cd "$SELF_DIR/.." 2>/dev/null && pwd)" || {
+  printf 'error: could not determine the repo root\n' >&2; exit 2; }
+
+# A FAILED SOURCE MUST BE FATAL. Bash only prints a warning and keeps going,
+# and `set -u` does not catch a missing function -- that is exactly how a
+# missing `vizier_home` turns into an empty path and the guard ends up pointed
+# at the wrong place.
+[ -r "$REPO_DIR/lib/vizier-home.sh" ] || {
+  printf 'error: could not read %s/lib/vizier-home.sh\n' "$REPO_DIR" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$REPO_DIR/lib/vizier-home.sh"
+
+VIZIER_HOME_DIR=$(vizier_home)
+[ -n "$VIZIER_HOME_DIR" ] || { printf 'error: home is empty\n' >&2; exit 2; }
+
+# Canonicalize a path ONLY when the directory truly exists. `cd ""` is a
+# silent no-op in bash and returns the current directory -- exactly what
+# turned this guard into a landmine.
+_canon() {  # <path> -> canonical path if it exists, empty if not
+  [ -n "$1" ] && [ -d "$1" ] || return 0
+  (cd "$1" 2>/dev/null && pwd)
+}
+
+DIST="$VIZIER_HOME_DIR/dist"
+CLAUDE_SKILLS="${VIZIER_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+CURSOR_HOOKS="${VIZIER_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
+
+_sync_dist() {
+  # REFUSE when running from the installed copy itself: _sync_dist deletes
+  # $DIST then copies from $REPO_DIR, and when running from dist those two
+  # paths are the same one -> self-destruction.
+  # Compare on the CANONICAL path of a directory that ACTUALLY EXISTS. If
+  # dist doesn't exist yet, REPO_DIR can't possibly be inside it, so the
+  # guard doesn't need to fire -- and, more importantly, there is no branch
+  # where an empty value can sneak into the comparison.
+  local dist_canon
+  dist_canon=$(_canon "$DIST")
+  if [ -n "$dist_canon" ]; then
+    case "$REPO_DIR/" in
+      "$dist_canon"/*|"$dist_canon/")
+        printf 'refused: running from the installed copy (%s).\n' "$REPO_DIR" >&2
+        printf '  run install/update from the source checkout: %s/src/bin/vizier install\n' "$VIZIER_HOME_DIR" >&2
+        return 1 ;;
+    esac
+  fi
+  mkdir -p "$DIST" || return 1
+  rm -rf "${DIST:?}/"*
+  local item
+  for item in lib hooks skills commands bin .claude-plugin; do
+    [ -e "$REPO_DIR/$item" ] || continue
+    cp -R "$REPO_DIR/$item" "$DIST/" || return 1
+  done
+  printf 'payload -> %s\n' "$DIST"
+}
+
+# Hash the payload the same way _sync_dist DEFINES the payload: the sorted
+# file list under exactly the item directories it copies, plus the content
+# of each file. Comparing on a single combined digest -- not a per-file
+# diff -- keeps this dependency-free (shasum is already assumed elsewhere)
+# and keeps the two sides comparable even though src and dist live at
+# different absolute paths: `cd` into the root first so every path fed to
+# shasum is relative, never absolute.
+_payload_hash() {  # <root_dir> -> sha256 digest, empty if root doesn't exist
+  local root=$1
+  [ -d "$root" ] || return 0
+  (
+    cd "$root" 2>/dev/null || exit 1
+    local item
+    for item in lib hooks skills commands bin .claude-plugin; do
+      [ -e "$item" ] || continue
+      find "$item" -type f -print
+    done | LC_ALL=C sort | while IFS= read -r f; do
+      shasum -a 256 "$f"
+    done
+  ) | shasum -a 256 | awk '{print $1}'
+}
+
+cmd_version() {
+  # "What version am I running" is really three separate questions, and
+  # answering only one of them is misleading:
+  #   - What did I FETCH? The git commit at $src.
+  #   - What am I actually RUNNING? $DIST is a COPY made by _sync_dist, and
+  #     the harness adapters point their hooks at files under dist, not at
+  #     src. A half-finished install, or a src edit made after the last
+  #     install/update, leaves the two out of sync -- and `git log` at src
+  #     would then confidently report a version that is NOT the one actually
+  #     executing.
+  #   - What does the MANIFEST claim? .claude-plugin/plugin.json carries a
+  #     hardcoded "version" that nothing ever bumps, so on its own it lies as
+  #     soon as anyone updates.
+  # This command exists to print all three and say plainly whether dist
+  # matches src -- that mismatch check is the whole point: it catches a
+  # stale install, the same class of problem `doctor` was extended to catch.
+  local src rc=0
+  src="$VIZIER_HOME_DIR/src"
+
+  if [ -d "$src/.git" ]; then
+    local log
+    log=$(git -C "$src" log -1 --date=short --format='%h %ad %s' 2>/dev/null)
+    if [ -n "$log" ]; then
+      printf 'source:   %s (%s)\n' "$log" "$src"
+    else
+      printf 'source:   %s is a git repo but "git log" reported nothing\n' "$src"
+    fi
+  else
+    # Covers BOTH "src doesn't exist" and "src exists but was never git
+    # cloned" -- either way, say so plainly rather than printing nothing.
+    printf 'source:   %s is not a git repository -- no commit to report\n' "$src"
+  fi
+
+  # Compare CONTENT, not mtimes: a copy always has fresh timestamps, so
+  # comparing mtimes would report every fresh install as "changed" even when
+  # the bytes are byte-for-byte identical.
+  if [ -d "$DIST" ]; then
+    local src_hash dist_hash
+    src_hash=$(_payload_hash "$src")
+    dist_hash=$(_payload_hash "$DIST")
+    if [ -n "$src_hash" ] && [ "$src_hash" = "$dist_hash" ]; then
+      printf 'payload:  dist matches src\n'
+    else
+      printf 'payload:  dist DOES NOT MATCH src -- run vizier update (or vizier install) to refresh it\n'
+      rc=1
+    fi
+  else
+    printf 'payload:  not installed (no %s) -- run vizier install\n' "$DIST"
+  fi
+
+  # Read the manifest from dist when present -- that copy is the one
+  # actually in service -- and fall back to src only when dist has none yet.
+  # SAY which one was read: the two can disagree the same way the payload
+  # above can, and silently picking one would hide that.
+  local manifest manifest_from ver
+  if [ -f "$DIST/.claude-plugin/plugin.json" ]; then
+    manifest="$DIST/.claude-plugin/plugin.json"; manifest_from=dist
+  elif [ -f "$src/.claude-plugin/plugin.json" ]; then
+    manifest="$src/.claude-plugin/plugin.json"; manifest_from=src
+  fi
+  if [ -n "${manifest:-}" ]; then
+    ver=$(jq -r '.version // empty' "$manifest" 2>/dev/null)
+    if [ -n "$ver" ]; then
+      printf 'manifest: %s (from %s)\n' "$ver" "$manifest_from"
+    else
+      printf 'manifest: %s has no "version" field\n' "$manifest"
+    fi
+  else
+    printf 'manifest: no plugin.json found in dist or src\n'
+  fi
+
+  return "$rc"
+}
+
+cmd_doctor() {
+  local problems=0 status reachable state caps
+  for t in orca jq git gh; do
+    command -v "$t" >/dev/null 2>&1 || {
+      case "$t" in
+        orca) printf 'MISSING: orca (install: brew install orca)\n' ;;
+        jq)   printf 'MISSING: jq (install: brew install jq)\n' ;;
+        git)  printf 'MISSING: git (install: brew install git)\n' ;;
+        gh)   printf 'MISSING: gh (install: brew install gh && gh auth login)\n' ;;
+      esac
+      problems=$((problems + 1))
+    }
+  done
+  if command -v orca >/dev/null 2>&1; then
+    status=$(orca status --json 2>/dev/null)
+    # FIX -- verified against the LIVE Orca app (orca status --json), not
+    # assumed from the code that was already here: reachable/state/
+    # capabilities live under `.result.runtime`, one level deeper than the
+    # old `.result.*` paths. The old paths always missed, so a perfectly
+    # healthy machine reported reachable=false state=unknown and a missing
+    # orchestration.contract.v1 capability. The fake-orca fixture used to
+    # emit the same flat shape the parser expected, so the test suite agreed
+    # with the bug and stayed green -- see tests/fake-orca/orca.
+    reachable=$(printf '%s' "$status" | jq -r '.result.runtime.reachable // false' 2>/dev/null)
+    state=$(printf '%s' "$status" | jq -r '.result.runtime.state // "unknown"' 2>/dev/null)
+    caps=$(printf '%s' "$status" | jq -r '(.result.runtime.capabilities // []) | join(",")' 2>/dev/null)
+    if [ "$reachable" != "true" ] || [ "$state" != "ready" ]; then
+      printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, then wait for the app to be ready)\n' "$reachable" "$state"
+      problems=$((problems + 1))
+    fi
+    # EXACT membership, not a substring: `*orchestration.contract.v1*` would
+    # also match `orchestration.contract.v10` and
+    # `x-orchestration.contract.v1`, i.e. report success while the real
+    # capability is actually missing.
+    if ! printf '%s' "$status" | jq -e --arg c orchestration.contract.v1 \
+         '((.result.runtime.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
+      printf 'NOT_READY: Orca is missing capability orchestration.contract.v1 (fix: update the Orca app)\n'
+      problems=$((problems + 1))
+    fi
+  fi
+  if [ -z "${VIZIER_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+    printf 'NOT_READY: gh is not logged in (fix: gh auth login)\n'
+    problems=$((problems + 1))
+  fi
+  # FIX 6 -- doctor USED TO ONLY CHECK THE TOOLCHAIN, and never asked "is
+  # anything actually installed". A machine that ran doctor+install long ago,
+  # whose Claude copy was later removed by hand (or was never installed),
+  # still reports "ok" here while /vizier doesn't exist. This is a NOTE,
+  # NOT a problem: it does not add to `problems`, does not pull rc down to
+  # 1 -- a machine that uses only ONE of the two harnesses is valid (report,
+  # don't refuse).
+  if [ ! -d "$CLAUDE_SKILLS/vizier" ]; then
+    printf 'NOTE: Claude adapter not installed at %s (fix: vizier install --harness claude)\n' "$CLAUDE_SKILLS"
+  fi
+  # The Cursor adapter's `verify` used to be dead code: nothing called it
+  # outside of tests. Call it here when cursor-agent IS PRESENT on the
+  # machine -- that's the signal that a Cursor entry is EXPECTED to exist in
+  # the right shape, not a requirement to install Cursor (a machine without
+  # cursor-agent checks nothing here, silently and validly). Run the adapter
+  # from REPO_DIR (always present next to this CLI), not from $DIST: doctor
+  # doesn't call _sync_dist, so $DIST/bin may not exist yet on a first run,
+  # and the verify logic only compares the expected $DIST path as a STRING,
+  # so $DIST doesn't actually need to be present on disk.
+  if command -v cursor-agent >/dev/null 2>&1; then
+    if ! bash "$REPO_DIR/bin/vizier-adapter-cursor.sh" verify "$DIST" "$CURSOR_HOOKS" >/dev/null 2>&1; then
+      printf 'NOTE: cursor-agent is on this machine but the Cursor entry at %s is missing or malformed (fix: vizier install --harness cursor)\n' "$CURSOR_HOOKS"
+    fi
+  fi
+  if [ "$problems" -eq 0 ]; then
+    printf 'doctor: ok -- orca ready, jq/git/gh available\n'
+    return 0
+  fi
+  return 1
+}
+
+# FIX 9 -- A BARE `install` MUST NOT TOUCH CURSOR. The Cursor half has NO
+# activation path yet: `vizier-activate.sh` reads CLAUDE_CODE_SESSION_ID, a
+# variable only Claude Code has, so a Cursor entry installed "by default
+# alongside it" would just read the lock and exit 0 forever -- NO FUNCTION --
+# while still taking on the distro's single biggest risk: writing to
+# ~/.cursor/hooks.json, a file Orca shares. The old version treated "install
+# both if both are present" as the default (`want=all`); the default is now
+# ONLY claude. Cursor must be requested explicitly with `--harness cursor`.
+cmd_install() {
+  local want=claude explicit=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --harness) want=${2:?--harness needs a value}; explicit=1; shift 2 ;;
+      *) printf 'unknown flag: %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+  case "$want" in
+    claude|cursor) ;;
+    *) printf 'error: harness "%s" is not supported. v1 only has claude and cursor.\n' "$want" >&2; return 1 ;;
+  esac
+  _sync_dist || return 1
+  local did=0
+  if [ "$want" = claude ]; then
+    # Don't force-install on a bare install (explicit=0) when the machine
+    # has no `claude`: gate on detect, same as before. An explicit
+    # `--harness claude` still forces it, so the captain sees the adapter's
+    # real error instead of it being swallowed by detect.
+    if bash "$DIST/bin/vizier-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$explicit" -eq 1 ]; then
+      bash "$DIST/bin/vizier-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
+      did=$((did + 1))
+      [ "$explicit" -eq 1 ] || \
+        printf 'note: skipping Cursor -- a bare install only installs Claude. To install Cursor: vizier install --harness cursor\n'
+    fi
+  fi
+  if [ "$want" = cursor ]; then
+    bash "$DIST/bin/vizier-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
+    did=$((did + 1))
+  fi
+  [ "$did" -gt 0 ] || { printf 'no supported harness found on this machine\n' >&2; return 1; }
+  printf 'done. Open a new session and type /vizier:vizier.\n'
+}
+
+cmd_unlock() {
+  # FIX 4 -- THERE WAS NO WAY OUT OF A STUCK-BUT-ALIVE LOCK. `CLAUDE_PID` is
+  # the pid of the `claude` PROCESS, not of the session: after `/clear` or a
+  # resume, that pid is still alive but the session_id inside it has
+  # changed, so `vizier_lock_matches` never matches again and `vizier_lock_claim`
+  # refuses forever (by design: "ONLY liveness decides", never guessing
+  # dead). The command brief forbids the agent from deleting the lock file
+  # itself. So there must be ONE explicit exit door, called by the captain
+  # themselves when they know for certain the old session is done -- no
+  # guessing on their behalf, just carrying out exactly what the captain
+  # asked. No parameters needed: always clears the current lock, regardless
+  # of who holds it.
+  local holder pid
+  holder=$(vizier_lock_get session_id)
+  if [ -z "$holder" ]; then
+    printf 'no lock is currently held\n'
+    return 0
+  fi
+  pid=$(vizier_lock_get pid)
+  rm -f "$(vizier_lock_path)"
+  printf 'lock removed: session_id=%s pid=%s\n' "$holder" "$pid"
+}
+
+cmd_update() {
+  # FIX 7 -- `update` USED TO BE JUST AN ALIAS FOR `install`: it re-copied
+  # exactly the payload already present in the current SRC checkout and
+  # reported "done", never pulling anything new from the remote at all. The
+  # captain types `vizier update` believing they're getting the
+  # latest, but they're actually just reinstalling the exact same old copy --
+  # a silent wrong, the worst kind of bug. `git fetch` + `reset --hard
+  # origin/HEAD` BEFORE `_sync_dist` (inside cmd_install) copies from
+  # REPO_DIR: run through the bootstrap symlink, REPO_DIR here IS
+  # `$VIZIER_HOME_DIR/src` (see the "$0 CAN BE A SYMLINK" note above), so
+  # resetting first and syncing after pulls the real new copy into dist.
+  # Same recipe install.sh (POSIX sh) uses at bootstrap time -- no inventing
+  # a different way for this CLI.
+  local src
+  src="$VIZIER_HOME_DIR/src"
+  if [ -d "$src/.git" ]; then
+    git -C "$src" fetch --quiet origin || { printf 'error: fetch failed at %s\n' "$src" >&2; return 1; }
+    # origin/HEAD may not be set yet (an old clone) -- ask the remote again,
+    # a failure here does not block, same as install.sh.
+    git -C "$src" remote set-head origin -a >/dev/null 2>&1 || true
+    git -C "$src" reset --quiet --hard origin/HEAD || { printf 'error: reset failed at %s\n' "$src" >&2; return 1; }
+  else
+    printf 'error: %s is not a git repo, cannot update (rerun install.sh to bootstrap)\n' "$src" >&2
+    return 1
+  fi
+  cmd_install "$@"
+}
+
+cmd_uninstall() {
+  [ -d "$DIST" ] && bash "$DIST/bin/vizier-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
+  [ -d "$DIST" ] && bash "$DIST/bin/vizier-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
+  rm -rf "$DIST"
+  # Also clean up whatever install.sh created, otherwise the captain finishes
+  # uninstalling and still has a dead command on PATH pointing at an orphaned
+  # clone.
+  local bin_link="${VIZIER_BIN_DIR:-$HOME/.local/bin}/vizier"
+  [ -L "$bin_link" ] && rm -f "$bin_link"
+  # DO NOT delete the directory currently holding this very script: bash
+  # reads a script in chunks, and deleting it mid-run is undefined behavior.
+  # Print the command for the captain instead.
+  local src src_canon
+  src="$VIZIER_HOME_DIR/src"
+  src_canon=$(_canon "$src")
+  case "$REPO_DIR/" in
+    "${src_canon:-$src}"/*|"${src_canon:-$src}/")
+      printf 'removed the adapter, payload, and symlink. requests/ and projects/ are kept at %s\n' "$(vizier_home)"
+      printf 'the source checkout remains (cannot self-delete because this command is running from it):\n'
+      printf '  rm -rf %s\n' "$src"
+      return 0 ;;
+  esac
+  rm -rf "$src"
+  printf 'removed the adapter, payload, symlink, and clone. requests/ and projects/ are kept at %s\n' "$(vizier_home)"
+}
+
+case "${1:-}" in
+  doctor)    shift; cmd_doctor "$@" ;;
+  install)   shift; cmd_install "$@" ;;
+  update)    shift; cmd_update "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  unlock)    shift; cmd_unlock "$@" ;;
+  version)   shift; cmd_version "$@" ;;
+  *) printf 'usage: vizier install [--harness claude|cursor]|doctor|update|uninstall|unlock|version\n' >&2; exit 2 ;;
+esac

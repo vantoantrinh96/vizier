@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Fake orca for tests. Logs every call, serves queued messages, and NEVER
+# touches the network or the real app. Implements only the surface the tests
+# need, nothing more.
+set -u
+STATE="${VIZIER_FAKE_ORCA_STATE:?fake-orca needs VIZIER_FAKE_ORCA_STATE}"
+printf '%s\n' "$*" >> "$STATE/calls.log"
+
+run_id=""
+wait_mode=0
+timeout_ms=0
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --run) run_id=$arg ;;
+    --timeout-ms) timeout_ms=$arg ;;
+  esac
+  [ "$arg" = "--wait" ] && wait_mode=1
+  prev=$arg
+done
+
+case "$1 ${2:-}" in
+  "orchestration check")
+    q="$STATE/queue/${run_id:-_none}"
+    if [ -s "$q" ]; then
+      cat "$q"
+      exit 0
+    fi
+    if [ "$wait_mode" = 1 ]; then
+      # Simulate waiting: sleep up to the timeout then return empty, exactly
+      # like a real timeout. Tests use a very small timeout.
+      slept=0
+      while [ "$slept" -lt "${timeout_ms:-0}" ]; do
+        [ -s "$q" ] && { cat "$q"; exit 0; }
+        sleep 0.05
+        slept=$((slept+50))
+      done
+    fi
+    exit 0
+    ;;
+  "status --json"|"status")
+    # Shape verified against the LIVE Orca app: reachable/state/capabilities
+    # live under result.runtime, not directly under result. Values below are
+    # placeholders (this repo is public) -- never the real runtimeId or pid.
+    # NOTE: the default is built in a plain variable first, then substituted
+    # with a simple ${VAR:-$other_var} -- bash's brace matching for
+    # ${VAR:-literal-with-braces} miscounts literal { / } inside the default
+    # word, which silently corrupts JSON containing nested objects.
+    default_status='{"id":"local-status","ok":true,"result":{"target":{"kind":"local"},"app":{"running":true,"pid":0,"desktopWindowStatus":"available"},"runtime":{"state":"ready","reachable":true,"runtimeId":"00000000-0000-0000-0000-000000000000","appVersion":"0.0.0","capabilities":["runtime.status.compat.v1","runtime.environments.v1","orchestration.contract.v1"]}}}'
+    printf '%s\n' "${VIZIER_FAKE_ORCA_STATUS:-$default_status}"
+    exit 0
+    ;;
+esac
+exit 0

@@ -1,56 +1,57 @@
-# orca-firstmate — Plan 1: Cài đặt và kích hoạt
+# vizier -- Plan 1: Install and activation
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Cài orca-firstmate bằng một lệnh vào Claude Code và Cursor, để gõ `/firstmate` ở bất kỳ thư mục nào biến phiên đó thành first mate, và một message trong mailbox Orca đánh thức được phiên đang idle.
+**Goal:** Install vizier with one command into Claude Code and Cursor, so that typing `/vizier` in any directory turns that session into a first mate, and a message in Orca's mailbox can wake an idle session.
 
-**Architecture:** Một repo mang payload dùng chung (skill, command) cộng hai adapter harness. Payload cài vào `~/.orca-firstmate/dist/`; state chạy ở `~/.orca-firstmate/` và không bao giờ phụ thuộc cwd. Một file `lock` vừa bầu ra first mate duy nhất vừa làm cổng chặn cho hook — vì hook chạy sau mỗi lượt của **mọi** phiên harness trên máy. Adapter Claude là plugin trong thư mục riêng; adapter Cursor buộc phải merge vào `~/.cursor/hooks.json` dùng chung.
+**Architecture:** One repo carrying a shared payload (skill, command) plus two harness adapters. The payload installs into `~/.vizier/dist/`; state runs at `~/.vizier/` and never depends on cwd. A single `lock` file both elects the one first mate and serves as the hook's gate -- because the hook runs after every turn of **every** harness session on the machine. The Claude adapter is a plugin in its own directory; the Cursor adapter is forced to merge into the shared `~/.cursor/hooks.json`.
 
-**Tech Stack:** bash (`set -u`, POSIX-ish), `jq` cho JSON, `orca` CLI, Claude Code plugin hooks, Cursor user-level hooks. Test bằng bash + `fake-orca` trên PATH; đường wake của Cursor test bằng pty driver Python.
+**Tech Stack:** bash (`set -u`, POSIX-ish), `jq` for JSON, the `orca` CLI, Claude Code plugin hooks, Cursor user-level hooks. Tested with bash + a `fake-orca` on PATH; Cursor's wake path is tested with a Python pty driver.
 
-**Spec:** `docs/superpowers/specs/2026-08-30-orca-firstmate-design.md`
-**Bằng chứng đã đo:** `docs/verification/2026-08-31-plugin-wake.md` — mọi hằng số hành vi hook dưới đây lấy từ file này, không phải từ trí nhớ.
+**Spec:** `docs/superpowers/specs/2026-08-30-vizier-design.md`
+**Measured evidence:** `docs/verification/2026-08-31-plugin-wake.md` -- every hook-behavior constant below is taken from this file, not from memory.
 
 ## Global Constraints
 
-- **Platform: macOS only.** Orca chỉ chạy macOS; không viết nhánh Linux/Windows.
-- **Không dependency runtime ngoài:** `orca` CLI, `jq`, `git`, `gh`. `jq` là bắt buộc vì cả hai hook đều parse payload JSON trên stdin — spec đã bổ sung nó vào bảng phụ thuộc. Tuyệt đối không dùng họ `*-axi` npm (`gh-axi`, `tasks-axi`, `quota-axi`, `chrome-devtools-axi`, `lavish-axi`) — captain từ chối wrapper bên thứ ba khi có CLI chính chủ.
-- **CLI chỉ có mặt lúc cài và lúc chẩn đoán.** Không đường runtime nào được gọi `orca-firstmate`. Hook và skill nói chuyện thẳng với `orca`.
-- **Mọi hook exit 0 ở mọi nhánh không chắc chắn.** Hook chạy trong mọi phiên harness trên máy captain; một hook lỗi là lỗi toàn máy.
-- **Claude Stop hook:** `"asyncRewake": true`, `"timeout": 28800`. Đánh thức bằng `exit 2`, nội dung ra **stderr**.
-- **Cursor stop hook:** `exit 2` là **no-op im lặng**. Kênh duy nhất là đúng một object `{"followup_message": "..."}` trên **stdout** kèm `exit 0`. Đăng ký `"loop_limit": 200`; trần tự chặn của ta là `OFM_CURSOR_LOOP_CEILING=5`, thấp hơn để bound của ta cắn trước.
-- **`~/.cursor/hooks.json` là file dùng chung** — Orca đã có 8 entry trong đó. Chỉ được thêm/gỡ đúng entry của mình, nhận diện bằng chuỗi `wake-cursor.sh` trong `command`. Luôn sao lưu trước khi ghi.
-- **Lệnh Orca luôn truyền `--run <run_id>` tường minh.** Không bao giờ dựa vào Run bound theo terminal: phiên first mate không phải terminal Orca.
-- **`OFM_HOME` ghi đè home** cho test. Production mặc định `$HOME/.orca-firstmate`.
-- **Không gate tương thích Cursor bằng `cursor-agent --version`** — TUI báo `2026.08.25-3e8eec8` còn `--version` báo `2026.08.11-e8db854`.
+- **Platform: macOS only.** Orca only runs on macOS; do not write a Linux/Windows branch.
+- **No external runtime dependency besides:** the `orca` CLI, `jq`, `git`, `gh`. `jq` is required because both hooks parse a JSON payload on stdin -- the spec already added it to the dependency table. Absolutely no `*-axi` npm family (`gh-axi`, `tasks-axi`, `quota-axi`, `chrome-devtools-axi`, `lavish-axi`) -- the captain refuses third-party wrappers when a canonical CLI exists.
+- **The CLI exists only at install time and diagnostic time.** No runtime path may call `vizier`. The hook and skill talk straight to `orca`.
+- **Every hook exits 0 on every uncertain branch.** The hook runs in every harness session on the captain's machine; a broken hook is a machine-wide bug.
+- **Claude Stop hook:** `"asyncRewake": true`, `"timeout": 28800`. Wakes via `exit 2`, content goes to **stderr**.
+- **Cursor stop hook:** `exit 2` is a **silent no-op**. The only channel is exactly one `{"followup_message": "..."}` object on **stdout** with `exit 0`. Registers `"loop_limit": 200`; our self-imposed ceiling is `VIZIER_CURSOR_LOOP_CEILING=5`, lower so our bound bites first.
+- **`~/.cursor/hooks.json` is a shared file** -- Orca already has 8 entries in it. Only add/remove exactly our own entry, identified by the string `wake-cursor.sh` in `command`. Always back up before writing.
+- **Orca commands always pass `--run <run_id>` explicitly.** Never rely on a terminal-bound Run: a first-mate session is not an Orca terminal.
+- **`VIZIER_HOME` overrides home** for tests. Production defaults to `$HOME/.vizier`.
+- **Never gate Cursor compatibility on `cursor-agent --version`** -- the TUI reports `2026.08.25-3e8eec8` while `--version` reports `2026.08.11-e8db854`.
 
-## Cấu trúc file
+## File structure
 
-| File | Trách nhiệm |
+| File | Responsibility |
 |---|---|
-| `lib/ofm-home.sh` | đường dẫn home, đọc/ghi `lock`, xác định pid harness và liveness |
-| `lib/ofm-wake-lib.sh` | quét request đang mở, chờ nhiều Run cùng lúc, rút một dòng tóm tắt |
-| `hooks/wake-claude.sh` | Stop hook Claude: cổng lock → chờ → `exit 2` + stderr |
-| `hooks/wake-cursor.sh` | stop hook Cursor: cổng lock → trần loop → park-owner → `followup_message` |
-| `hooks/reidentify-claude.sh` | PostCompact: lock khớp thì in lại identity ra stderr |
-| `hooks/hooks.json` | manifest hook Claude (Stop + PostCompact) |
-| `skills/identity/SKILL.md` | identity và hard rules của first mate |
-| `commands/firstmate.md` | `/firstmate` — kích hoạt phiên |
-| `.claude-plugin/plugin.json` | manifest plugin Claude Code |
-| `bin/ofm-adapter-claude.sh` | cài/gỡ adapter Claude |
-| `bin/ofm-adapter-cursor.sh` | merge/unmerge `~/.cursor/hooks.json` |
-| `bin/orca-firstmate` | CLI: `install`, `doctor`, `update`, `uninstall` |
-| `install.sh` | bootstrap `curl \| sh` — clone source, symlink CLI, KHÔNG tự cài vào harness |
-| `tests/helpers.sh` | môi trường test tách biệt, fake harness, khẳng định |
-| `tests/fake-orca/orca` | `orca` giả trên PATH |
-| `tests/*.test.sh` | một file test mỗi đơn vị |
-| `tests/run-all.sh` | chạy toàn bộ |
+| `lib/vizier-home.sh` | home paths, reading/writing `lock`, determining the harness pid and its liveness |
+| `lib/vizier-wake-lib.sh` | scans open requests, waits on several Runs at once, extracts one summary line |
+| `hooks/wake-claude.sh` | Claude Stop hook: lock gate -> wait -> `exit 2` + stderr |
+| `hooks/wake-cursor.sh` | Cursor stop hook: lock gate -> loop ceiling -> park-owner -> `followup_message` |
+| `hooks/reidentify-claude.sh` | PostCompact: if the lock matches, reprints identity to stderr |
+| `hooks/hooks.json` | Claude hook manifest (Stop + PostCompact) |
+| `skills/identity/SKILL.md` | the first mate's identity and hard rules |
+| `commands/vizier.md` | `/vizier` -- activates a session |
+| `.claude-plugin/plugin.json` | Claude Code plugin manifest |
+| `bin/vizier-adapter-claude.sh` | installs/removes the Claude adapter |
+| `lib/vizier-merge-lib.sh` | the lost-update decision rule, split out of the adapter so it can be sourced in tests |
+| `bin/vizier-adapter-cursor.sh` | merges/unmerges `~/.cursor/hooks.json` |
+| `bin/vizier` | CLI: `install`, `doctor`, `update`, `uninstall` |
+| `install.sh` | `curl \| sh` bootstrap -- clones the source, symlinks the CLI, does NOT install into a harness |
+| `tests/helpers.sh` | isolated test environment, fake harness, assertions |
+| `tests/fake-orca/orca` | a fake `orca` on PATH |
+| `tests/*.test.sh` | one test file per unit |
+| `tests/run-all.sh` | runs everything |
 
 ---
 
-### Task 1: Bộ khung test và `fake-orca`
+### Task 1: Test harness and `fake-orca`
 
-Không có cái này thì mọi task sau không chứng minh được gì. Làm trước.
+Without this, nothing in any later task can be proven. Do it first.
 
 **Files:**
 - Create: `tests/helpers.sh`
@@ -59,10 +60,10 @@ Không có cái này thì mọi task sau không chứng minh được gì. Làm 
 - Create: `tests/helpers.test.sh`
 
 **Interfaces:**
-- Consumes: không
-- Produces: `ofm_test_setup` (đặt `OFM_HOME` vào thư mục tạm, đưa `fake-orca` lên đầu `PATH`, export `OFM_TEST_TMP`), `ofm_test_teardown`, `assert_eq <got> <want> <label>`, `assert_rc <got> <want> <label>`, `assert_contains <haystack> <needle> <label>`, `fake_orca_queue <run_id> <json_line>` (nạp sẵn message cho `check` của run đó), `fake_orca_calls` (in log lệnh đã gọi).
+- Consumes: nothing
+- Produces: `vizier_test_setup` (puts `VIZIER_HOME` into a temp directory, puts `fake-orca` ahead on `PATH`, exports `VIZIER_TEST_TMP`), `vizier_test_teardown`, `assert_eq <got> <want> <label>`, `assert_rc <got> <want> <label>`, `assert_contains <haystack> <needle> <label>`, `fake_orca_queue <run_id> <json_line>` (preloads a message for that run's `check`), `fake_orca_calls` (prints the log of calls made).
 
-- [ ] **Step 1: Viết test thất bại cho helpers**
+- [ ] **Step 1: Write a failing test for helpers**
 
 ```bash
 # tests/helpers.test.sh
@@ -70,107 +71,109 @@ Không có cái này thì mọi task sau không chứng minh được gì. Làm 
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-ofm_test_setup
+vizier_test_setup
 
-assert_contains "$OFM_HOME" "$OFM_TEST_TMP" "OFM_HOME nằm trong thư mục tạm"
-[ -d "$OFM_HOME" ]; assert_rc $? 0 "OFM_HOME đã được tạo"
+assert_contains "$VIZIER_HOME" "$VIZIER_TEST_TMP" "VIZIER_HOME is inside the temp directory"
+[ -d "$VIZIER_HOME" ]; assert_rc $? 0 "VIZIER_HOME was created"
 
-# fake-orca phải đứng trước orca thật trên PATH
+# fake-orca must come before the real orca on PATH
 resolved=$(command -v orca)
-assert_contains "$resolved" "fake-orca" "orca giải ra fake-orca"
+assert_contains "$resolved" "fake-orca" "orca resolves to fake-orca"
 
-# check không có message thì trả rỗng và rc 0
+# check with no message returns empty and rc 0
 out=$(orca orchestration check --run run_a --peek --json); rc=$?
-assert_rc "$rc" 0 "check rỗng trả rc 0"
-assert_eq "$out" "" "check rỗng không in gì"
+assert_rc "$rc" 0 "empty check returns rc 0"
+assert_eq "$out" "" "empty check prints nothing"
 
-# queue rồi check thì trả đúng dòng đó
+# queue then check returns exactly that line
 fake_orca_queue run_a '{"type":"worker_done","outcome":"succeeded","body":"PR opened"}'
 out=$(orca orchestration check --run run_a --peek --json)
-assert_contains "$out" "worker_done" "check trả message đã queue"
+assert_contains "$out" "worker_done" "check returns the queued message"
 
-# mọi lệnh đều được ghi log
-assert_contains "$(fake_orca_calls)" "orchestration check --run run_a" "lệnh được ghi log"
+# every call gets logged
+assert_contains "$(fake_orca_calls)" "orchestration check --run run_a" "the call was logged"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/helpers.test.sh`
-Expected: FAIL — `tests/helpers.sh: No such file or directory`
+Expected: FAIL -- `tests/helpers.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `tests/helpers.sh`**
+- [ ] **Step 3: Write `tests/helpers.sh`**
 
 ```bash
-# tests/helpers.sh — môi trường test tách biệt. Source, đừng chạy.
-# Mọi test chạy trong một OFM_HOME tạm và một PATH có fake-orca đứng trước,
-# nên không test nào chạm vào home hay Orca thật của captain.
-OFM_TEST_FAILURES=0
-OFM_TEST_ASSERTS=0
+# tests/helpers.sh -- isolated test environment. Source it, don't run it.
+# Every test runs inside a temporary VIZIER_HOME and a PATH with fake-orca
+# ahead of the real one, so no test ever touches the captain's real home or
+# real Orca.
+VIZIER_TEST_FAILURES=0
+VIZIER_TEST_ASSERTS=0
 
-ofm_test_setup() {
-  OFM_TEST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/ofm-test.XXXXXX") || exit 1
-  export OFM_TEST_TMP
-  export OFM_HOME="$OFM_TEST_TMP/home"
-  mkdir -p "$OFM_HOME/requests" "$OFM_HOME/projects"
-  export OFM_FAKE_ORCA_STATE="$OFM_TEST_TMP/fake-orca"
-  mkdir -p "$OFM_FAKE_ORCA_STATE/queue"
-  : > "$OFM_FAKE_ORCA_STATE/calls.log"
-  OFM_TEST_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-  export OFM_TEST_REPO
-  export PATH="$OFM_TEST_REPO/tests/fake-orca:$PATH"
+vizier_test_setup() {
+  VIZIER_TEST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/vizier-test.XXXXXX") || exit 1
+  export VIZIER_TEST_TMP
+  export VIZIER_HOME="$VIZIER_TEST_TMP/home"
+  mkdir -p "$VIZIER_HOME/requests" "$VIZIER_HOME/projects"
+  export VIZIER_FAKE_ORCA_STATE="$VIZIER_TEST_TMP/fake-orca"
+  mkdir -p "$VIZIER_FAKE_ORCA_STATE/queue"
+  : > "$VIZIER_FAKE_ORCA_STATE/calls.log"
+  VIZIER_TEST_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  export VIZIER_TEST_REPO
+  export PATH="$VIZIER_TEST_REPO/tests/fake-orca:$PATH"
 }
 
-ofm_test_teardown() {
-  [ -n "${OFM_TEST_TMP:-}" ] && rm -rf "$OFM_TEST_TMP"
+vizier_test_teardown() {
+  [ -n "${VIZIER_TEST_TMP:-}" ] && rm -rf "$VIZIER_TEST_TMP"
 }
 
 fake_orca_queue() {  # <run_id> <json_line>
-  printf '%s\n' "$2" >> "$OFM_FAKE_ORCA_STATE/queue/$1"
+  printf '%s\n' "$2" >> "$VIZIER_FAKE_ORCA_STATE/queue/$1"
 }
 
-fake_orca_calls() { cat "$OFM_FAKE_ORCA_STATE/calls.log" 2>/dev/null; }
+fake_orca_calls() { cat "$VIZIER_FAKE_ORCA_STATE/calls.log" 2>/dev/null; }
 
-_ofm_fail() {
-  OFM_TEST_FAILURES=$((OFM_TEST_FAILURES+1))
+_vizier_fail() {
+  VIZIER_TEST_FAILURES=$((VIZIER_TEST_FAILURES+1))
   printf 'FAIL: %s\n  got:  %s\n  want: %s\n' "$3" "$1" "$2" >&2
 }
 
 assert_eq() {  # <got> <want> <label>
-  OFM_TEST_ASSERTS=$((OFM_TEST_ASSERTS+1))
-  [ "$1" = "$2" ] || _ofm_fail "$1" "$2" "$3"
+  VIZIER_TEST_ASSERTS=$((VIZIER_TEST_ASSERTS+1))
+  [ "$1" = "$2" ] || _vizier_fail "$1" "$2" "$3"
 }
 
 assert_rc() {  # <got_rc> <want_rc> <label>
-  OFM_TEST_ASSERTS=$((OFM_TEST_ASSERTS+1))
-  [ "$1" = "$2" ] || _ofm_fail "rc=$1" "rc=$2" "$3"
+  VIZIER_TEST_ASSERTS=$((VIZIER_TEST_ASSERTS+1))
+  [ "$1" = "$2" ] || _vizier_fail "rc=$1" "rc=$2" "$3"
 }
 
 assert_contains() {  # <haystack> <needle> <label>
-  OFM_TEST_ASSERTS=$((OFM_TEST_ASSERTS+1))
-  case "$1" in *"$2"*) ;; *) _ofm_fail "$1" "chứa '$2'" "$3" ;; esac
+  VIZIER_TEST_ASSERTS=$((VIZIER_TEST_ASSERTS+1))
+  case "$1" in *"$2"*) ;; *) _vizier_fail "$1" "contains '$2'" "$3" ;; esac
 }
 
-ofm_test_report() {
-  if [ "$OFM_TEST_FAILURES" -eq 0 ]; then
-    printf 'ok: %s asserts passed (%s)\n' "$OFM_TEST_ASSERTS" "$(basename "$0")"
+vizier_test_report() {
+  if [ "$VIZIER_TEST_FAILURES" -eq 0 ]; then
+    printf 'ok: %s asserts passed (%s)\n' "$VIZIER_TEST_ASSERTS" "$(basename "$0")"
     exit 0
   fi
-  printf 'FAILED: %s of %s asserts (%s)\n' "$OFM_TEST_FAILURES" "$OFM_TEST_ASSERTS" "$(basename "$0")" >&2
+  printf 'FAILED: %s of %s asserts (%s)\n' "$VIZIER_TEST_FAILURES" "$VIZIER_TEST_ASSERTS" "$(basename "$0")" >&2
   exit 1
 }
 ```
 
-- [ ] **Step 4: Viết `tests/fake-orca/orca`**
+- [ ] **Step 4: Write `tests/fake-orca/orca`**
 
 ```bash
 #!/usr/bin/env bash
-# orca giả cho test. Ghi log mọi lệnh, phục vụ message đã queue, và KHÔNG
-# BAO GIỜ chạm mạng hay app thật. Chỉ hiện thực đúng bề mặt các test cần.
+# Fake orca for tests. Logs every call, serves queued messages, and NEVER
+# touches the network or the real app. Implements only the surface the tests
+# need, nothing more.
 set -u
-STATE="${OFM_FAKE_ORCA_STATE:?fake-orca cần OFM_FAKE_ORCA_STATE}"
+STATE="${VIZIER_FAKE_ORCA_STATE:?fake-orca needs VIZIER_FAKE_ORCA_STATE}"
 printf '%s\n' "$*" >> "$STATE/calls.log"
 
 run_id=""
@@ -194,8 +197,8 @@ case "$1 ${2:-}" in
       exit 0
     fi
     if [ "$wait_mode" = 1 ]; then
-      # Mô phỏng chờ: ngủ tối đa timeout rồi trả rỗng, giống hệt một lần
-      # timeout thật. Test dùng timeout rất nhỏ.
+      # Simulate waiting: sleep up to the timeout then return empty, exactly
+      # like a real timeout. Tests use a very small timeout.
       slept=0
       while [ "$slept" -lt "${timeout_ms:-0}" ]; do
         [ -s "$q" ] && { cat "$q"; exit 0; }
@@ -206,18 +209,18 @@ case "$1 ${2:-}" in
     exit 0
     ;;
   "status --json"|"status")
-    printf '%s\n' "${OFM_FAKE_ORCA_STATUS:-{\"ok\":true,\"result\":{\"reachable\":true,\"state\":\"ready\",\"capabilities\":[\"orchestration.contract.v1\"]}}}"
+    printf '%s\n' "${VIZIER_FAKE_ORCA_STATUS:-{\"ok\":true,\"result\":{\"reachable\":true,\"state\":\"ready\",\"capabilities\":[\"orchestration.contract.v1\"]}}}"
     exit 0
     ;;
 esac
 exit 0
 ```
 
-- [ ] **Step 5: Viết `tests/run-all.sh`**
+- [ ] **Step 5: Write `tests/run-all.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# Chạy mọi tests/*.test.sh, báo cáo gộp. Exit khác 0 nếu có file nào fail.
+# Runs every tests/*.test.sh, reports a combined result. Exits non-zero if any file fails.
 set -u
 cd "$(dirname "$0")" || exit 1
 failed=0
@@ -230,10 +233,10 @@ fi
 printf '\n%s TEST FILE(S) FAILED\n' "$failed" >&2; exit 1
 ```
 
-- [ ] **Step 6: Chạy test cho pass**
+- [ ] **Step 6: Run the test until it passes**
 
 Run: `chmod +x tests/fake-orca/orca tests/run-all.sh && bash tests/helpers.test.sh`
-Expected: PASS — `ok: 6 asserts passed (helpers.test.sh)`
+Expected: PASS -- the last line is `ok: <n> asserts passed (helpers.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 7: Commit**
 
@@ -244,121 +247,145 @@ git commit -m "test: add isolated test harness and a fake orca CLI"
 
 ---
 
-### Task 2: Home và lock
+### Task 2: Home and lock
 
-`lock` làm hai việc bằng một file: bầu ra first mate duy nhất, và làm cổng chặn rẻ nhất cho hook.
+`lock` does two jobs with one file: it elects the single first mate, and it's the cheapest gate for the hook.
 
 **Files:**
-- Create: `lib/ofm-home.sh`
+- Create: `lib/vizier-home.sh`
 - Create: `tests/lock.test.sh`
 
 **Interfaces:**
-- Consumes: không
+- Consumes: nothing
 - Produces:
-  - `ofm_home` → in đường dẫn home
-  - `ofm_lock_path`, `ofm_requests_dir` → in đường dẫn
-  - `ofm_lock_get <key>` → in giá trị, rỗng khi không có
-  - `ofm_pid_is_harness <pid> <harness>` → rc 0 khi pid sống và command khớp
-  - `ofm_harness_pid <harness>` → in pid tổ tiên gần nhất khớp, rỗng khi không tìm thấy
-  - `ofm_lock_claim <session_id> <harness> <pid>` → rc 0 chiếm được (in `claimed` hoặc `reclaimed`), rc 1 bị từ chối (in `held_by=<session_id>`)
-  - `ofm_lock_matches <session_id>` → rc 0 khi khớp
-  - `ofm_lock_release <session_id>` → rc 0, chỉ xoá khi đúng chủ
+  - `vizier_home` -> prints the home path
+  - `vizier_lock_path`, `vizier_requests_dir` -> print paths
+  - `vizier_lock_get <key>` -> prints the value, empty if absent
+  - `vizier_harness_pid <harness>` -> prints the nearest matching ancestor pid, empty if not found
+  - `vizier_lock_claim <session_id> <harness> <pid>` -> rc 0 claimed (prints `claimed` or `reclaimed`), rc 1 refused (prints `held_by=<session_id>`)
+  - `vizier_lock_matches <session_id>` -> rc 0 when it matches
+  - `vizier_lock_release <session_id>` -> rc 0, only removes it when it's the true owner
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/lock.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-. "$OFM_TEST_REPO/lib/ofm-home.sh"
+vizier_test_setup
+. "$VIZIER_TEST_REPO/lib/vizier-home.sh"
 
-assert_eq "$(ofm_home)" "$OFM_HOME" "ofm_home tôn trọng OFM_HOME"
-assert_eq "$(ofm_lock_path)" "$OFM_HOME/lock" "đường dẫn lock"
+assert_eq "$(vizier_home)" "$VIZIER_HOME" "vizier_home respects VIZIER_HOME"
+assert_eq "$(vizier_lock_path)" "$VIZIER_HOME/lock" "the lock path"
 
-# Không có lock thì không phiên nào khớp
-ofm_lock_matches "sess-a"; assert_rc $? 1 "không lock thì không khớp"
+# With no lock, no session matches
+vizier_lock_matches "sess-a"; assert_rc $? 1 "no lock means no match"
 
-# Chiếm lock lần đầu
-out=$(ofm_lock_claim "sess-a" claude $$); assert_rc $? 0 "chiếm được lock trống"
-assert_contains "$out" "claimed" "báo claimed"
-assert_eq "$(ofm_lock_get session_id)" "sess-a" "ghi session_id"
-assert_eq "$(ofm_lock_get harness)" "claude" "ghi harness"
-ofm_lock_matches "sess-a"; assert_rc $? 0 "chủ khớp"
-ofm_lock_matches "sess-b"; assert_rc $? 1 "phiên khác không khớp"
+# Claim the lock for the first time
+out=$(vizier_lock_claim "sess-a" claude $$); assert_rc $? 0 "claims an empty lock"
+assert_contains "$out" "claimed" "reports claimed"
+assert_eq "$(vizier_lock_get session_id)" "sess-a" "writes session_id"
+assert_eq "$(vizier_lock_get harness)" "claude" "writes harness"
+vizier_lock_matches "sess-a"; assert_rc $? 0 "the owner matches"
+vizier_lock_matches "sess-b"; assert_rc $? 1 "a different session does not match"
 
-# Chủ còn sống thì phiên khác bị từ chối
-out=$(ofm_lock_claim "sess-b" claude $$); assert_rc $? 1 "từ chối khi chủ còn sống"
-assert_contains "$out" "held_by=sess-a" "nêu tên chủ đang giữ"
-assert_eq "$(ofm_lock_get session_id)" "sess-a" "lock không bị đổi chủ"
+# While the owner is alive, a different session is refused
+out=$(vizier_lock_claim "sess-b" claude $$); assert_rc $? 1 "refused while the owner is alive"
+assert_contains "$out" "held_by=sess-a" "names the current owner"
+assert_eq "$(vizier_lock_get session_id)" "sess-a" "the lock's owner does not change"
 
-# Chính chủ gọi lại thì làm mới, không từ chối
-ofm_lock_claim "sess-a" claude $$ >/dev/null; assert_rc $? 0 "chính chủ gọi lại thì ok"
+# The same owner calling again just refreshes, no refusal
+vizier_lock_claim "sess-a" claude $$ >/dev/null; assert_rc $? 0 "the same owner calling again is ok"
 
-# Chủ đã chết thì thu hồi được
-printf 'session_id=sess-dead\nharness=claude\npid=999999\nsince=1\n' > "$(ofm_lock_path)"
-out=$(ofm_lock_claim "sess-c" claude $$); assert_rc $? 0 "thu hồi được lock chết"
-assert_contains "$out" "reclaimed" "báo reclaimed"
-assert_eq "$(ofm_lock_get session_id)" "sess-c" "chủ mới đã ghi"
+# A dead owner can be reclaimed
+printf 'session_id=sess-dead\nharness=claude\npid=999999\nsince=1\n' > "$(vizier_lock_path)"
+out=$(vizier_lock_claim "sess-c" claude $$); assert_rc $? 0 "a dead lock can be reclaimed"
+assert_contains "$out" "reclaimed" "reports reclaimed"
+assert_eq "$(vizier_lock_get session_id)" "sess-c" "the new owner was written"
 
-# Pid không phải số thì coi như không chứng minh được, KHÔNG thu hồi bừa
-printf 'session_id=sess-x\nharness=claude\npid=abc\nsince=1\n' > "$(ofm_lock_path)"
-ofm_lock_claim "sess-d" claude $$ >/dev/null; assert_rc $? 1 "pid rác thì không cướp lock"
+# A non-numeric pid counts as unproven, DOES NOT get reclaimed carelessly
+printf 'session_id=sess-x\nharness=claude\npid=abc\nsince=1\n' > "$(vizier_lock_path)"
+vizier_lock_claim "sess-d" claude $$ >/dev/null; assert_rc $? 1 "a garbage pid does not let the lock be stolen"
 
-# Release chỉ có tác dụng với đúng chủ
-printf 'session_id=sess-e\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
-ofm_lock_release "sess-other" >/dev/null
-assert_eq "$(ofm_lock_get session_id)" "sess-e" "người lạ không release được"
-ofm_lock_release "sess-e" >/dev/null
-assert_eq "$(ofm_lock_get session_id)" "" "đúng chủ thì release được"
+# vizier_harness_pid: finds bash (the test shell itself) as an ancestor, and never makes up a pid
+hp=$(vizier_harness_pid bash)
+case "$hp" in ''|*[!0-9]*) assert_eq "$hp" "<numeric pid>" "finds bash's ancestor pid" ;; esac
+kill -0 "${hp:-0}" 2>/dev/null; assert_rc $? 0 "the returned ancestor pid is alive"
+assert_eq "$(vizier_harness_pid definitely-not-a-real-harness-xyz)" "" "returns empty when nothing is found"
 
-ofm_test_teardown
-ofm_test_report
+# Anti-race invariant: many sessions claiming an empty lock at once means NO
+# MORE THAN ONE session believes it holds the lock. Not asserting "exactly
+# one" here, because the last writer can write after the last reader's
+# read-back; the real invariant is "no more than one".
+rm -f "$(vizier_lock_path)"
+race="$VIZIER_TEST_TMP/race"; mkdir -p "$race"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  ( vizier_lock_claim "race-$i" claude $$ > "$race/$i.out" 2>&1 ) &
+done
+wait
+# EXACTLY ONE, not "no more than one": the last `mv` that succeeds, by
+# definition, has no one writing after it, so its own read-back must see
+# itself. A previous version asserted <=1 and measured 0 -- but that was a
+# tmp-name collision, not the race.
+wins=$(grep -l '^claimed' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$wins" "1" "exactly one session wins the empty lock"
+losers=$(grep -l '^refused' "$race"/*.out 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$losers" "9" "the other nine sessions are all refused, none errors while writing"
+owners=$(sed -n 's/^session_id=//p' "$(vizier_lock_path)" | wc -l | tr -d ' ')
+assert_eq "$owners" "1" "the final lock only names one session"
+
+# A session_id containing a newline would corrupt the lock file, so it must be blocked right at the door
+rm -f "$(vizier_lock_path)"
+out=$(vizier_lock_claim "$(printf 'a\nb')" claude $$); rc=$?
+assert_rc "$rc" 1 "a session_id containing a newline is refused"
+assert_contains "$out" "newline" "clearly states the reason"
+assert_eq "$(vizier_lock_get session_id)" "" "no lock is written for a bad session_id"
+out=$(vizier_lock_claim "" claude $$); rc=$?
+assert_rc "$rc" 1 "an empty session_id is refused"
+
+# Release only works for the true owner
+printf 'session_id=sess-e\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
+vizier_lock_release "sess-other" >/dev/null
+assert_eq "$(vizier_lock_get session_id)" "sess-e" "a stranger cannot release it"
+vizier_lock_release "sess-e" >/dev/null
+assert_eq "$(vizier_lock_get session_id)" "" "the true owner can release it"
+
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/lock.test.sh`
-Expected: FAIL — `lib/ofm-home.sh: No such file or directory`
+Expected: FAIL -- `lib/vizier-home.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `lib/ofm-home.sh`**
+- [ ] **Step 3: Write `lib/vizier-home.sh`**
 
 ```bash
 # shellcheck shell=bash
-# Đường dẫn home và lock first-mate duy nhất. Source từ hook, CLI và test.
+# Home path and the single first-mate lock. Sourced by the hook, the CLI, and tests.
 #
-# LOCK LÀ CỔNG CHẶN CỦA HOOK. Hook chạy sau mỗi lượt của MỌI phiên harness
-# trên máy, nên ofm_lock_matches phải là thao tác rẻ nhất có thể (một lần đọc
-# file) và mọi nhánh không chắc chắn phải trả "không khớp".
+# THE LOCK IS THE HOOK'S GATE. The hook runs after every turn of EVERY harness
+# session on the machine, so vizier_lock_matches must be the cheapest possible
+# operation (a single file read), and every uncertain branch must return "no match".
 #
-# LIVENESS KHÔNG BAO GIỜ ĐOÁN. Một pid không phân giải được là "chưa chứng
-# minh được", không phải "đã chết": cướp lock của một first mate còn sống là
-# hỏng nặng hơn nhiều so với việc bắt captain gỡ tay một lock cũ.
+# LIVENESS IS NEVER GUESSED. A pid that fails to resolve is "not proven",
+# not "dead": stealing the lock from a first mate that is still alive is a far
+# worse failure than making the captain manually clear a stale lock.
 
-ofm_home() { printf '%s' "${OFM_HOME:-$HOME/.orca-firstmate}"; }
-ofm_lock_path() { printf '%s/lock' "$(ofm_home)"; }
-ofm_requests_dir() { printf '%s/requests' "$(ofm_home)"; }
+vizier_home() { printf '%s' "${VIZIER_HOME:-$HOME/.vizier}"; }
+vizier_lock_path() { printf '%s/lock' "$(vizier_home)"; }
+vizier_requests_dir() { printf '%s/requests' "$(vizier_home)"; }
 
-ofm_lock_get() {  # <key>
+vizier_lock_get() {  # <key>
   local f
-  f=$(ofm_lock_path)
+  f=$(vizier_lock_path)
   [ -f "$f" ] || return 0
   sed -n "s/^$1=//p" "$f" 2>/dev/null | head -1
 }
 
-ofm_pid_is_harness() {  # <pid> <harness>
-  local pid=$1 want=$2 comm
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  [ -n "$comm" ] || return 1
-  case "$comm" in *"$want"*) return 0 ;; esac
-  # Một pid sống nhưng tên lệnh khác là pid bị dùng lại; coi như đã chết.
-  return 1
-}
-
-ofm_harness_pid() {  # <harness> — in pid tổ tiên gần nhất khớp, rỗng nếu không có
+vizier_harness_pid() {  # <harness> -- print the nearest matching ancestor pid, empty if none
   local want=$1 pid=$$ hops=0 comm ppid
   while [ "$pid" != "1" ] && [ "$hops" -lt 20 ]; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 0
@@ -370,217 +397,353 @@ ofm_harness_pid() {  # <harness> — in pid tổ tiên gần nhất khớp, rỗ
   done
 }
 
-ofm_lock_matches() {  # <session_id>
+vizier_lock_matches() {  # <session_id>
   local want=$1 have
   [ -n "$want" ] || return 1
-  have=$(ofm_lock_get session_id)
+  have=$(vizier_lock_get session_id)
   [ -n "$have" ] && [ "$have" = "$want" ]
 }
 
-_ofm_lock_write() {  # <session_id> <harness> <pid>
+_vizier_lock_write() {  # <session_id> <harness> <pid>
   local f tmp
-  f=$(ofm_lock_path)
-  mkdir -p "$(ofm_home)" || return 1
-  tmp="$f.$$"
-  printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || return 1
-  mv "$tmp" "$f"
+  f=$(vizier_lock_path)
+  mkdir -p "$(vizier_home)" || return 1
+  # mktemp, NOT "$f.$$": in bash, `$$` inside a subshell is the PARENT shell's
+  # pid, so multiple subshells with the same parent share one tmp name, overwrite
+  # each other, and make `mv` fail. The race test is exactly that case, and it
+  # once measured wrong because of this bug -- reporting "no one won the lock"
+  # when it was really just a collision on the temp file's name.
+  tmp=$(mktemp "$f.XXXXXX") || return 1
+  printf 'session_id=%s\nharness=%s\npid=%s\nsince=%s\n' "$1" "$2" "$3" "$(date +%s)" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
-ofm_lock_claim() {  # <session_id> <harness> <pid>
-  local sid=$1 harness=$2 pid=$3 owner owner_pid owner_harness
-  owner=$(ofm_lock_get session_id)
+# Read the lock BACK after writing, and report success only when we are truly
+# the owner. Why this is needed: the read-decide-write sequence in
+# vizier_lock_claim is not atomic, so two sessions that both see an empty lock (or
+# both see a dead owner) both write and both believe they won -- exactly the
+# worst failure of this design: two sessions writing requests/ at once. Reading
+# back turns that into an invariant -- "NEVER more than one session believes it
+# holds the lock" -- without adding any mutex file or leftover mutex state.
+_vizier_lock_confirm() {  # <session_id> <verb> <detail>
+  local sid=$1 verb=$2 detail=$3 winner
+  if vizier_lock_matches "$sid"; then
+    printf '%s %s\n' "$verb" "$detail"
+    return 0
+  fi
+  winner=$(vizier_lock_get session_id)
+  printf 'refused held_by=%s pid=%s\n' "${winner:-unknown}" "$(vizier_lock_get pid)"
+  return 1
+}
+
+vizier_lock_claim() {  # <session_id> <harness> <pid>
+  local sid=$1 harness=$2 pid=$3 owner owner_pid
+  # The lock file is line-based key=value and read with sed, so a session_id
+  # containing a newline would write a file that we ourselves cannot read back
+  # -> a lone claimant gets refused for no obvious reason. Block it right at
+  # the door, and say exactly why.
+  case "$sid" in '') printf 'refused reason=empty_session_id\n'; return 1 ;; esac
+  if [ "$(printf '%s' "$sid" | tr -cd '\n' | wc -c | tr -d ' ')" != "0" ]; then
+    printf 'refused reason=session_id_has_newline\n'
+    return 1
+  fi
+  owner=$(vizier_lock_get session_id)
   if [ -n "$owner" ]; then
     if [ "$owner" = "$sid" ]; then
-      _ofm_lock_write "$sid" "$harness" "$pid" || return 1
+      _vizier_lock_write "$sid" "$harness" "$pid" || return 1
       printf 'refreshed session_id=%s\n' "$sid"
       return 0
     fi
-    owner_pid=$(ofm_lock_get pid)
-    owner_harness=$(ofm_lock_get harness)
-    if ofm_pid_is_harness "$owner_pid" "${owner_harness:-$harness}"; then
-      printf 'refused held_by=%s pid=%s\n' "$owner" "$owner_pid"
-      return 1
-    fi
+    owner_pid=$(vizier_lock_get pid)
     case "$owner_pid" in
       ''|*[!0-9]*)
-        # Không phân giải được chủ cũ: từ chối thay vì cướp.
+        # Could not resolve the previous owner: refuse rather than steal.
         printf 'refused held_by=%s pid=unresolvable\n' "$owner"
         return 1
         ;;
     esac
-    _ofm_lock_write "$sid" "$harness" "$pid" || return 1
-    printf 'reclaimed from=%s dead_pid=%s\n' "$owner" "$owner_pid"
-    return 0
+    # ONLY liveness decides. A pid that is still alive never has its lock
+    # stolen, even when `ps -o comm=` doesn't match the harness: a command-name
+    # mismatch is weak evidence of "not that harness", not evidence of "dead".
+    # Stealing the lock of a first mate that is still alive means two sessions
+    # writing requests/.
+    if kill -0 "$owner_pid" 2>/dev/null; then
+      printf 'refused held_by=%s pid=%s\n' "$owner" "$owner_pid"
+      return 1
+    fi
+    _vizier_lock_write "$sid" "$harness" "$pid" || return 1
+    _vizier_lock_confirm "$sid" reclaimed "from=$owner dead_pid=$owner_pid"
+    return $?
   fi
-  _ofm_lock_write "$sid" "$harness" "$pid" || return 1
-  printf 'claimed session_id=%s\n' "$sid"
+  _vizier_lock_write "$sid" "$harness" "$pid" || return 1
+  _vizier_lock_confirm "$sid" claimed "session_id=$sid"
 }
 
-ofm_lock_release() {  # <session_id> — chỉ đúng chủ mới xoá được
-  ofm_lock_matches "$1" || { printf 'not_owner\n'; return 0; }
-  rm -f "$(ofm_lock_path)"
+vizier_lock_release() {  # <session_id> -- only the true owner can remove it
+  vizier_lock_matches "$1" || { printf 'not_owner\n'; return 0; }
+  rm -f "$(vizier_lock_path)"
   printf 'released\n'
 }
 ```
 
-- [ ] **Step 4: Chạy test cho pass**
+- [ ] **Step 4: Run the test until it passes**
 
 Run: `bash tests/lock.test.sh`
-Expected: PASS — `ok: 17 asserts passed (lock.test.sh)`
+Expected: PASS -- the last line is `ok: <n> asserts passed (lock.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/ofm-home.sh tests/lock.test.sh
+git add lib/vizier-home.sh tests/lock.test.sh
 git commit -m "feat: add the home paths and single-first-mate lock"
 ```
 
 ---
 
-### Task 3: Quét request và chờ nhiều Run
+### Task 3: Scanning requests and waiting on several Runs
 
-Tách khỏi hook vì cả hai harness dùng chung, và vì đây là phần duy nhất có logic đồng thời.
+Split out of the hook because both harnesses share it, and because this is the only part with concurrency logic.
 
 **Files:**
-- Create: `lib/ofm-wake-lib.sh`
+- Create: `lib/vizier-wake-lib.sh`
 - Create: `tests/wake-lib.test.sh`
 
 **Interfaces:**
-- Consumes: `lib/ofm-home.sh` (`ofm_requests_dir`)
+- Consumes: `lib/vizier-home.sh` (`vizier_requests_dir`)
 - Produces:
-  - `ofm_open_run_ids` → in mỗi dòng một `run_id` của request có `status: open`
-  - `ofm_wait_any_run <timeout_ms>` → đọc run id từ stdin, chờ song song, in **một dòng** tóm tắt của message đầu tiên tới; rỗng khi hết giờ. Luôn rc 0.
-  - `ofm_summarize <json_line>` → in một dòng ngắn dạng `<type> run=<id> <detail>`
+  - `vizier_open_run_ids` -> prints one `run_id` per line for every request with `status: open`
+  - `vizier_wait_any_run <timeout_ms>` -> reads run ids from stdin, waits in parallel, prints **one line** summarizing the first message to arrive; empty on timeout. Always rc 0.
+  - `vizier_summarize <json_line>` -> prints one short line shaped like `<type> run=<id> <detail>`
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/wake-lib.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-. "$OFM_TEST_REPO/lib/ofm-home.sh"
-. "$OFM_TEST_REPO/lib/ofm-wake-lib.sh"
+vizier_test_setup
+. "$VIZIER_TEST_REPO/lib/vizier-home.sh"
+. "$VIZIER_TEST_REPO/lib/vizier-wake-lib.sh"
+# Production's poll cadence is 1000ms; the test lowers it to run fast.
+export VIZIER_WAKE_POLL_MS=50
 
 mk_request() {  # <slug> <run_id> <status>
-  printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\nyêu cầu gốc\n' \
-    "$2" "$3" > "$(ofm_requests_dir)/$1.md"
+  printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\noriginal request\n' \
+    "$2" "$3" > "$(vizier_requests_dir)/$1.md"
 }
 
-assert_eq "$(ofm_open_run_ids)" "" "không có request thì không có run"
+assert_eq "$(vizier_open_run_ids)" "" "no requests means no runs"
 
 mk_request one run_a open
 mk_request two run_b closed
-assert_eq "$(ofm_open_run_ids)" "run_a" "chỉ lấy request open"
+assert_eq "$(vizier_open_run_ids)" "run_a" "only picks up open requests"
 
 mk_request three run_c open
-got=$(ofm_open_run_ids | sort | tr '\n' ',')
-assert_eq "$got" "run_a,run_c," "lấy được nhiều run open"
+got=$(vizier_open_run_ids | sort | tr '\n' ',')
+assert_eq "$got" "run_a,run_c," "picks up multiple open runs"
 
-# Hết giờ mà không có message thì in rỗng, rc vẫn 0
-out=$(ofm_open_run_ids | ofm_wait_any_run 200); rc=$?
-assert_rc "$rc" 0 "hết giờ vẫn rc 0"
-assert_eq "$out" "" "hết giờ thì không in gì"
+# A timeout with no message prints empty, rc is still 0
+out=$(vizier_open_run_ids | vizier_wait_any_run 200); rc=$?
+assert_rc "$rc" 0 "a timeout still gives rc 0"
+assert_eq "$out" "" "a timeout prints nothing"
 
-# Message ở run thứ hai vẫn được bắt: chờ song song, không tuần tự
+# A message on the second run is still caught: waiting in parallel, not sequentially
 fake_orca_queue run_c '{"type":"worker_done","run_id":"run_c","outcome":"succeeded","body":"PR https://x/1"}'
-out=$(ofm_open_run_ids | ofm_wait_any_run 3000)
-assert_contains "$out" "worker_done" "bắt được message của run thứ hai"
-assert_contains "$out" "run_c" "tóm tắt nêu run id"
+out=$(vizier_open_run_ids | vizier_wait_any_run 3000)
+assert_contains "$out" "worker_done" "catches the second run's message"
+assert_contains "$out" "run_c" "the summary names the run id"
 
-# Tóm tắt luôn gói về một dòng
+# The summary is always wrapped into one line
 lines=$(printf '%s' "$out" | wc -l | tr -d ' ')
-assert_eq "$lines" "0" "tóm tắt là đúng một dòng, không newline cuối"
+assert_eq "$lines" "0" "the summary is exactly one line, no trailing newline"
 
-# Dòng keepalive bị bỏ qua, không bị coi là message
+# Frontmatter is the only source of truth: "status: open" in the prose body does not count
+printf -- '---\nrun_id: run_body\nstatus: closed\n---\nstatus: open\n' > "$(vizier_requests_dir)/body.md"
+assert_eq "$(vizier_open_run_ids | grep -c run_body || true)" "0" "status in the prose body does not count"
+# A file not opened with `---` is skipped entirely
+printf 'a preamble\n---\nrun_id: run_late\nstatus: open\n---\n' > "$(vizier_requests_dir)/late.md"
+assert_eq "$(vizier_open_run_ids | grep -c run_late || true)" "0" "frontmatter not at the start of the file is skipped"
+rm -f "$(vizier_requests_dir)/body.md" "$(vizier_requests_dir)/late.md"
+
+# CRLF must not silently turn an open request into a not-open one
+printf -- '---\r\nrun_id: run_crlf\r\nstatus: open\r\n---\r\n' > "$(vizier_requests_dir)/crlf.md"
+assert_eq "$(vizier_open_run_ids | grep -c run_crlf || true)" "1" "CRLF frontmatter is still read correctly"
+rm -f "$(vizier_requests_dir)/crlf.md"
+
+# vizier_summarize: a newline slipping through .type or .run_id must also get wrapped into one line
+s=$(vizier_summarize '{"type":"worker\ndone","run_id":"r\n1","body":"a\nb"}')
+assert_eq "$(printf '%s' "$s" | grep -c . )" "1" "the summary is always exactly one line even when every field has a newline"
+
+# Kill the WHOLE PROCESS GROUP -- exactly how the real harness ends a hook.
+# Killing only the outer subshell's pid does NOT propagate to the inner
+# subshell (measured: leaked=1), so that measurement wouldn't reflect
+# production. `set -m` HERE, in the test, makes the background job its own
+# group leader; the library must absolutely never turn it on.
+printf -- '---\nrun_id: run_orphanprobe\nstatus: open\n---\nx\n' > "$(vizier_requests_dir)/orphan.md"
+set -m
+( printf 'run_orphanprobe\n' | vizier_wait_any_run 30000 >/dev/null 2>&1 ) & waiter=$!
+set +m
+sleep 0.8
+kill -TERM -"$waiter" 2>/dev/null || kill -TERM "$waiter" 2>/dev/null || true
+sleep 0.8
+leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$leaked" "0" "killing the process group leaves no orphaned orca"
+# `pgrep -f run_orphanprobe` ONLY matches the child orca's argv, so it used to
+# report 0 while the wrapping shell was still alive and spinning its poll
+# loop. Counting the whole process group is what actually catches it:
+# $waiter is the pgid because this block runs under `set -m`.
+remaining=$(pgrep -g "$waiter" 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$remaining" "0" "the whole process group is gone, not just the child orca"
+pkill -f 'run_orphanprobe' 2>/dev/null || true
+rm -f "$(vizier_requests_dir)/orphan.md"
+
+# A keepalive line is dropped, not treated as a message
 fake_orca_queue run_a '{"_keepalive":true}'
-out=$(printf 'run_a\n' | ofm_wait_any_run 300)
-assert_eq "$out" "" "keepalive không tính là message"
+out=$(printf 'run_a\n' | vizier_wait_any_run 300)
+assert_eq "$out" "" "a keepalive does not count as a message"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/wake-lib.test.sh`
-Expected: FAIL — `lib/ofm-wake-lib.sh: No such file or directory`
+Expected: FAIL -- `lib/vizier-wake-lib.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `lib/ofm-wake-lib.sh`**
+- [ ] **Step 3: Write `lib/vizier-wake-lib.sh`**
 
 ```bash
 # shellcheck shell=bash
-# Quét request đang mở và chờ mailbox nhiều Run cùng lúc.
-# Cần source lib/ofm-home.sh trước.
+# Scans open requests and waits on the mailbox of several Runs at once.
+# Requires lib/vizier-home.sh to be sourced first.
 #
-# VÌ SAO CHỜ SONG SONG: `orca orchestration check` là per-Run (`--run <id>`),
-# và spec cho phép nhiều request mở cùng lúc. Chờ tuần tự thì một Run im lặng
-# sẽ chặn message của Run khác suốt cả timeout. Ta bung mỗi Run một tiến trình
-# nền, ai có tin trước thì thắng, rồi giết phần còn lại.
+# WHY WAIT IN PARALLEL: `orca orchestration check` is per-Run (`--run <id>`),
+# and the spec allows several requests to be open at once. Waiting
+# sequentially would let one silent Run block another Run's message for the
+# whole timeout. We fork one background process per Run, whichever gets a
+# message first wins, then we kill the rest.
 #
-# LUÔN TRUYỀN --run: phiên first mate không phải terminal Orca nên không có
-# Run nào bound theo terminal để dựa vào.
+# ALWAYS PASS --run: a first-mate session is not an Orca terminal, so there is
+# no terminal-bound Run to fall back on.
 
-OFM_WAKE_TYPES="${OFM_WAKE_TYPES:-worker_done,escalation,question}"
+VIZIER_WAKE_TYPES="${VIZIER_WAKE_TYPES:-worker_done,escalation,question}"
+# Poll cadence. Production keeps it at 1000ms: at an eight-hour timeout that's
+# 28,500 loops instead of 285,000, and the extra sub-second wake latency is not
+# something a human notices. Tests lower it to 50ms for speed.
+VIZIER_WAKE_POLL_MS="${VIZIER_WAKE_POLL_MS:-1000}"
 
-ofm_open_run_ids() {
-  local dir f status run
-  dir=$(ofm_requests_dir)
+# Return only the frontmatter: the block between the first `---` line and the
+# second. A "status:" that happens to appear in the prose body must never get
+# to decide anything, and `tr -d '\r'` keeps a CRLF file from silently being
+# treated as not-open.
+_vizier_frontmatter() {  # <file>
+  awk '
+    NR==1 && $0 != "---" { exit }
+    /^---[[:space:]]*$/ { n++; if (n==2) exit; next }
+    n==1 { print }
+  ' "$1" 2>/dev/null | tr -d '\r'
+}
+
+vizier_open_run_ids() {
+  local dir f fm status run
+  dir=$(vizier_requests_dir)
   [ -d "$dir" ] || return 0
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
-    status=$(sed -n 's/^status:[[:space:]]*//p' "$f" | head -1)
+    fm=$(_vizier_frontmatter "$f")
+    [ -n "$fm" ] || continue
+    status=$(printf '%s\n' "$fm" | sed -n 's/^status:[[:space:]]*//p' | head -1)
     [ "$status" = "open" ] || continue
-    run=$(sed -n 's/^run_id:[[:space:]]*//p' "$f" | head -1)
+    run=$(printf '%s\n' "$fm" | sed -n 's/^run_id:[[:space:]]*//p' | head -1)
     [ -n "$run" ] && printf '%s\n' "$run"
   done
 }
 
-ofm_summarize() {  # <json_line>
+vizier_summarize() {  # <json_line>
   local line=$1 type run detail
   type=$(printf '%s' "$line" | jq -r '.type // "message"' 2>/dev/null)
   run=$(printf '%s' "$line" | jq -r '.run_id // ""' 2>/dev/null)
-  detail=$(printf '%s' "$line" | jq -r '.outcome // .body // ""' 2>/dev/null | tr '\n' ' ' | cut -c1-120)
-  printf '%s run=%s %s' "${type:-message}" "${run:-?}" "${detail}" | sed 's/[[:space:]]*$//'
+  detail=$(printf '%s' "$line" | jq -r '.outcome // .body // ""' 2>/dev/null | tr '\n\r\t' '   ' | cut -c1-120)
+  # EVERY field goes through tr, not just detail: the caller relies on "exactly
+  # one line", and a newline slipping through .type or .run_id breaks that
+  # contract exactly as badly as one slipping through .body.
+  printf '%s run=%s %s' "${type:-message}" "${run:-?}" "${detail}" \
+    | tr '\n\r\t' '   ' | sed 's/[[:space:]]*$//'
 }
 
-# Đọc run id từ stdin, chờ tối đa <timeout_ms>, in một dòng tóm tắt hoặc rỗng.
-ofm_wait_any_run() {  # <timeout_ms>
-  local timeout_ms=$1 tmp run i=0 waited=0 step=100 line
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/ofm-wake.XXXXXX") || return 0
-  while IFS= read -r run; do
-    [ -n "$run" ] || continue
-    i=$((i + 1))
-    (
-      orca orchestration check --wait --peek --run "$run" \
-        --types "$OFM_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
-        2>/dev/null > "$tmp/$i.out"
-    ) &
-    printf '%s\n' "$!" >> "$tmp/pids"
-  done
-  if [ "$i" -eq 0 ]; then rm -rf "$tmp"; return 0; fi
-
-  while [ "$waited" -le "$timeout_ms" ]; do
-    for f in "$tmp"/*.out; do
-      [ -s "$f" ] || continue
-      # Bỏ keepalive; lấy dòng JSON thật đầu tiên.
-      line=$(jq -rc 'select(._keepalive|not) | select(.type? != null or .body? != null)' "$f" 2>/dev/null | head -1)
-      [ -n "$line" ] || continue
-      _ofm_wake_kill_all "$tmp"
-      ofm_summarize "$line"
-      rm -rf "$tmp"
-      return 0
+# Read run ids from stdin, wait up to <timeout_ms>, print one summary line or
+# empty.
+vizier_wait_any_run() {  # <timeout_ms>
+  # The whole function body lives in a subshell so `trap` belongs only to it,
+  # not to the caller's shell.
+  (
+    local timeout_ms=$1 tmp run i=0 line poll_s deadline f
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/vizier-wake.XXXXXX") || return 0
+    # TRAP BEFORE SPAWNING ANYTHING. If this process is killed from the
+    # outside -- the harness cuts the hook, the captain closes the session, the
+    # machine sleeps -- every child `orca --wait` must die with it. Without the
+    # trap, EVERY TURN of EVERY session on the machine would leave behind an
+    # orphaned process that can live for up to eight hours. The trap is also
+    # the only cleanup path for all three normal exits, so there is nowhere
+    # left where cleanup has to be remembered by hand.
+    # TWO traps, not one. In bash, a SIGNAL trap runs its handler then
+    # CONTINUES execution -- it does not end the process. A single trap
+    # combined for both EXIT and INT/TERM would clean up but leave this shell
+    # spinning through the poll loop to the original deadline (eight hours in
+    # production), once per hook run: exactly the accumulation the trap exists
+    # to block. The signal branch must therefore `exit` explicitly. Cleaning up
+    # twice is harmless: kill against an already-dead pid and rm -rf against an
+    # already-gone directory are both no-ops.
+    trap '_vizier_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT
+    trap '_vizier_wake_kill_all "$tmp"; rm -rf "$tmp"; exit 0' INT TERM HUP
+    # NEVER `set -m` here. Bash does not create a new process group for a
+    # background job, so every child `orca` stays in the process group the
+    # HARNESS owns -- and that is exactly what lets the harness ending the hook
+    # clean up the whole cluster
+    # (firstmate/bin/fm-claude-stop-autoarm.sh:35-37: "Claude owns the process
+    # group, so its timeout/session teardown kills arm and watcher together").
+    # Turning on `set -m` would push the children into a NEW group and escape
+    # that cleanup -- exactly the opposite of what we want. The trap above
+    # covers the clean-exit path; the process group covers the cut-off path.
+    while IFS= read -r run; do
+      [ -n "$run" ] || continue
+      i=$((i + 1))
+      (
+        orca orchestration check --wait --peek --run "$run" \
+          --types "$VIZIER_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
+          2>/dev/null > "$tmp/$i.out"
+      ) &
+      printf '%s\n' "$!" >> "$tmp/pids"
     done
-    sleep 0.1
-    waited=$((waited + step))
-  done
-  _ofm_wake_kill_all "$tmp"
-  rm -rf "$tmp"
-  return 0
+    [ "$i" -gt 0 ] || return 0
+
+    # Deadline by REAL wall-clock time, not a logical counter: a counter that
+    # accumulates poll ticks drifts away from real time, since each iteration
+    # also costs time running the loop body -- and it drifts further as the
+    # file grows.
+    poll_s=$(awk -v m="${VIZIER_WAKE_POLL_MS:-1000}" 'BEGIN{printf "%.3f", m/1000}')
+    deadline=$(( $(date +%s) + (timeout_ms + 999) / 1000 ))
+    while :; do
+      for f in "$tmp"/*.out; do
+        [ -s "$f" ] || continue
+        # Cheap grep before jq: `--types` already guarantees every returned
+        # message has a `type`, and Orca's keepalive goes to stderr and gets
+        # dropped, so most loop iterations fork no jq at all.
+        grep -q '"type"' "$f" 2>/dev/null || continue
+        line=$(jq -rc 'select(._keepalive|not) | select(.type? != null)' "$f" 2>/dev/null | head -1)
+        [ -n "$line" ] || continue
+        vizier_summarize "$line"
+        return 0
+      done
+      [ "$(date +%s)" -lt "$deadline" ] || return 0
+      sleep "$poll_s"
+    done
+  )
 }
 
-_ofm_wake_kill_all() {  # <tmpdir>
+_vizier_wake_kill_all() {  # <tmpdir>
   local p
   [ -f "$1/pids" ] || return 0
   while IFS= read -r p; do
@@ -591,145 +754,147 @@ _ofm_wake_kill_all() {  # <tmpdir>
 }
 ```
 
-- [ ] **Step 4: Chạy test cho pass**
+- [ ] **Step 4: Run the test until it passes**
 
 Run: `bash tests/wake-lib.test.sh`
-Expected: PASS — `ok: 9 asserts passed (wake-lib.test.sh)`
+Expected: PASS -- the last line is `ok: <n> asserts passed (wake-lib.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/ofm-wake-lib.sh tests/wake-lib.test.sh
+git add lib/vizier-wake-lib.sh tests/wake-lib.test.sh
 git commit -m "feat: wait on every open run's mailbox concurrently"
 ```
 
 ---
 
-### Task 4: Stop hook cho Claude Code
+### Task 4: The Claude Code Stop hook
 
 **Files:**
 - Create: `hooks/wake-claude.sh`
 - Create: `tests/wake-claude.test.sh`
 
 **Interfaces:**
-- Consumes: `ofm_lock_matches`, `ofm_open_run_ids`, `ofm_wait_any_run`
-- Produces: hook nhận payload JSON trên stdin; `exit 0` im lặng hoặc `exit 2` kèm một dòng stderr. `OFM_WAIT_TIMEOUT_MS` ghi đè timeout cho test.
+- Consumes: `vizier_lock_matches`, `vizier_open_run_ids`, `vizier_wait_any_run`
+- Produces: the hook receives a JSON payload on stdin; a silent `exit 0` or `exit 2` with one stderr line. `VIZIER_WAIT_TIMEOUT_MS` overrides the timeout for tests.
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/wake-claude.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-. "$OFM_TEST_REPO/lib/ofm-home.sh"
-HOOK="$OFM_TEST_REPO/hooks/wake-claude.sh"
-export OFM_WAIT_TIMEOUT_MS=300
+vizier_test_setup
+. "$VIZIER_TEST_REPO/lib/vizier-home.sh"
+HOOK="$VIZIER_TEST_REPO/hooks/wake-claude.sh"
+export VIZIER_WAIT_TIMEOUT_MS=300
 
 payload() { printf '{"session_id":"%s","cwd":"/tmp","hook_event_name":"Stop"}' "$1"; }
 mk_request() {
   printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: %s\nopened: 2026-08-31\n---\nx\n' \
-    "$2" "$3" > "$(ofm_requests_dir)/$1.md"
+    "$2" "$3" > "$(vizier_requests_dir)/$1.md"
 }
 
-# Không có lock: câm tuyệt đối. Đây là cổng bảo vệ mọi phiên khác trên máy.
+# No lock: absolutely silent. This is the gate that protects every other session on the machine.
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "không lock thì exit 0"
-assert_eq "$out" "" "không lock thì không in gì"
-assert_eq "$(fake_orca_calls)" "" "không lock thì không gọi orca"
+assert_rc "$rc" 0 "no lock gives exit 0"
+assert_eq "$out" "" "no lock prints nothing"
+assert_eq "$(fake_orca_calls)" "" "no lock calls orca zero times"
 
-# Lock của phiên khác: vẫn câm
-printf 'session_id=sess-other\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
+# A different session's lock: still silent
+printf 'session_id=sess-other\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "session_id khác lock thì exit 0"
-assert_eq "$(fake_orca_calls)" "" "session_id khác thì không gọi orca"
+assert_rc "$rc" 0 "a mismatched session_id gives exit 0"
+assert_eq "$(fake_orca_calls)" "" "a mismatched session_id calls orca zero times"
 
-# Đúng chủ nhưng không có request mở: exit 0, vẫn không gọi orca
-printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
+# The right owner but no open request: exit 0, still no orca call
+printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "không request mở thì exit 0"
-assert_eq "$(fake_orca_calls)" "" "không request mở thì không gọi orca"
+assert_rc "$rc" 0 "no open request gives exit 0"
+assert_eq "$(fake_orca_calls)" "" "no open request calls orca zero times"
 
-# Đúng chủ, có request mở, không có message: exit 0 và CÓ gọi orca
+# The right owner, an open request, no message: exit 0 and DOES call orca
 mk_request one run_a open
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "hết giờ thì exit 0"
-assert_contains "$(fake_orca_calls)" "--run run_a" "có chờ đúng run"
+assert_rc "$rc" 0 "a timeout gives exit 0"
+assert_contains "$(fake_orca_calls)" "--run run_a" "waited on the right run"
 
-# Có message: exit 2 và in tóm tắt ra STDERR
+# A message: exit 2 and prints the summary to STDERR
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 err=$(payload sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
-assert_rc "$rc" 2 "có message thì exit 2"
-assert_contains "$err" "worker_done" "stderr mang tóm tắt"
+assert_rc "$rc" 2 "a message gives exit 2"
+assert_contains "$err" "worker_done" "stderr carries the summary"
 stdout=$(payload sess-a | bash "$HOOK" 2>/dev/null); 
-assert_eq "$stdout" "" "không in gì ra stdout"
+assert_eq "$stdout" "" "nothing is printed to stdout"
 
-# Payload rác không làm hook nổ
+# A garbage payload does not crash the hook
 out=$(printf 'not json' | bash "$HOOK" 2>&1); rc=$?
-assert_rc "$rc" 0 "payload rác thì exit 0"
+assert_rc "$rc" 0 "a garbage payload gives exit 0"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/wake-claude.test.sh`
-Expected: FAIL — `hooks/wake-claude.sh: No such file or directory`
+Expected: FAIL -- `hooks/wake-claude.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `hooks/wake-claude.sh`**
+- [ ] **Step 3: Write `hooks/wake-claude.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# Stop hook của Claude Code — nửa Claude của cơ chế tự thức dậy.
+# Claude Code's Stop hook -- the Claude half of the self-wake mechanism.
 #
-# Đăng ký với "asyncRewake": true và "timeout": 28800. Đã kiểm chứng trên
+# Registered with "asyncRewake": true and "timeout": 28800. Verified on
 # Claude Code 2.1.236 (docs/verification/2026-08-31-plugin-wake.md):
-#   - asyncRewake được honor trong plugin hook: phiên không bị chặn.
-#   - exit 2 đánh thức phiên đang IDLE, stderr vào context dạng system reminder.
-#   - exit 0 câm tuyệt đối.
+#   - asyncRewake IS honored in a plugin hook: the session is not blocked.
+#   - exit 2 wakes an IDLE session, stderr enters context as a system reminder.
+#   - exit 0 is absolutely silent.
 #
-# HOOK NÀY CHẠY SAU MỖI LƯỢT CỦA MỌI PHIÊN CLAUDE CODE TRÊN MÁY, không dedupe.
-# Nên thứ tự cổng chặn là bắt buộc, rẻ trước đắt sau, và mọi nhánh không chắc
-# chắn đều exit 0.
+# THIS HOOK RUNS AFTER EVERY TURN OF EVERY CLAUDE CODE SESSION ON THE MACHINE,
+# with no dedup. So the gate ordering is mandatory, cheap checks before
+# expensive ones, and every uncertain branch exits 0.
 #
-# HOOK KHÔNG BAO GIỜ ACK. Ack thuộc về first mate sau khi xử lý xong batch;
-# nhờ replay-tới-ack của Orca, hook chết giữa chừng không mất message.
+# THE HOOK NEVER ACKS. Acking belongs to the first mate, once it has finished
+# processing the batch; thanks to Orca's replay-to-ack, the hook dying midway
+# never loses a message.
 set -u
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
-[ -r "$LIB/ofm-home.sh" ] || exit 0
+[ -r "$LIB/vizier-home.sh" ] || exit 0
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 # shellcheck source=/dev/null
-. "$LIB/ofm-wake-lib.sh"
+. "$LIB/vizier-wake-lib.sh"
 
 command -v jq >/dev/null 2>&1 || exit 0
 
 payload=$(cat 2>/dev/null || true)
 session_id=$(printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
 
-# Cổng 1 — rẻ nhất: phiên này có phải first mate không?
-ofm_lock_matches "$session_id" || exit 0
+# Gate 1 -- cheapest: is this session the first mate?
+vizier_lock_matches "$session_id" || exit 0
 
-# Cổng 2: có gì để chờ không? Home rỗng thì không tốn một lệnh orca nào.
-runs=$(ofm_open_run_ids)
+# Gate 2: is there anything to wait on? An empty home costs zero orca calls.
+runs=$(vizier_open_run_ids)
 [ -n "$runs" ] || exit 0
 
-# Chờ ngắn hơn timeout của hook một khoảng an toàn để hook luôn tự thoát
-# có kiểm soát thay vì bị harness giết giữa chừng.
-summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
+# Wait for less than the hook's own timeout by a safety margin, so the hook
+# always exits under its own control rather than being killed mid-flight by
+# the harness.
+summary=$(printf '%s\n' "$runs" | vizier_wait_any_run "${VIZIER_WAIT_TIMEOUT_MS:-28500000}")
 [ -n "$summary" ] || exit 0
 
-printf 'orca-firstmate: %s\n' "$summary" >&2
+printf 'vizier: %s\n' "$summary" >&2
 exit 2
 ```
 
-- [ ] **Step 4: Chạy test cho pass**
+- [ ] **Step 4: Run the test until it passes**
 
 Run: `chmod +x hooks/wake-claude.sh && bash tests/wake-claude.test.sh`
-Expected: PASS — `ok: 12 asserts passed (wake-claude.test.sh)`
+Expected: PASS -- the last line is `ok: <n> asserts passed (wake-claude.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 5: Commit**
 
@@ -740,103 +905,151 @@ git commit -m "feat: add the Claude Code stop hook that wakes an idle first mate
 
 ---
 
-### Task 5: Stop hook cho Cursor
+### Task 5: The Cursor stop hook
 
-Khác Claude ở **mọi** primitive: chạy đồng bộ, `exit 2` vô hiệu, kênh duy nhất là `followup_message` trên stdout, và hai park có thể cùng sống nên phải có park-owner.
+Different from Claude in **every** primitive: it runs synchronously, `exit 2` is void, the only channel is `followup_message` on stdout, and two parks can be alive at once so there must be a park-owner.
 
 **Files:**
 - Create: `hooks/wake-cursor.sh`
 - Create: `tests/wake-cursor.test.sh`
 
 **Interfaces:**
-- Consumes: `ofm_lock_matches`, `ofm_open_run_ids`, `ofm_wait_any_run`
-- Produces: hook đọc payload Cursor trên stdin (`session_id`, `loop_count`); in đúng một object `{"followup_message": "..."}` ra stdout rồi `exit 0`, hoặc không in gì và `exit 0`. Dùng `$(ofm_home)/park-owner` làm sổ giành quyền.
+- Consumes: `vizier_lock_matches`, `vizier_open_run_ids`, `vizier_wait_any_run`
+- Produces: the hook reads Cursor's payload on stdin (`session_id`, `loop_count`); prints exactly one `{"followup_message": "..."}` object to stdout then `exit 0`, or prints nothing and `exit 0`. Uses `$(vizier_home)/park-owner` as the ownership ledger.
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/wake-cursor.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-. "$OFM_TEST_REPO/lib/ofm-home.sh"
-HOOK="$OFM_TEST_REPO/hooks/wake-cursor.sh"
-export OFM_WAIT_TIMEOUT_MS=300
+vizier_test_setup
+. "$VIZIER_TEST_REPO/lib/vizier-home.sh"
+HOOK="$VIZIER_TEST_REPO/hooks/wake-cursor.sh"
+export VIZIER_WAIT_TIMEOUT_MS=300
+# Production's poll cadence is 1000ms. Without setting it here, every hook
+# call would take ~1s and would only find the message thanks to the loop
+# checking the file BEFORE checking the deadline -- the test would pass by
+# accident of ordering rather than by the behavior its name claims to test.
+export VIZIER_WAKE_POLL_MS=50
 
 payload() {  # <session_id> <loop_count>
   printf '{"session_id":"%s","loop_count":%s,"workspace_roots":["/tmp"],"status":"completed"}' "$1" "$2"
 }
 mk_request() {
   printf -- '---\nrun_id: %s\nproject: demo\nhost: local\nstatus: open\nopened: 2026-08-31\n---\nx\n' \
-    "$2" > "$(ofm_requests_dir)/$1.md"
+    "$2" > "$(vizier_requests_dir)/$1.md"
 }
 
-# Không lock: câm
+# No lock: silent
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "không lock thì exit 0"
-assert_eq "$out" "" "không lock thì stdout rỗng"
+assert_rc "$rc" 0 "no lock gives exit 0"
+assert_eq "$out" "" "no lock gives empty stdout"
 
-printf 'session_id=sess-a\nharness=cursor-agent\npid=%s\nsince=1\n' $$ > "$(ofm_lock_path)"
+printf 'session_id=sess-a\nharness=cursor-agent\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
 mk_request one run_a
 
-# Có message: in đúng một object followup_message, exit 0 (KHÔNG phải exit 2)
+# A message: prints exactly one followup_message object, exit 0 (NOT exit 2)
 fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "Cursor luôn exit 0, kể cả khi đánh thức"
-assert_contains "$out" "followup_message" "in followup_message"
-assert_contains "$out" "worker_done" "followup mang tóm tắt"
+assert_rc "$rc" 0 "Cursor always exits 0, even when waking"
+assert_contains "$out" "followup_message" "prints followup_message"
+assert_contains "$out" "worker_done" "the followup carries the summary"
 lines=$(printf '%s\n' "$out" | grep -c . )
-assert_eq "$lines" "1" "in đúng MỘT dòng JSON"
+assert_eq "$lines" "1" "prints exactly ONE line of JSON"
 printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
-assert_rc $? 0 "stdout là JSON hợp lệ"
+assert_rc $? 0 "stdout is valid JSON"
 
-# Trần loop cắn trước loop_limit của Cursor
+# The loop ceiling bites before Cursor's own loop_limit
 out=$(payload sess-a 5 | bash "$HOOK" 2>/dev/null); rc=$?
-assert_rc "$rc" 0 "chạm trần thì exit 0"
-assert_eq "$out" "" "chạm trần thì không emit"
+assert_rc "$rc" 0 "hitting the ceiling gives exit 0"
+assert_eq "$out" "" "hitting the ceiling does not emit"
 
-# Park cũ hơn phải đứng im khi đã có park mới hơn
-printf '7\n' > "$OFM_HOME/park-owner"
-out=$(OFM_CURSOR_PARK_SEQ=3 payload sess-a 0 | bash "$HOOK" 2>/dev/null)
-assert_eq "$out" "" "park cũ không emit khi đã bị thay"
+# A replaced park stays quiet -- checked with an explicit claim
+printf 'someone-else\n' > "$VIZIER_HOME/park-owner"
+out=$(payload sess-a 0 | VIZIER_CURSOR_PARK_CLAIM=mine bash "$HOOK" 2>/dev/null)
+# The hook writes its own claim at the start, so it WILL be the owner; this
+# case only confirms an explicit claim doesn't break the hook. The real test
+# is in the concurrent block below.
+printf '%s' "$out" | jq -e '.followup_message' >/dev/null 2>&1
+assert_rc $? 0 "an explicit claim still emits normally when not replaced"
 
-ofm_test_teardown
-ofm_test_report
+# TWO REAL parks running overlapped, both seeing the same message: only ONE emits.
+# Keep the queue empty until both have entered the wait, otherwise the first
+# park could finish before the second one starts and we'd only measure two
+# sequential parks.
+: > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
+rm -f "$VIZIER_HOME/park-owner"
+( payload sess-a 0 | bash "$HOOK" > "$VIZIER_TEST_TMP/p1.out" 2>/dev/null ) & p1=$!
+( payload sess-a 0 | bash "$HOOK" > "$VIZIER_TEST_TMP/p2.out" 2>/dev/null ) & p2=$!
+sleep 0.6
+fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+wait "$p1" 2>/dev/null || true
+wait "$p2" 2>/dev/null || true
+emitters=$(grep -l followup_message "$VIZIER_TEST_TMP/p1.out" "$VIZIER_TEST_TMP/p2.out" 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$emitters" "1" "two overlapping parks means exactly one emits"
+
+# Read-back gate: claim written, then REPLACED BY SOMEONE ELSE partway
+# through -> must stay quiet, even though it already saw the message. This is
+# the case that actually proves the read-back gate; the earlier `chmod 000`
+# case is blocked right at the WRITE step and exits through a completely
+# different gate, so it passes without ever touching this one.
+: > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
+rm -f "$VIZIER_HOME/park-owner"
+( payload sess-a 0 | bash "$HOOK" > "$VIZIER_TEST_TMP/p3.out" 2>/dev/null ) & p3=$!
+sleep 0.15
+printf 'usurper\n' > "$VIZIER_HOME/park-owner"
+fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+wait "$p3" 2>/dev/null || true
+assert_eq "$(cat "$VIZIER_TEST_TMP/p3.out")" "" "being replaced as owner partway through stays quiet, even after seeing the message"
+
+# Failing to write owner_file must also stay quiet -- a different gate, a different case, clearly labeled as different
+: > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
+printf 'x\n' > "$VIZIER_HOME/park-owner"; chmod 000 "$VIZIER_HOME/park-owner" 2>/dev/null || true
+out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null)
+assert_eq "$out" "" "failing to write owner_file stays quiet (the WRITE gate, not the read-back one)"
+chmod 644 "$VIZIER_HOME/park-owner" 2>/dev/null || true
+
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/wake-cursor.test.sh`
-Expected: FAIL — `hooks/wake-cursor.sh: No such file or directory`
+Expected: FAIL -- `hooks/wake-cursor.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `hooks/wake-cursor.sh`**
+- [ ] **Step 3: Write `hooks/wake-cursor.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# stop hook của Cursor — nửa Cursor của cơ chế tự thức dậy.
+# Cursor's stop hook -- the Cursor half of the self-wake mechanism.
 #
-# KHÔNG DÙNG LẠI ĐƯỢC CÔNG THỨC CỦA CLAUDE. Đã đo trên cursor-agent TUI
-# 2026.08.25-3e8eec8 (docs/verification/2026-08-31-plugin-wake.md):
-#   - Cursor chạy hook ĐỒNG BỘ và chờ nó: hook "park" giữ turn boundary mở.
-#   - exit 2 là NO-OP IM LẶNG. Không bao giờ dựa vào nó.
-#   - Kênh duy nhất là đúng một {"followup_message": "..."} trên STDOUT + exit 0.
-#     Cursor nhận nó và chạy một lượt model mới.
-#   - `loop_count` trong payload là bản Cursor của stop_hook_active.
-#   - Hook này KHÔNG cài được dạng plugin; nó chỉ fire từ ~/.cursor/hooks.json.
+# CANNOT REUSE CLAUDE'S RECIPE. Measured on cursor-agent TUI 2026.08.25-3e8eec8
+# (docs/verification/2026-08-31-plugin-wake.md):
+#   - Cursor runs the hook SYNCHRONOUSLY and waits for it: the hook "parks"
+#     and keeps the turn boundary open.
+#   - exit 2 is a SILENT NO-OP. Never rely on it.
+#   - The only channel is exactly one {"followup_message": "..."} on STDOUT
+#     plus exit 0. Cursor receives it and runs a new model turn.
+#   - `loop_count` in the payload is Cursor's version of stop_hook_active.
+#   - This hook CANNOT be installed as a plugin; it only fires from
+#     ~/.cursor/hooks.json.
 #
-# PARK-OWNER. Một tin captain gõ lúc hook đang park được nhận ngay và KHÔNG
-# giết hook đang park. Nên hai park có thể cùng sống, cùng thấy một message
-# (ta dùng --peek nên không ai ack), và cùng báo -> trùng. Mỗi lần chạy giành
-# một số thứ tự tăng dần; trước khi emit phải xác nhận mình vẫn là số mới nhất.
+# PARK-OWNER. A message the captain types while a hook is parked is received
+# immediately and does NOT kill the parked hook. So two parks can be alive at
+# once, both see the same message (we use --peek, so neither acks it), and
+# both report -> a duplicate. Each run claims an increasing sequence number;
+# before emitting, it must confirm it is still the most recent one.
 set -u
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
-[ -r "$LIB/ofm-home.sh" ] || exit 0
+[ -r "$LIB/vizier-home.sh" ] || exit 0
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 # shellcheck source=/dev/null
-. "$LIB/ofm-wake-lib.sh"
+. "$LIB/vizier-wake-lib.sh"
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -844,45 +1057,54 @@ payload=$(cat 2>/dev/null || true)
 session_id=$(printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
 loop_count=$(printf '%s' "$payload" | jq -r '.loop_count // 0' 2>/dev/null)
 
-ofm_lock_matches "$session_id" || exit 0
+vizier_lock_matches "$session_id" || exit 0
 
-# Trần tự chặn, đặt THẤP HƠN loop_limit đăng ký trong hooks.json, để bound của
-# ta cắn trước và Cursor không lặng lẽ ngừng gọi hook ở trần của nó.
-ceiling=${OFM_CURSOR_LOOP_CEILING:-5}
+# Self-imposed ceiling, set LOWER than the loop_limit registered in
+# hooks.json, so our bound bites first and Cursor never silently stops
+# calling the hook at its own ceiling.
+ceiling=${VIZIER_CURSOR_LOOP_CEILING:-5}
 case "$loop_count" in ''|*[!0-9]*) loop_count=0 ;; esac
 [ "$loop_count" -lt "$ceiling" ] || exit 0
 
-runs=$(ofm_open_run_ids)
+runs=$(vizier_open_run_ids)
 [ -n "$runs" ] || exit 0
 
-# Giành quyền park trước khi chờ.
-owner_file="$(ofm_home)/park-owner"
-if [ -n "${OFM_CURSOR_PARK_SEQ:-}" ]; then
-  my_seq=$OFM_CURSOR_PARK_SEQ
-else
-  prev=$(cat "$owner_file" 2>/dev/null | tr -d ' ')
-  case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
-  my_seq=$((prev + 1))
-  printf '%s\n' "$my_seq" > "$owner_file" 2>/dev/null || exit 0
-fi
+# Claim park ownership before waiting.
+#
+# THE CONTRACT IS "WHOEVER WRITES LAST WINS", not "the bigger number gets to
+# speak". The previous version read the old number, added one, and wrote it
+# back -- not atomic, so two parks running at the same time could pick the
+# SAME number and both believe they were the newest: exactly the duplicate
+# report this mechanism exists to block. Adding a unique token to the claim
+# and READING IT BACK before emitting means the last writer wins and everyone
+# else stays silent, with no atomicity needed anywhere. Invariant: NEVER more
+# than one park emits.
+#
+# It also fixes the failure direction: if the file can't be read, `current`
+# won't match `my_claim`, so we STAY SILENT. The previous version defaulted
+# `current=$my_seq` when the file was garbage, meaning every park believed
+# itself the owner and all of them emitted -- the wrong direction, and worse
+# than the race itself.
+owner_file="$(vizier_home)/park-owner"
+my_claim="${VIZIER_CURSOR_PARK_CLAIM:-$$.$(date +%s).${RANDOM:-0}}"
+printf '%s\n' "$my_claim" > "$owner_file" 2>/dev/null || exit 0
 
-summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
+summary=$(printf '%s\n' "$runs" | vizier_wait_any_run "${VIZIER_WAIT_TIMEOUT_MS:-28500000}")
 [ -n "$summary" ] || exit 0
 
-# Còn là park mới nhất không? Nếu không, đứng im: park mới sẽ thấy cùng
-# message đó vì chưa ai ack.
-current=$(cat "$owner_file" 2>/dev/null | tr -d ' ')
-case "$current" in ''|*[!0-9]*) current=$my_seq ;; esac
-[ "$current" = "$my_seq" ] || exit 0
+# Are we still the last writer? If not, stay quiet: the new park will see the
+# same message anyway, since no one has acked it.
+current=$(cat "$owner_file" 2>/dev/null)
+[ "$current" = "$my_claim" ] || exit 0
 
-jq -cn --arg m "orca-firstmate: $summary" '{followup_message:$m}'
+jq -cn --arg m "vizier: $summary" '{followup_message:$m}'
 exit 0
 ```
 
-- [ ] **Step 4: Chạy test cho pass**
+- [ ] **Step 4: Run the test until it passes**
 
 Run: `chmod +x hooks/wake-cursor.sh && bash tests/wake-cursor.test.sh`
-Expected: PASS — `ok: 9 asserts passed (wake-cursor.test.sh)`
+Expected: PASS -- the last line is `ok: <n> asserts passed (wake-cursor.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 5: Commit**
 
@@ -893,273 +1115,335 @@ git commit -m "feat: add the Cursor stop hook that answers with a follow-up mess
 
 ---
 
-### Task 6: Identity, `/firstmate`, và hook PostCompact
+### Task 6: Identity, `/vizier`, and the PostCompact hook
 
 **Files:**
 - Create: `skills/identity/SKILL.md`
-- Create: `commands/firstmate.md`
+- Create: `commands/vizier.md`
 - Create: `hooks/reidentify-claude.sh`
-- Create: `bin/ofm-activate.sh`
+- Create: `bin/vizier-activate.sh`
 - Create: `tests/activate.test.sh`
 
 **Interfaces:**
-- Consumes: `ofm_lock_claim`, `ofm_lock_matches`, `ofm_harness_pid`
-- Produces: `bin/ofm-activate.sh <session_id> <harness>` → rc 0 và in `claimed`/`reclaimed`/`refreshed`, hoặc rc 1 và in `refused held_by=<id>`. `/firstmate` gọi đúng script này qua Bash.
+- Consumes: `vizier_lock_claim`, `vizier_lock_matches`, `vizier_harness_pid`
+- Produces: `bin/vizier-activate.sh [harness] [session_id_override]` -> rc 0 and prints `claimed`/`reclaimed`/`refreshed`; rc 1 and prints `refused held_by=<id>`; rc 2 when the session or the harness pid can't be determined. The session id defaults from `CLAUDE_CODE_SESSION_ID`; the second parameter is only for test overrides. `/vizier` calls exactly this script through Bash, with no parameters.
 
-> **Vì sao có `bin/ofm-activate.sh`:** `/firstmate` là file markdown, không chạy được logic. Nó bảo agent chạy đúng một lệnh; script giữ toàn bộ ngữ nghĩa lock ở một nơi test được, thay vì rải thành prose cho model tự diễn giải.
+> **Why `bin/vizier-activate.sh` exists:** `/vizier` is a markdown file, it can't run logic. It tells the agent to run exactly one command; the script keeps all the lock semantics in one testable place, instead of scattering them as prose for the model to interpret on its own.
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/activate.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-. "$OFM_TEST_REPO/lib/ofm-home.sh"
-ACT="$OFM_TEST_REPO/bin/ofm-activate.sh"
+vizier_test_setup
+. "$VIZIER_TEST_REPO/lib/vizier-home.sh"
+ACT="$VIZIER_TEST_REPO/bin/vizier-activate.sh"
 
-out=$(bash "$ACT" sess-a claude); rc=$?
-assert_rc "$rc" 0 "kích hoạt lần đầu thành công"
-assert_contains "$out" "claimed" "báo claimed"
-assert_eq "$(ofm_lock_get session_id)" "sess-a" "lock ghi đúng phiên"
+out=$(bash "$ACT" claude sess-a); rc=$?
+assert_rc "$rc" 0 "the first activation succeeds"
+assert_contains "$out" "claimed" "reports claimed"
+assert_eq "$(vizier_lock_get session_id)" "sess-a" "the lock records the right session"
 
-# Home được tạo đầy đủ ngay lần kích hoạt đầu
-[ -d "$OFM_HOME/requests" ]; assert_rc $? 0 "tạo requests/"
-[ -d "$OFM_HOME/projects" ]; assert_rc $? 0 "tạo projects/"
+# The home is fully created on the very first activation
+[ -d "$VIZIER_HOME/requests" ]; assert_rc $? 0 "creates requests/"
+[ -d "$VIZIER_HOME/projects" ]; assert_rc $? 0 "creates projects/"
 
-# Phiên thứ hai bị từ chối khi chủ còn sống
-out=$(bash "$ACT" sess-b claude); rc=$?
-assert_rc "$rc" 1 "phiên thứ hai bị từ chối"
-assert_contains "$out" "held_by=sess-a" "nói rõ ai đang giữ"
+# A second session is refused while the owner is still alive
+out=$(bash "$ACT" claude sess-b); rc=$?
+assert_rc "$rc" 1 "the second session is refused"
+assert_contains "$out" "held_by=sess-a" "clearly states who holds it"
 
-# Thiếu tham số thì fail rõ ràng, không im lặng
-out=$(bash "$ACT" 2>&1); rc=$?
-assert_rc "$rc" 2 "thiếu tham số thì rc 2"
-assert_contains "$out" "usage" "in usage"
+# No session id from the environment: REFUSE, never make up a value
+rm -f "$(vizier_lock_path)"
+out=$(env -u CLAUDE_CODE_SESSION_ID bash "$ACT" claude 2>&1); rc=$?
+assert_rc "$rc" 2 "no CLAUDE_CODE_SESSION_ID gives rc 2"
+assert_contains "$out" "no_session_id" "clearly states the reason"
+assert_eq "$(vizier_lock_get session_id)" "" "no lock is written when the session id is missing"
+# When the environment variable is present, use it -- the model fills in nothing
+out=$(CLAUDE_CODE_SESSION_ID=from-env bash "$ACT" claude); rc=$?
+assert_rc "$rc" 0 "the session id is taken from the environment"
+assert_eq "$(vizier_lock_get session_id)" "from-env" "the lock records the environment's session id"
 
-# PostCompact: khớp lock thì in identity ra stderr, lệch thì câm
-HOOK="$OFM_TEST_REPO/hooks/reidentify-claude.sh"
+# Failing to determine the harness pid: REFUSE. This branch previously had NO
+# test reaching it at all, because every call read the test environment's
+# real CLAUDE_PID. Remove CLAUDE_PID and give a harness name that cannot
+# possibly exist in the process tree.
+rm -f "$(vizier_lock_path)"
+out=$(env -u CLAUDE_PID bash "$ACT" no-such-harness-xyz 2>&1); rc=$?
+assert_rc "$rc" 2 "failing to find the harness pid gives rc 2"
+assert_contains "$out" "no_harness_pid" "clearly states the reason"
+assert_eq "$(vizier_lock_get session_id)" "" "no lock is written when the harness pid is missing"
+
+# PostCompact: a matching lock reprints identity to stderr, a mismatch stays silent
+HOOK="$VIZIER_TEST_REPO/hooks/reidentify-claude.sh"
 err=$(printf '{"session_id":"sess-a"}' | bash "$HOOK" 2>&1 >/dev/null); rc=$?
-assert_rc "$rc" 0 "reidentify luôn exit 0"
-assert_contains "$err" "first mate" "in lại identity"
+assert_rc "$rc" 0 "reidentify always exits 0"
+assert_contains "$err" "first mate" "reprints identity"
 err=$(printf '{"session_id":"sess-zzz"}' | bash "$HOOK" 2>&1 >/dev/null)
-assert_eq "$err" "" "phiên khác thì câm"
+assert_eq "$err" "" "a different session stays silent"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/activate.test.sh`
-Expected: FAIL — `bin/ofm-activate.sh: No such file or directory`
+Expected: FAIL -- `bin/vizier-activate.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `bin/ofm-activate.sh`**
+- [ ] **Step 3: Write `bin/vizier-activate.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# Kích hoạt phiên này thành first mate. /firstmate gọi đúng script này.
-# In một dòng kết quả; rc 0 = phiên này là first mate, rc 1 = bị từ chối.
+# Activates this session as the first mate. /vizier calls exactly this
+# script. Prints one result line; rc 0 = this session is the first mate,
+# rc 1 = refused.
 set -u
 
-if [ $# -lt 2 ]; then
-  printf 'usage: ofm-activate.sh <session_id> <harness>\n' >&2
+# SESSION ID COMES FROM THE ENVIRONMENT, NOT FROM THE MODEL. Measured on the
+# captain's machine: Claude Code sets CLAUDE_CODE_SESSION_ID (a 36-character
+# UUID, matching the session's transcript file name) in the environment of
+# every shell command -- while the model has NO way at all to know its own
+# session id. If the model were left to fill it in, it would make up a value
+# that never matches the `session_id` in the payload the hook receives, and
+# then BOTH the wake hook AND the PostCompact hook would go silent forever
+# while the lock stayed held -- the whole product broken, silently. Better to
+# refuse activation.
+# Usage: vizier-activate.sh [harness] [session_id_override]
+harness=${1:-claude}
+session_id=${2:-${CLAUDE_CODE_SESSION_ID:-}}
+if [ -z "$session_id" ]; then
+  printf 'refused reason=no_session_id\n' >&2
+  printf 'could not read a session id (CLAUDE_CODE_SESSION_ID is empty): this session\n' >&2
+  printf 'is not running under Claude Code, or the harness is not supported yet.\n' >&2
   exit 2
 fi
-session_id=$1
-harness=$2
 
 LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib not found\n' >&2; exit 2; }
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 
-mkdir -p "$(ofm_home)/requests" "$(ofm_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
+# PID must be the long-lived HARNESS process, not the transient shell calling
+# this script. $PPID is the Bash tool's shell and can die right afterward,
+# which would make `kill -0` treat a first mate that's still alive as dead
+# and let another session steal the lock -- exactly the failure the liveness
+# rule calls worse than a stuck lock. Measured: CLAUDE_PID and
+# vizier_harness_pid give the same pid, so prefer the environment variable and
+# only then walk the process tree, and there is NO other fallback.
+pid=${CLAUDE_PID:-}
+case "$pid" in ''|*[!0-9]*) pid=$(vizier_harness_pid "$harness") ;; esac
+case "$pid" in
+  ''|*[!0-9]*)
+    printf 'refused reason=no_harness_pid harness=%s\n' "$harness" >&2
+    exit 2 ;;
+esac
 
-pid=$(ofm_harness_pid "$harness")
-[ -n "$pid" ] || pid=$PPID
+# Only create the home AFTER every refusal check has passed: a refused
+# activation should not leave behind any directory that a later, successful
+# activation would find unfamiliar.
+mkdir -p "$(vizier_home)/requests" "$(vizier_home)/projects" || { printf 'error: cannot create home\n' >&2; exit 2; }
 
-ofm_lock_claim "$session_id" "$harness" "$pid"
+vizier_lock_claim "$session_id" "$harness" "$pid"
 ```
 
-- [ ] **Step 4: Viết `hooks/reidentify-claude.sh`**
+- [ ] **Step 4: Write `hooks/reidentify-claude.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# PostCompact hook: sau khi nén context, first mate quên mình là ai nhưng vẫn
-# đang giữ lock và vẫn bị đánh thức. In lại identity ra stderr cho đúng phiên
-# đang giữ lock, câm với mọi phiên khác.
+# PostCompact hook: after context compaction, the first mate forgets who it
+# is but is still holding the lock and still being woken up. Reprint identity
+# to stderr for the session that actually holds the lock, stay silent for
+# every other session.
 set -u
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
-[ -r "$LIB/ofm-home.sh" ] || exit 0
+[ -r "$LIB/vizier-home.sh" ] || exit 0
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 command -v jq >/dev/null 2>&1 || exit 0
 
 payload=$(cat 2>/dev/null || true)
 session_id=$(printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
-ofm_lock_matches "$session_id" || exit 0
+vizier_lock_matches "$session_id" || exit 0
 
 SKILL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../skills/identity" 2>/dev/null && pwd)/SKILL.md"
 if [ -r "$SKILL" ]; then
-  printf 'orca-firstmate: phiên này vẫn là first mate. Đọc lại identity:\n' >&2
+  printf 'vizier: this session is still the first mate. Reprinting identity:\n' >&2
   cat "$SKILL" >&2
 else
-  printf 'orca-firstmate: phiên này vẫn là first mate nhưng không đọc được skill identity.\n' >&2
+  printf 'vizier: this session is still the first mate but the identity skill could not be read.\n' >&2
 fi
 exit 0
 ```
 
-- [ ] **Step 5: Viết `skills/identity/SKILL.md`**
+- [ ] **Step 5: Write `skills/identity/SKILL.md`**
 
 ```markdown
 ---
 name: identity
-description: Identity và hard rules của first mate. Nạp khi /firstmate kích hoạt phiên và mỗi lần context bị nén.
+description: The first mate's identity and hard rules. Loaded when /vizier activates a session and every time context gets compacted.
 ---
 
-# Bạn là first mate
+# You are the first mate
 
-Captain nói chuyện với **một** đầu mối duy nhất: bạn. Crew agent chạy trong worktree và
-terminal do Orca quản lý. Bạn điều phối, không tự làm.
+The captain talks to **one** single point of contact: you. Crew agents run in worktrees and
+terminals managed by Orca. You coordinate, you don't do the work yourself.
 
-## Phân vai
+## Division of roles
 
-- **Orca sở hữu cơ khí**: worktree, terminal, Run/Task/Dispatch, mailbox, release, federation
-  xuyên host. Không bao giờ chép lại state đó vào home.
-- **Bạn sở hữu phán đoán**: chia yêu cầu thành task, sinh brief, chọn host, đọc `worker_done`,
-  quyết bước tiếp, nói với captain bằng ngôn ngữ kết quả chứ không phải ngôn ngữ cơ khí.
+- **Orca owns the mechanics**: worktrees, terminals, Run/Task/Dispatch, mailbox, release,
+  cross-host federation. Never copy that state into home.
+- **You own the judgment**: split a request into tasks, generate briefs, choose a host, read
+  `worker_done`, decide the next step, talk to the captain in the language of outcomes, not
+  the language of mechanics.
 
 ## Hard rules
 
-1. **Không tự sửa code project.** Việc đó của worker, trong worktree Orca cấp.
-2. **Không suy diễn thẩm quyền.** Merge, hành động phá huỷ, hành động không đảo ngược được,
-   và lựa chọn nhạy cảm bảo mật đều cần captain nói rõ.
-3. **Host đã chọn cho một request thì dính suốt request.** Host chết giữa chừng thì **dừng và
-   báo captain** — không bao giờ âm thầm chuyển task sang host khác.
-4. **Chỉ release sau một `worker_done` thật đã xử lý.** Không release vì timeout, TUI idle,
-   heartbeat, status, question, escalation, hay `worker_done` bị reject.
-5. **Không bao giờ ack trước khi xử lý xong mọi message trong batch.** Orca replay tới khi ack;
-   đó là thứ làm cho việc mất phiên không mất tin.
-6. **Luôn truyền `--run <run_id>` tường minh** cho mọi lệnh orchestration. Phiên này không phải
-   terminal Orca nên không có Run bound để dựa vào.
-7. **Không bao giờ stop/restart/update daemon `no-mistakes`.** Một instance dùng chung mọi
-   worktree và host.
-8. **Dùng CLI chính chủ**: `git`, `gh`. Không wrapper bên thứ ba.
+1. **Never edit project code yourself.** That's the worker's job, in the worktree Orca assigned.
+2. **Never infer authority.** Merges, destructive actions, irreversible actions, and
+   security-sensitive choices all require the captain to say so explicitly.
+3. **The host chosen for a request stays with it for the whole request.** If the host dies
+   partway through, **stop and tell the captain** -- never silently move the task to another host.
+4. **Only release after a real `worker_done` has been processed.** Never release for a timeout,
+   TUI idle state, heartbeat, status, question, escalation, or a rejected or stale `worker_done`.
+5. **Never ack before every message in the batch has been processed.** Orca replays until acked;
+   that's what makes losing a session not lose a message.
+6. **Always pass `--run <run_id>` explicitly** to every orchestration command. This session is
+   not an Orca terminal, so there is no bound Run to fall back on.
+7. **Never stop/restart/update the `no-mistakes` daemon.** One instance is shared across every
+   worktree and host.
+8. **Use the tool's own CLI**: `git`, `gh`. No third-party wrapper.
 
 ## State
 
-Home ở `~/.orca-firstmate/` — `requests/` là sổ request đang mở, `projects/` là tri thức từng
-project. cwd của phiên này **không liên quan** tới state, và không bao giờ là authority cho việc
-chọn project.
+Home lives at `~/.vizier/` -- `requests/` is the ledger of open requests, `projects/` is
+the knowledge for each project. This session's cwd is **not related** to that state, and is never
+the authority for choosing a project.
 
-## Báo cáo
+## Reporting
 
-Gộp thành một tin, chỉ nói điều đáng nói: outcome, PR đầy đủ dạng `https://…`, và quyết định cần
-captain. Không tường thuật từng bước.
+Roll it into one message, say only what's worth saying: the outcome, the PR in full
+`https://...` form, and any decision the captain needs to make. Don't narrate step by step.
 ```
 
-- [ ] **Step 6: Viết `commands/firstmate.md`**
+- [ ] **Step 6: Write `commands/vizier.md`**
 
 ```markdown
 ---
-description: Biến phiên này thành first mate — liaison điều phối crew agent qua Orca
+description: Turns this session into the first mate -- the liaison coordinating crew agents through Orca
 ---
 
-Kích hoạt phiên này thành first mate.
+Activate this session as the first mate.
 
-1. Chạy đúng lệnh này qua Bash, thay `<session_id>` bằng session id của phiên hiện tại:
+1. Run exactly this command through Bash, **with no extra arguments**:
 
    ```
-   "${CLAUDE_PLUGIN_ROOT}/bin/ofm-activate.sh" "<session_id>" claude
+   "${CLAUDE_PLUGIN_ROOT}/bin/vizier-activate.sh" claude
    ```
 
-   - rc 0 và in `claimed`/`reclaimed`/`refreshed` → phiên này giờ là first mate, đi tiếp.
-   - rc 1 và in `refused held_by=<id>` → **dừng lại**. Báo captain rằng một phiên khác đang là
-     first mate và hỏi họ muốn đóng phiên kia hay tiếp tục ở đó. Không cướp lock.
+   The script reads the session id itself from `CLAUDE_CODE_SESSION_ID` in the environment.
+   **Do not guess or fill in a session id yourself** -- you have no way to know it, and a made-up
+   value would keep the lock from ever matching the hook's payload, permanently silencing both
+   the wake mechanism and the reidentify mechanism while the lock stays held.
 
-2. Đọc `${CLAUDE_PLUGIN_ROOT}/skills/identity/SKILL.md` và tuân theo nó suốt phiên.
+   Handle it according to the exact return code:
 
-3. Chạy `"${CLAUDE_PLUGIN_ROOT}/bin/orca-firstmate" doctor`. Có dòng nào không đạt thì báo
-   captain kèm lệnh sửa in ra và **dừng** — không nhận yêu cầu với toolchain gãy.
+   - **rc 0**, printing `claimed` / `reclaimed` / `refreshed` -> this session is now the first
+     mate, proceed.
+   - **rc 1**, printing `refused held_by=<id>` -> **STOP.** Another session is already the first
+     mate. Tell the captain which session holds it, then ask whether they want to close that
+     session or keep working there. **Never steal the lock yourself, never delete the lock file
+     yourself, never rerun the script hoping for a different outcome.**
+   - **rc 2**, printing `no_session_id` or `no_harness_pid` -> **STOP** and report the exact
+     reason line to the captain. This is an environment where the session cannot be identified,
+     not something to retry.
 
-4. Nếu cwd nằm trong một git repo, đọc `git remote get-url origin` và **gợi ý** đó là project cho
-   request đầu tiên. Chỉ là gợi ý: captain gật mới tính. cwd không bao giờ là authority.
+2. Read `${CLAUDE_PLUGIN_ROOT}/skills/identity/SKILL.md` and follow it for the rest of the session.
 
-5. Nói với captain một câu ngắn: đã là first mate, home ở đâu, có bao nhiêu request đang mở
-   (đếm file có `status: open` trong `~/.orca-firstmate/requests/`).
+3. Run `"${CLAUDE_PLUGIN_ROOT}/bin/vizier" doctor`. If any line fails, report it to the
+   captain along with the printed fix command and **stop** -- don't take on a request with a
+   broken toolchain.
+
+4. If the cwd is inside a git repo, read `git remote get-url origin` and **suggest** it as the
+   project for the first request. It's only a suggestion: it counts only once the captain
+   confirms it. cwd is never the authority.
+
+5. Tell the captain one short sentence: that you are now the first mate, where home is, and how
+   many requests are currently open (count files with `status: open` in
+   `~/.vizier/requests/`).
 ```
 
-- [ ] **Step 7: Chạy test cho pass**
+- [ ] **Step 7: Run the test until it passes**
 
-Run: `chmod +x bin/ofm-activate.sh hooks/reidentify-claude.sh && bash tests/activate.test.sh`
-Expected: PASS — `ok: 10 asserts passed (activate.test.sh)`
+Run: `chmod +x bin/vizier-activate.sh hooks/reidentify-claude.sh && bash tests/activate.test.sh`
+Expected: PASS -- the last line is `ok: <n> asserts passed (activate.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add skills/identity/SKILL.md commands/firstmate.md hooks/reidentify-claude.sh bin/ofm-activate.sh tests/activate.test.sh
-git commit -m "feat: add the identity skill, /firstmate activation, and compaction re-identify"
+git add skills/identity/SKILL.md commands/vizier.md hooks/reidentify-claude.sh bin/vizier-activate.sh tests/activate.test.sh
+git commit -m "feat: add the identity skill, /vizier activation, and compaction re-identify"
 ```
 
 ---
 
-### Task 7: Adapter Claude Code
+### Task 7: The Claude Code adapter
 
 **Files:**
 - Create: `.claude-plugin/plugin.json`
 - Create: `hooks/hooks.json`
-- Create: `bin/ofm-adapter-claude.sh`
+- Create: `bin/vizier-adapter-claude.sh`
 - Create: `tests/adapter-claude.test.sh`
 
 **Interfaces:**
-- Consumes: không (chỉ thao tác file)
-- Produces: `ofm-adapter-claude.sh install <dist_dir> <target_root>` và `... uninstall <target_root>`; `... detect` → rc 0 khi có `claude` trên PATH. `target_root` mặc định `$HOME/.claude/skills` (test ghi đè).
+- Consumes: nothing (only manipulates files)
+- Produces: `vizier-adapter-claude.sh install <dist_dir> <target_root>` and `... uninstall <target_root>`; `... detect` -> rc 0 when `claude` is on PATH. `target_root` defaults to `$HOME/.claude/skills` (overridden in tests).
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/adapter-claude.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-AD="$OFM_TEST_REPO/bin/ofm-adapter-claude.sh"
-DIST="$OFM_TEST_TMP/dist"; TARGET="$OFM_TEST_TMP/claude-skills"
+vizier_test_setup
+AD="$VIZIER_TEST_REPO/bin/vizier-adapter-claude.sh"
+DIST="$VIZIER_TEST_TMP/dist"; TARGET="$VIZIER_TEST_TMP/claude-skills"
 mkdir -p "$DIST/hooks" "$DIST/lib" "$DIST/skills/identity" "$DIST/commands" "$DIST/.claude-plugin"
-cp "$OFM_TEST_REPO/hooks/hooks.json" "$DIST/hooks/"
-cp "$OFM_TEST_REPO/.claude-plugin/plugin.json" "$DIST/.claude-plugin/"
+cp "$VIZIER_TEST_REPO/hooks/hooks.json" "$DIST/hooks/"
+cp "$VIZIER_TEST_REPO/.claude-plugin/plugin.json" "$DIST/.claude-plugin/"
 printf 'x\n' > "$DIST/hooks/wake-claude.sh"
 
-bash "$AD" install "$DIST" "$TARGET"; assert_rc $? 0 "install thành công"
-[ -f "$TARGET/orca-firstmate/hooks/hooks.json" ]; assert_rc $? 0 "chép hooks.json"
-[ -f "$TARGET/orca-firstmate/.claude-plugin/plugin.json" ]; assert_rc $? 0 "chép manifest"
+bash "$AD" install "$DIST" "$TARGET"; assert_rc $? 0 "install succeeded"
+[ -f "$TARGET/vizier/hooks/hooks.json" ]; assert_rc $? 0 "copies hooks.json"
+[ -f "$TARGET/vizier/.claude-plugin/plugin.json" ]; assert_rc $? 0 "copies the manifest"
 
-# hooks.json phải khai đúng hai hằng số đã kiểm chứng
-hooks="$TARGET/orca-firstmate/hooks/hooks.json"
-assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].asyncRewake' "$hooks")" "true" "asyncRewake bật"
-assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].timeout' "$hooks")" "28800" "timeout 28800"
-assert_contains "$(jq -r '.hooks.Stop[0].hooks[0].command' "$hooks")" "CLAUDE_PLUGIN_ROOT" "dùng CLAUDE_PLUGIN_ROOT"
-assert_contains "$(jq -r '.hooks.PostCompact[0].hooks[0].command' "$hooks")" "reidentify-claude.sh" "có PostCompact"
+# hooks.json must declare exactly the two verified constants
+hooks="$TARGET/vizier/hooks/hooks.json"
+assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].asyncRewake' "$hooks")" "true" "asyncRewake is on"
+assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].timeout' "$hooks")" "28800" "timeout is 28800"
+assert_contains "$(jq -r '.hooks.Stop[0].hooks[0].command' "$hooks")" "CLAUDE_PLUGIN_ROOT" "uses CLAUDE_PLUGIN_ROOT"
+assert_contains "$(jq -r '.hooks.PostCompact[0].hooks[0].command' "$hooks")" "reidentify-claude.sh" "has PostCompact"
 
-# install chạy lại là idempotent, không nhân bản
-bash "$AD" install "$DIST" "$TARGET"; assert_rc $? 0 "install lần hai vẫn ok"
-assert_eq "$(jq '.hooks.Stop[0].hooks | length' "$hooks")" "1" "không nhân bản hook"
+# rerunning install is idempotent, does not duplicate
+bash "$AD" install "$DIST" "$TARGET"; assert_rc $? 0 "installing a second time is still ok"
+assert_eq "$(jq '.hooks.Stop[0].hooks | length' "$hooks")" "1" "does not duplicate the hook"
 
-# uninstall xoá sạch thư mục plugin
-bash "$AD" uninstall "$TARGET"; assert_rc $? 0 "uninstall thành công"
-[ -d "$TARGET/orca-firstmate" ]; assert_rc $? 1 "thư mục plugin đã biến mất"
+# uninstall wipes the plugin directory clean
+bash "$AD" uninstall "$TARGET"; assert_rc $? 0 "uninstall succeeded"
+[ -d "$TARGET/vizier" ]; assert_rc $? 1 "the plugin directory is gone"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/adapter-claude.test.sh`
-Expected: FAIL — `hooks/hooks.json: No such file or directory`
+Expected: FAIL -- `hooks/hooks.json: No such file or directory`
 
-- [ ] **Step 3: Viết `hooks/hooks.json` và `.claude-plugin/plugin.json`**
+- [ ] **Step 3: Write `hooks/hooks.json` and `.claude-plugin/plugin.json`**
 
 ```json
 {
@@ -1194,7 +1478,7 @@ Expected: FAIL — `hooks/hooks.json: No such file or directory`
 ```json
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
-  "name": "orca-firstmate",
+  "name": "vizier",
   "version": "0.1.0",
   "description": "Talk to one first mate; it runs an Orca-managed crew",
   "skills": "./skills/",
@@ -1203,12 +1487,13 @@ Expected: FAIL — `hooks/hooks.json: No such file or directory`
 }
 ```
 
-- [ ] **Step 4: Viết `bin/ofm-adapter-claude.sh`**
+- [ ] **Step 4: Write `bin/vizier-adapter-claude.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# Adapter Claude Code: cài payload thành một plugin trong thư mục RIÊNG.
-# Không đụng file config nào của người khác, nên gỡ chỉ là xoá thư mục.
+# Claude Code adapter: installs the payload as a plugin in its OWN directory.
+# Touches no one else's config file, so uninstalling is just deleting the
+# directory.
 set -u
 
 action=${1:-}
@@ -1220,65 +1505,66 @@ case "$action" in
     dist=${2:?usage: install <dist_dir> [target_root]}
     target=${3:-$HOME/.claude/skills}
     [ -d "$dist" ] || { printf 'error: dist not found: %s\n' "$dist" >&2; exit 1; }
-    dest="$target/orca-firstmate"
+    dest="$target/vizier"
     mkdir -p "$target" || exit 1
-    # Chép sạch: xoá bản cũ trước để install là idempotent theo đúng nghĩa,
-    # không để lại file của phiên bản trước.
+    # Copy clean: delete the old copy first so install is idempotent in the
+    # real sense, leaving no file behind from a previous version.
     rm -rf "$dest"
     mkdir -p "$dest" || exit 1
     (cd "$dist" && tar cf - .) | (cd "$dest" && tar xf -) || exit 1
     printf 'installed claude adapter -> %s\n' "$dest"
-    printf 'note: Claude Code có cơ chế đánh thức phiên idle đầy đủ (asyncRewake).\n'
+    printf 'note: Claude Code has a full idle-session wake mechanism (asyncRewake).\n'
     exit 0 ;;
   uninstall)
     target=${2:-$HOME/.claude/skills}
-    rm -rf "$target/orca-firstmate"
+    rm -rf "$target/vizier"
     printf 'removed claude adapter\n'; exit 0 ;;
   *)
-    printf 'usage: ofm-adapter-claude.sh detect|install <dist> [target]|uninstall [target]\n' >&2
+    printf 'usage: vizier-adapter-claude.sh detect|install <dist> [target]|uninstall [target]\n' >&2
     exit 2 ;;
 esac
 ```
 
-- [ ] **Step 5: Chạy test cho pass**
+- [ ] **Step 5: Run the test until it passes**
 
-Run: `chmod +x bin/ofm-adapter-claude.sh && bash tests/adapter-claude.test.sh`
-Expected: PASS — `ok: 10 asserts passed (adapter-claude.test.sh)`
+Run: `chmod +x bin/vizier-adapter-claude.sh && bash tests/adapter-claude.test.sh`
+Expected: PASS -- the last line is `ok: <n> asserts passed (adapter-claude.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add .claude-plugin/plugin.json hooks/hooks.json bin/ofm-adapter-claude.sh tests/adapter-claude.test.sh
+git add .claude-plugin/plugin.json hooks/hooks.json bin/vizier-adapter-claude.sh tests/adapter-claude.test.sh
 git commit -m "feat: add the Claude Code plugin adapter"
 ```
 
 ---
 
-### Task 8: Adapter Cursor — merge phẫu thuật
+### Task 8: The Cursor adapter -- surgical merge
 
-**Rủi ro cao nhất của cả plan.** File đích là `~/.cursor/hooks.json`, nơi Orca đã có 8 entry. Merge sai là phá supervision của Orca, không chỉ của ta.
+**The plan's highest risk.** The target file is `~/.cursor/hooks.json`, where Orca already has 8 entries. A bad merge breaks Orca's supervision, not just ours.
 
 **Files:**
-- Create: `bin/ofm-adapter-cursor.sh`
+- Create: `lib/vizier-merge-lib.sh`
+- Create: `bin/vizier-adapter-cursor.sh`
 - Create: `tests/adapter-cursor.test.sh`
 
 **Interfaces:**
-- Consumes: không
-- Produces: `ofm-adapter-cursor.sh install <dist_dir> [hooks_json]`, `... uninstall [hooks_json]`, `... verify [hooks_json]` (rc 0 khi có đúng một entry của ta), `... detect`. Entry của ta nhận diện bằng chuỗi `wake-cursor.sh` trong `.command` — tên file là marker, độc lập với đường dẫn cài, nên `OFM_HOME` ghi đè trong test vẫn khớp.
+- Consumes: nothing
+- Produces: `vizier-adapter-cursor.sh install <dist_dir> [hooks_json]`, `... uninstall [hooks_json]`, `... verify [hooks_json]` (rc 0 when exactly our own entry is present), `... detect`. Our entry is identified by the string `wake-cursor.sh` in `.command` -- the file name is the marker, independent of the install path, so an `VIZIER_HOME` override in tests still matches.
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/adapter-cursor.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-AD="$OFM_TEST_REPO/bin/ofm-adapter-cursor.sh"
-DIST="$OFM_TEST_TMP/dist"; mkdir -p "$DIST/hooks"; printf 'x\n' > "$DIST/hooks/wake-cursor.sh"
-H="$OFM_TEST_TMP/cursor-hooks.json"
+vizier_test_setup
+AD="$VIZIER_TEST_REPO/bin/vizier-adapter-cursor.sh"
+DIST="$VIZIER_TEST_TMP/dist"; mkdir -p "$DIST/hooks"; printf 'x\n' > "$DIST/hooks/wake-cursor.sh"
+H="$VIZIER_TEST_TMP/cursor-hooks.json"
 
-# Bắt chước file thật của captain: Orca đã có entry ở đây từ trước.
+# Mimics the captain's real file: Orca already has entries here beforehand.
 cat > "$H" <<'JSON'
 {
   "version": 1,
@@ -1291,88 +1577,199 @@ cat > "$H" <<'JSON'
 JSON
 before=$(shasum -a 256 "$H" | awk '{print $1}')
 
-bash "$AD" install "$DIST" "$H"; assert_rc $? 0 "install thành công"
+bash "$AD" install "$DIST" "$H"; assert_rc $? 0 "install succeeded"
 
-# Entry của người khác phải còn nguyên vẹn, từng cái một
-assert_eq "$(jq -r '.hooks.preToolUse | length' "$H")" "1" "giữ nguyên preToolUse"
-assert_eq "$(jq -r '.hooks.afterAgentResponse[0].command' "$H")" "/Users/x/.orca/agent-hooks/cursor-hook.sh" "giữ nguyên hook Orca"
-assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hooks"))] | length' "$H")" "1" "giữ nguyên stop hook của Orca"
-assert_eq "$(jq -r '.version' "$H")" "1" "giữ nguyên version"
+# The other party's entries must remain intact, one by one
+assert_eq "$(jq -r '.hooks.preToolUse | length' "$H")" "1" "preToolUse preserved"
+assert_eq "$(jq -r '.hooks.afterAgentResponse[0].command' "$H")" "/Users/x/.orca/agent-hooks/cursor-hook.sh" "Orca hook preserved"
+assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hooks"))] | length' "$H")" "1" "Orca's stop hook preserved"
+assert_eq "$(jq -r '.version' "$H")" "1" "version preserved"
 
-# Entry của ta đúng hằng số đã kiểm chứng
-assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("wake-cursor.sh"))] | length' "$H")" "1" "thêm đúng một entry"
-assert_eq "$(jq -r '.hooks.stop[] | select(.command | contains("wake-cursor.sh")) | .loop_limit' "$H")" "200" "loop_limit 200"
-assert_eq "$(jq -r '.hooks.stop[] | select(.command | contains("wake-cursor.sh")) | .timeout' "$H")" "28800" "timeout 28800"
+# Our entry matches the verified constants exactly
+assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("wake-cursor.sh"))] | length' "$H")" "1" "exactly one entry added"
+assert_eq "$(jq -r '.hooks.stop[] | select(.command | contains("wake-cursor.sh")) | .loop_limit' "$H")" "200" "loop_limit is 200"
+assert_eq "$(jq -r '.hooks.stop[] | select(.command | contains("wake-cursor.sh")) | .timeout' "$H")" "28800" "timeout is 28800"
 
-# Có sao lưu trước khi ghi
-ls "$OFM_HOME"/backups/cursor-hooks.*.json >/dev/null 2>&1; assert_rc $? 0 "có file sao lưu"
+# A backup exists before writing
+ls "$VIZIER_HOME"/backups/cursor-hooks.*.json >/dev/null 2>&1; assert_rc $? 0 "a backup file exists"
 
-# Idempotent: chạy ba lần vẫn đúng một entry
+# Idempotent: running three times still leaves exactly one entry
 bash "$AD" install "$DIST" "$H" >/dev/null
 bash "$AD" install "$DIST" "$H" >/dev/null
-assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("wake-cursor.sh"))] | length' "$H")" "1" "chạy lại không nhân bản"
-assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hooks"))] | length' "$H")" "1" "chạy lại không nhân bản của người khác"
+assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("wake-cursor.sh"))] | length' "$H")" "1" "rerunning does not duplicate"
+assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hooks"))] | length' "$H")" "1" "rerunning does not duplicate the other party's entry"
 
-bash "$AD" verify "$H"; assert_rc $? 0 "verify thấy entry của ta"
+bash "$AD" verify "$H"; assert_rc $? 0 "verify sees our entry"
 
-# uninstall gỡ đúng entry của ta và trả file về y như cũ
-bash "$AD" uninstall "$H"; assert_rc $? 0 "uninstall thành công"
-assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("wake-cursor.sh"))] | length' "$H")" "0" "entry của ta đã biến mất"
-assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hooks"))] | length' "$H")" "1" "hook Orca còn nguyên"
-bash "$AD" verify "$H"; assert_rc $? 1 "verify báo không còn entry"
+# uninstall removes exactly our entry and returns the file to its previous state
+bash "$AD" uninstall "$H"; assert_rc $? 0 "uninstall succeeded"
+assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("wake-cursor.sh"))] | length' "$H")" "0" "our entry is gone"
+assert_eq "$(jq -r '[.hooks.stop[] | select(.command | contains("orca/agent-hooks"))] | length' "$H")" "1" "Orca's hook is still intact"
+bash "$AD" verify "$H"; assert_rc $? 1 "verify reports the entry is gone"
 
-# File thiếu thì tạo mới hợp lệ, không nổ
-H2="$OFM_TEST_TMP/fresh.json"
-bash "$AD" install "$DIST" "$H2"; assert_rc $? 0 "tạo được file mới"
-assert_eq "$(jq -r '.version' "$H2")" "1" "file mới có version 1"
+# A missing file is created fresh and valid, no crash
+H2="$VIZIER_TEST_TMP/fresh.json"
+bash "$AD" install "$DIST" "$H2"; assert_rc $? 0 "a new file is created"
+assert_eq "$(jq -r '.version' "$H2")" "1" "the new file has version 1"
 
-# JSON hỏng thì TỪ CHỐI, tuyệt đối không ghi đè
-printf 'not json at all' > "$OFM_TEST_TMP/broken.json"
-out=$(bash "$AD" install "$DIST" "$OFM_TEST_TMP/broken.json" 2>&1); rc=$?
-assert_rc "$rc" 1 "JSON hỏng thì rc 1"
-assert_contains "$out" "refus" "nói rõ là từ chối"
-assert_eq "$(cat "$OFM_TEST_TMP/broken.json")" "not json at all" "file hỏng không bị đụng tới"
+# Broken JSON must be REFUSED, absolutely never overwritten
+printf 'not json at all' > "$VIZIER_TEST_TMP/broken.json"
+out=$(bash "$AD" install "$DIST" "$VIZIER_TEST_TMP/broken.json" 2>&1); rc=$?
+assert_rc "$rc" 1 "broken JSON gives rc 1"
+assert_contains "$out" "refus" "clearly states this is a refusal"
+assert_eq "$(cat "$VIZIER_TEST_TMP/broken.json")" "not json at all" "the broken file is untouched"
 
-ofm_test_teardown
-ofm_test_report
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/adapter-cursor.test.sh`
-Expected: FAIL — `bin/ofm-adapter-cursor.sh: No such file or directory`
+Expected: FAIL -- `bin/vizier-adapter-cursor.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `bin/ofm-adapter-cursor.sh`**
+- [ ] **Step 3a: Write `lib/vizier-merge-lib.sh`**
+
+```bash
+# shellcheck shell=bash
+# Decision rule for merging into a file owned by another tool.
+#
+# Lives in lib rather than in the adapter, because the adapter has a dispatch
+# `case` block that runs the moment it's sourced -- it can't be tested without
+# inventing a test-only branch inside the single riskiest file in the project.
+# A lib exists precisely to be sourced.
+#
+# The write race itself can't be reproduced in a unit test, but the decision
+# RULE must be testable, and this is it.
+
+# 0 when there is no sign of a lost update.
+# An EMPTY count (jq failed, file unreadable) counts as a MISMATCH, not as
+# equal: two empty strings compared to each other are "equal", and that is how
+# a real failure disguises itself as healthy state.
+vizier_no_lost_update() {  # <others_before> <others_after> <mine_after>
+  # Check EACH argument separately, never concatenate them. The concatenated
+  # form `case "$1$2$3"` once let through the case `"" "" 1`: concatenated
+  # that's "1" -- all digits, passes the digit check -- then `"" = ""` reports
+  # "no mismatch" -- exactly what this guard exists to block.
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  case "$2" in ''|*[!0-9]*) return 1 ;; esac
+  case "$3" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$2" = "$1" ] && [ "$3" = "1" ]
+}
+```
+
+- [ ] **Step 3: Write `bin/vizier-adapter-cursor.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# Adapter Cursor: merge phẫu thuật vào ~/.cursor/hooks.json.
+# Cursor adapter: surgical merge into ~/.cursor/hooks.json.
 #
-# VÌ SAO KHÔNG PHẢI PLUGIN. Đã đo (docs/verification/2026-08-31-plugin-wake.md):
-# cùng một hook đặt trong ~/.cursor/skills/<name>/ với .cursor-plugin/plugin.json
-# khai "hooks" KHÔNG BAO GIỜ fire, kể cả ép bằng --plugin-dir; đặt trong
-# ~/.cursor/hooks.json thì chạy đủ vòng. Cursor không cho ta lựa chọn.
+# WHY NOT A PLUGIN. Measured (docs/verification/2026-08-31-plugin-wake.md):
+# the same hook placed in ~/.cursor/skills/<name>/ with .cursor-plugin/plugin.json
+# declaring "hooks" NEVER fires, even when forced with --plugin-dir; placed
+# in ~/.cursor/hooks.json it runs the full cycle. Cursor gives us no choice.
 #
-# FILE NÀY CÓ CHỦ KHÁC. Orca tự cài 8 entry của nó vào đây. Mọi thao tác phải:
-#   - nhận diện entry của ta bằng đúng một chuỗi trong .command (tên file
-#     wake-cursor.sh, độc lập với đường dẫn cài);
-#   - chỉ thêm/gỡ entry đó, không bao giờ viết lại cả file từ mẫu;
-#   - sao lưu trước khi ghi;
-#   - TỪ CHỐI khi JSON không parse được, thay vì "sửa" bằng cách ghi đè.
+# THIS FILE HAS ANOTHER OWNER. Orca installs its own 8 entries into it. Every
+# operation must:
+#   - identify our entry by exactly one string in .command (the file name
+#     wake-cursor.sh, independent of the install path);
+#   - only add/remove that one entry, never rewrite the whole file from a
+#     template;
+#   - back up before writing;
+#   - REFUSE when the JSON fails to parse, rather than "fixing" it by
+#     overwriting.
 set -u
 
-MARKER="wake-cursor.sh"   # tên file là marker: không tool nào khác có file tên này
+MARKER="wake-cursor.sh"   # the file name is the marker: no other tool has a file with this name
 
-_home() { printf '%s' "${OFM_HOME:-$HOME/.orca-firstmate}"; }
+# The decision rule for "was an update lost" lives in the lib, NOT here: a
+# script with a `case` dispatch block can't be sourced for testing, and we
+# don't invent a test-only branch inside the single riskiest file in the
+# project.
+LIB="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)" || { printf 'error: lib not found\n' >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$LIB/vizier-merge-lib.sh"
+
+_home() { printf '%s' "${VIZIER_HOME:-$HOME/.vizier}"; }
 _default_hooks() { printf '%s/.cursor/hooks.json' "$HOME"; }
 
-_backup() {  # <hooks_json>
-  local dir stamp
+# Follow the symlink before writing. `mv tmp "$H"` onto a symlink would
+# REPLACE the symlink itself with a plain file -- the content survives but
+# the structure the captain set up is lost.
+_resolve() {  # <path> -- walk the whole link chain, not just one hop
+  local p=$1 t hops=0
+  while [ -L "$p" ] && [ "$hops" -lt 16 ]; do
+    t=$(readlink "$p") || break
+    case "$t" in
+      /*) p=$t ;;
+      *)  p="$(dirname "$p")/$t" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  printf '%s' "$p"
+}
+
+# Backup names must not collide. `date +%S` only resolves to the second, and
+# three installs in a row can easily land inside the same second -- the later
+# one would overwrite the earlier one and the in-between state would become
+# unrecoverable.
+_backup() {  # <hooks_json> -> prints the backup path
+  local dir stamp n=0 f
   dir="$(_home)/backups"
   mkdir -p "$dir" || return 1
   stamp=$(date +%Y%m%d-%H%M%S)
-  cp "$1" "$dir/cursor-hooks.$stamp.json" 2>/dev/null || return 1
-  printf '%s/cursor-hooks.%s.json' "$dir" "$stamp"
+  while [ -e "$dir/cursor-hooks.$stamp.$n.json" ]; do n=$((n + 1)); done
+  f="$dir/cursor-hooks.$stamp.$n.json"
+  cp "$1" "$f" 2>/dev/null || return 1
+  printf '%s' "$f"
+}
+
+# Count entries that are NOT ours. Used both before and after writing to
+# detect a lost update. An entry whose `.command` is not a string can't be
+# ours, so it gets COUNTED and KEPT -- a foreign entry must never be allowed
+# to break an install.
+_count_others() {  # <hooks_json>
+  jq --arg m "$MARKER" '
+    [(.hooks.stop // [])[]
+     | select(((.command? | type) != "string") or ((.command | contains($m)) | not))]
+    | length' "$1" 2>/dev/null
+}
+_count_mine() {  # <hooks_json>
+  jq --arg m "$MARKER" '
+    [(.hooks.stop // [])[]
+     | select(((.command? | type) == "string") and (.command | contains($m)))]
+    | length' "$1" 2>/dev/null
+}
+
+# Apply our entry onto the current file. Used for both the first merge and
+# a retry.
+_merge_ours() {  # <hooks_json> <cmd>
+  local H=$1 cmd=$2 tmp="$1.vizier.$$"
+  jq --arg cmd "$cmd" --arg m "$MARKER" '
+    .version = (.version // 1)
+    | .hooks = (.hooks // {})
+    | .hooks.stop = (
+        ((.hooks.stop // []) | map(select(
+           (((.command? | type) == "string") and (.command | contains($m))) | not)))
+        + [{type:"command", command:$cmd, timeout:28800, loop_limit:200}]
+      )
+  ' "$H" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$H" || { rm -f "$tmp"; return 1; }
+}
+
+# `.hooks.stop` must be an array, or not exist at all. If it's an object, jq
+# would SILENTLY coerce it into an array and wipe out the key entirely --
+# structural damage with no error reported, exactly the worst kind of harm
+# on a file owned by another tool.
+_assert_stop_shape() {  # <hooks_json>
+  local t
+  t=$(jq -r '(.hooks.stop // null) | type' "$1" 2>/dev/null) || return 1
+  case "$t" in
+    null|array) return 0 ;;
+    *) printf 'refused: .hooks.stop is %s, not an array; not touching %s\n' "$t" "$1" >&2
+       return 1 ;;
+  esac
 }
 
 action=${1:-}
@@ -1383,170 +1780,278 @@ case "$action" in
 
   install)
     dist=${2:?usage: install <dist_dir> [hooks_json]}
-    H=${3:-$(_default_hooks)}
+    H=$(_resolve "${3:-$(_default_hooks)}")
     cmd="$dist/hooks/wake-cursor.sh"
     if [ -f "$H" ]; then
       jq -e . "$H" >/dev/null 2>&1 || {
-        printf 'refused: %s is not valid JSON; fix or move it, this tool will not overwrite it\n' "$H" >&2
+        printf 'refused: %s is not valid JSON; fix it or move it aside, this tool will not overwrite it\n' "$H" >&2
         exit 1
       }
-      _backup "$H" >/dev/null || { printf 'refused: cannot write backup\n' >&2; exit 1; }
+      _assert_stop_shape "$H" || exit 1
+      backup=$(_backup "$H") || { printf 'refused: could not write a backup\n' >&2; exit 1; }
     else
       mkdir -p "$(dirname "$H")" || exit 1
       printf '{"version":1,"hooks":{}}\n' > "$H" || exit 1
+      backup=""
     fi
-    tmp="$H.ofm.$$"
-    jq --arg cmd "$cmd" --arg marker "$MARKER" '
-      .version = (.version // 1)
-      | .hooks = (.hooks // {})
-      | .hooks.stop = (
-          ((.hooks.stop // []) | map(select(((.command // "") | contains($marker)) | not)))
-          + [{type:"command", command:$cmd, timeout:28800, loop_limit:200}]
-        )
-    ' "$H" > "$tmp" 2>/dev/null || { rm -f "$tmp"; printf 'refused: merge failed\n' >&2; exit 1; }
-    jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; printf 'refused: merge produced invalid JSON\n' >&2; exit 1; }
-    mv "$tmp" "$H" || exit 1
+    others_before=$(_count_others "$H")
+    _merge_ours "$H" "$cmd" || { printf 'refused: merge failed\n' >&2; exit 1; }
+
+    # READ BACK AFTER WRITING. macOS has no `flock`, so instead of preventing
+    # the race we DETECT it. But NO auto-restore: the backup is a snapshot
+    # from BEFORE our merge, so restoring it would wipe out whatever the
+    # other writer wrote in between -- leaving the file older than either
+    # side, worse than just leaving it alone. Instead: try re-merging ONCE
+    # from the current state (which already contains their change), and if
+    # it's still off, report loudly and point the captain at the backup to
+    # decide for themselves.
+    if ! vizier_no_lost_update "$others_before" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+      _merge_ours "$H" "$cmd" || { printf 'refused: retry merge failed\n' >&2; exit 1; }
+      if ! vizier_no_lost_update "$(_count_others "$H")" "$(_count_others "$H")" "$(_count_mine "$H")"; then
+        printf 'refused: another process wrote %s at the same time and we could not reconcile it.\n' "$H" >&2
+        printf '  NOT auto-restoring, because the backup is older than their change. Backup at: %s\n' "${backup:-<none>}" >&2
+        printf '  Please inspect the file and rerun install.\n' >&2
+        exit 1
+      fi
+    fi
     printf 'installed cursor adapter -> %s\n' "$H"
-    printf 'note: Cursor KHÔNG chạy hook ở headless `cursor-agent -p`; phải dùng phiên tương tác.\n'
-    printf 'note: Cursor đòi trust theo từng thư mục workspace, nên mỗi thư mục mới cần một lần trust.\n'
+    printf 'note: Cursor does NOT run hooks in headless `cursor-agent -p`; an interactive session is required.\n'
+    printf 'note: Cursor requires trust per workspace directory, so every new directory needs one trust step.\n'
     exit 0 ;;
 
   uninstall)
-    H=${2:-$(_default_hooks)}
+    H=$(_resolve "${2:-$(_default_hooks)}")
     [ -f "$H" ] || { printf 'nothing to remove\n'; exit 0; }
     jq -e . "$H" >/dev/null 2>&1 || { printf 'refused: %s is not valid JSON\n' "$H" >&2; exit 1; }
-    _backup "$H" >/dev/null || { printf 'refused: cannot write backup\n' >&2; exit 1; }
-    tmp="$H.ofm.$$"
-    jq --arg marker "$MARKER" '
-      .hooks.stop = ((.hooks.stop // []) | map(select(((.command // "") | contains($marker)) | not)))
+    _assert_stop_shape "$H" || exit 1
+    _backup "$H" >/dev/null || { printf 'refused: could not write a backup\n' >&2; exit 1; }
+    others_before=$(_count_others "$H")
+    tmp="$H.vizier.$$"
+    jq --arg m "$MARKER" '
+      .hooks.stop = ((.hooks.stop // []) | map(select(
+         (((.command? | type) == "string") and (.command | contains($m))) | not)))
     ' "$H" > "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 1; }
     jq -e . "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; exit 1; }
-    mv "$tmp" "$H" || exit 1
+    mv "$tmp" "$H" || { rm -f "$tmp"; exit 1; }
+    [ "$(_count_others "$H")" = "$others_before" ] || {
+      printf 'warn: the entry count for other tools changed while uninstalling\n' >&2; }
     printf 'removed cursor adapter entry from %s\n' "$H"
     exit 0 ;;
 
   verify)
-    H=${2:-$(_default_hooks)}
+    dist=${2:?usage: verify <dist_dir> [hooks_json]}
+    H=$(_resolve "${3:-$(_default_hooks)}")
     [ -f "$H" ] || exit 1
-    n=$(jq --arg marker "$MARKER" '[(.hooks.stop // [])[] | select((.command // "") | contains($marker))] | length' "$H" 2>/dev/null)
-    [ "$n" = "1" ] || exit 1
+    # Check the EXACT SHAPE, not just a count: a leftover stale entry with the
+    # wrong timeout, or pointing at a previous install's dist, still "counts
+    # as one" but is broken.
+    jq -e --arg cmd "$dist/hooks/wake-cursor.sh" --arg m "$MARKER" '
+      [(.hooks.stop // [])[]
+       | select(((.command? | type) == "string") and (.command | contains($m)))] as $mine
+      | ($mine | length) == 1
+        and $mine[0].command == $cmd
+        and $mine[0].timeout == 28800
+        and $mine[0].loop_limit == 200
+    ' "$H" >/dev/null 2>&1 || exit 1
     exit 0 ;;
 
   *)
-    printf 'usage: ofm-adapter-cursor.sh detect|install <dist> [hooks_json]|uninstall [hooks_json]|verify [hooks_json]\n' >&2
+    printf 'usage: vizier-adapter-cursor.sh detect|install <dist> [hooks_json]|uninstall [hooks_json]|verify <dist> [hooks_json]\n' >&2
     exit 2 ;;
 esac
 ```
 
-- [ ] **Step 4: Chạy test cho pass**
+- [ ] **Step 4: Run the test until it passes**
 
-Run: `chmod +x bin/ofm-adapter-cursor.sh && bash tests/adapter-cursor.test.sh`
-Expected: PASS — `ok: 19 asserts passed (adapter-cursor.test.sh)`
+Run: `chmod +x bin/vizier-adapter-cursor.sh && bash tests/adapter-cursor.test.sh`
+Expected: PASS -- the last line is `ok: <n> asserts passed (adapter-cursor.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bin/ofm-adapter-cursor.sh tests/adapter-cursor.test.sh
+git add bin/vizier-adapter-cursor.sh tests/adapter-cursor.test.sh
 git commit -m "feat: merge the Cursor stop hook into a file another tool owns"
 ```
 
 ---
 
-### Task 9: CLI `orca-firstmate`
+### Task 9: The `vizier` CLI
 
 **Files:**
-- Create: `bin/orca-firstmate`
+- Create: `bin/vizier`
 - Create: `tests/cli.test.sh`
-- Modify: `tests/run-all.sh` (không cần sửa — đã quét `*.test.sh`)
+- Modify: `tests/run-all.sh` (no change needed -- it already scans `*.test.sh`)
 
 **Interfaces:**
-- Consumes: `ofm-adapter-claude.sh`, `ofm-adapter-cursor.sh`, `lib/ofm-home.sh`
-- Produces: `orca-firstmate install|doctor|update|uninstall`. `doctor` in mỗi vấn đề một dòng `MISSING: <tool> (install: <cmd>)` hoặc `NOT_READY: <lý do>`, rc 1 khi có vấn đề, rc 0 khi sạch.
+- Consumes: `vizier-adapter-claude.sh`, `vizier-adapter-cursor.sh`, `lib/vizier-home.sh`
+- Produces: `vizier install|doctor|update|uninstall`. `doctor` prints one line per problem, `MISSING: <tool> (install: <cmd>)` or `NOT_READY: <reason>`, rc 1 when there's a problem, rc 0 when clean.
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/cli.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
-CLI="$OFM_TEST_REPO/bin/orca-firstmate"
+vizier_test_setup
+CLI="$VIZIER_TEST_REPO/bin/vizier"
+# `gh auth status` touches the real keychain, so the test would pass or fail
+# depending on the machine. Skip exactly that check; the real doctor still
+# checks it fully.
+export VIZIER_SKIP_GH_AUTH=1
 
-# doctor sạch khi fake-orca báo ready và mọi tool đều có
+# doctor is clean when fake-orca reports ready and every tool is present
 out=$(bash "$CLI" doctor 2>&1); rc=$?
-assert_rc "$rc" 0 "doctor sạch thì rc 0"
-assert_contains "$out" "orca" "doctor nhắc tới orca"
+assert_rc "$rc" 0 "a clean doctor gives rc 0"
+assert_contains "$out" "orca" "doctor mentions orca"
 
-# Orca chưa ready thì doctor fail và nói rõ cách sửa
-export OFM_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":false,"state":"starting","capabilities":[]}}'
+# Orca not ready makes doctor fail and states clearly how to fix it
+export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":false,"state":"starting","capabilities":[]}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
-assert_rc "$rc" 1 "Orca chưa ready thì rc 1"
-assert_contains "$out" "NOT_READY" "báo NOT_READY"
-assert_contains "$out" "orca open" "gợi ý lệnh sửa"
+assert_rc "$rc" 1 "Orca not ready gives rc 1"
+assert_contains "$out" "NOT_READY" "reports NOT_READY"
+assert_contains "$out" "orca open" "suggests the fix command"
 
-# Thiếu capability bắt buộc cũng fail
-export OFM_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":true,"state":"ready","capabilities":["other.v1"]}}'
+# Missing a required capability also fails
+export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":true,"state":"ready","capabilities":["other.v1"]}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
-assert_rc "$rc" 1 "thiếu capability thì rc 1"
-assert_contains "$out" "orchestration.contract.v1" "nêu đúng capability thiếu"
-unset OFM_FAKE_ORCA_STATUS
+assert_rc "$rc" 1 "missing capability gives rc 1"
+assert_contains "$out" "orchestration.contract.v1" "names the exact missing capability"
+unset VIZIER_FAKE_ORCA_STATUS
 
-# install chép payload vào dist rồi gọi adapter
-export OFM_CLAUDE_SKILLS_DIR="$OFM_TEST_TMP/claude-skills"
-export OFM_CURSOR_HOOKS_JSON="$OFM_TEST_TMP/cursor-hooks.json"
+# install copies the payload into dist then calls the adapter
+export VIZIER_CLAUDE_SKILLS_DIR="$VIZIER_TEST_TMP/claude-skills"
+export VIZIER_CURSOR_HOOKS_JSON="$VIZIER_TEST_TMP/cursor-hooks.json"
 out=$(bash "$CLI" install --harness claude 2>&1); rc=$?
-assert_rc "$rc" 0 "install claude thành công"
-[ -f "$OFM_HOME/dist/hooks/wake-claude.sh" ]; assert_rc $? 0 "payload nằm ở dist"
-[ -f "$OFM_CLAUDE_SKILLS_DIR/orca-firstmate/hooks/hooks.json" ]; assert_rc $? 0 "adapter claude đã cài"
+assert_rc "$rc" 0 "install claude succeeds"
+[ -f "$VIZIER_HOME/dist/hooks/wake-claude.sh" ]; assert_rc $? 0 "the payload is in dist"
+[ -f "$VIZIER_CLAUDE_SKILLS_DIR/vizier/hooks/hooks.json" ]; assert_rc $? 0 "the claude adapter is installed"
 
-# Harness chưa hỗ trợ thì báo thẳng, không im lặng
+# An unsupported harness says so plainly, does not stay silent
 out=$(bash "$CLI" install --harness codex 2>&1); rc=$?
-assert_rc "$rc" 1 "harness lạ thì rc 1"
-assert_contains "$out" "chưa hỗ trợ" "nói thẳng là chưa hỗ trợ"
+assert_rc "$rc" 1 "an unknown harness gives rc 1"
+assert_contains "$out" "is not supported" "says plainly it's not supported"
 
-# uninstall giữ nguyên state
-mkdir -p "$OFM_HOME/requests"; printf 'x\n' > "$OFM_HOME/requests/keep.md"
+# uninstall keeps state
+mkdir -p "$VIZIER_HOME/requests"; printf 'x\n' > "$VIZIER_HOME/requests/keep.md"
 bash "$CLI" uninstall >/dev/null 2>&1
-[ -f "$OFM_HOME/requests/keep.md" ]; assert_rc $? 0 "uninstall KHÔNG xoá requests"
-[ -d "$OFM_CLAUDE_SKILLS_DIR/orca-firstmate" ]; assert_rc $? 1 "uninstall gỡ adapter"
+[ -f "$VIZIER_HOME/requests/keep.md" ]; assert_rc $? 0 "uninstall does NOT delete requests"
+[ -d "$VIZIER_CLAUDE_SKILLS_DIR/vizier" ]; assert_rc $? 1 "uninstall removes the adapter"
 
-# uninstall phải dọn cả dấu vết của bootstrap
-export OFM_BIN_DIR="$OFM_TEST_TMP/bin"; mkdir -p "$OFM_BIN_DIR" "$OFM_HOME/src"
-ln -sf /usr/bin/true "$OFM_BIN_DIR/orca-firstmate"
+# uninstall must also clean up bootstrap's own traces
+export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"; mkdir -p "$VIZIER_BIN_DIR" "$VIZIER_HOME/src"
+ln -sf /usr/bin/true "$VIZIER_BIN_DIR/vizier"
 bash "$CLI" uninstall >/dev/null 2>&1
-[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 1 "uninstall gỡ symlink trên PATH"
-[ -d "$OFM_HOME/src" ]; assert_rc $? 1 "uninstall gỡ clone src"
+[ -L "$VIZIER_BIN_DIR/vizier" ]; assert_rc $? 1 "uninstall removes the symlink on PATH"
+[ -d "$VIZIER_HOME/src" ]; assert_rc $? 1 "uninstall removes the src clone when not running from it"
 
-ofm_test_teardown
-ofm_test_report
+# install FROM INSIDE the installed copy must be refused, not self-destruct
+bash "$CLI" install --harness claude >/dev/null 2>&1
+out=$(bash "$VIZIER_HOME/dist/bin/vizier" install --harness claude 2>&1); rc=$?
+assert_rc "$rc" 1 "install from inside dist is refused"
+assert_contains "$out" "refused" "clearly states this is a refusal"
+[ -f "$VIZIER_HOME/dist/bin/vizier" ]; assert_rc $? 0 "dist is not deleted after the refusal"
+
+# uninstall run FROM INSIDE src does not delete src, only prints the command
+mkdir -p "$VIZIER_HOME/src/bin" "$VIZIER_HOME/src/lib"
+cp "$VIZIER_TEST_REPO/bin/vizier" "$VIZIER_HOME/src/bin/"
+cp "$VIZIER_TEST_REPO/lib/vizier-home.sh" "$VIZIER_HOME/src/lib/"
+out=$(bash "$VIZIER_HOME/src/bin/vizier" uninstall 2>&1)
+[ -d "$VIZIER_HOME/src" ]; assert_rc $? 0 "does not self-delete the directory it's running from"
+assert_contains "$out" "rm -rf" "prints the delete command for the captain"
+
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/cli.test.sh`
-Expected: FAIL — `bin/orca-firstmate: No such file or directory`
+Expected: FAIL -- `bin/vizier: No such file or directory`
 
-- [ ] **Step 3: Viết `bin/orca-firstmate`**
+- [ ] **Step 3: Write `bin/vizier`**
 
 ```bash
 #!/usr/bin/env bash
-# orca-firstmate — CLI cài đặt và chẩn đoán.
+# vizier -- install and diagnostics CLI.
 #
-# LUẬT CỨNG: script này CHỈ chạy lúc cài và lúc chẩn đoán. Không đường runtime
-# nào được gọi nó. Sau khi cài, first mate nói chuyện thẳng với `orca`.
+# HARD RULE: this script runs ONLY at install time and diagnostic time. No runtime path
+# may call it. After install, the first mate talks directly to `orca`.
 set -u
 
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SELF_DIR/.." && pwd)"
-# shellcheck source=/dev/null
-. "$REPO_DIR/lib/ofm-home.sh"
+# $0 CAN BE A SYMLINK. `install.sh` installs this CLI as exactly a symlink on
+# PATH, so that is the only real invocation path -- and in that case
+# `dirname "$0"` points at the bin directory on PATH, not at where the real
+# script lives. The consequence has been reproduced: wrong REPO_DIR -> lib
+# source fails -> `vizier_home` doesn't exist -> `$(vizier_home)` is empty -> every
+# path derived from it points somewhere wrong, and the anti-self-destruct
+# guard ends up operating on the caller's current directory instead. Walk the
+# whole link chain BEFORE deriving any path from it.
+_self=$0
+_hops=0
+while [ -L "$_self" ] && [ "$_hops" -lt 16 ]; do
+  _t=$(readlink "$_self") || break
+  case "$_t" in
+    /*) _self=$_t ;;
+    *)  _self="$(dirname "$_self")/$_t" ;;
+  esac
+  _hops=$((_hops + 1))
+done
+# Hitting the ceiling means REPORTING AN ERROR, not continuing with a
+# half-resolved path. Continuing is a silent degradation -- exactly the kind
+# of bug that has bitten this project three times (cd "" becoming a no-op, a
+# signal trap continuing execution, a guard concatenating its arguments
+# before validating them) -- and here it could produce a REPO_DIR that is
+# wrong but still looks valid.
+[ -L "$_self" ] && {
+  printf 'error: symlink chain too deep (>16 hops) from %s\n' "$0" >&2; exit 2; }
+SELF_DIR="$(cd "$(dirname "$_self")" 2>/dev/null && pwd)" || {
+  printf 'error: could not determine the script directory\n' >&2; exit 2; }
+REPO_DIR="$(cd "$SELF_DIR/.." 2>/dev/null && pwd)" || {
+  printf 'error: could not determine the repo root\n' >&2; exit 2; }
 
-DIST="$(ofm_home)/dist"
-CLAUDE_SKILLS="${OFM_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
-CURSOR_HOOKS="${OFM_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
+# A FAILED SOURCE MUST BE FATAL. Bash only prints a warning and keeps going,
+# and `set -u` does not catch a missing function -- that is exactly how a
+# missing `vizier_home` turns into an empty path and the guard ends up pointed
+# at the wrong place.
+[ -r "$REPO_DIR/lib/vizier-home.sh" ] || {
+  printf 'error: could not read %s/lib/vizier-home.sh\n' "$REPO_DIR" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$REPO_DIR/lib/vizier-home.sh"
+
+VIZIER_HOME_DIR=$(vizier_home)
+[ -n "$VIZIER_HOME_DIR" ] || { printf 'error: home is empty\n' >&2; exit 2; }
+
+# Canonicalize a path ONLY when the directory truly exists. `cd ""` is a
+# silent no-op in bash and returns the current directory -- exactly what
+# turned this guard into a landmine.
+_canon() {  # <path> -> canonical path if it exists, empty if not
+  [ -n "$1" ] && [ -d "$1" ] || return 0
+  (cd "$1" 2>/dev/null && pwd)
+}
+
+DIST="$VIZIER_HOME_DIR/dist"
+CLAUDE_SKILLS="${VIZIER_CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+CURSOR_HOOKS="${VIZIER_CURSOR_HOOKS_JSON:-$HOME/.cursor/hooks.json}"
 
 _sync_dist() {
+  # REFUSE when running from the installed copy itself: _sync_dist deletes
+  # $DIST then copies from $REPO_DIR, and when running from dist those two
+  # paths are the same one -> self-destruction.
+  # Compare on the CANONICAL path of a directory that ACTUALLY EXISTS. If
+  # dist doesn't exist yet, REPO_DIR can't possibly be inside it, so the
+  # guard doesn't need to fire -- and, more importantly, there is no branch
+  # where an empty value can sneak into the comparison.
+  local dist_canon
+  dist_canon=$(_canon "$DIST")
+  if [ -n "$dist_canon" ]; then
+    case "$REPO_DIR/" in
+      "$dist_canon"/*|"$dist_canon/")
+        printf 'refused: running from the installed copy (%s).\n' "$REPO_DIR" >&2
+        printf '  run install/update from the source checkout: %s/src/bin/vizier install\n' "$VIZIER_HOME_DIR" >&2
+        return 1 ;;
+    esac
+  fi
   mkdir -p "$DIST" || return 1
   rm -rf "${DIST:?}/"*
   local item
@@ -1576,21 +2081,25 @@ cmd_doctor() {
     state=$(printf '%s' "$status" | jq -r '.result.state // "unknown"' 2>/dev/null)
     caps=$(printf '%s' "$status" | jq -r '(.result.capabilities // []) | join(",")' 2>/dev/null)
     if [ "$reachable" != "true" ] || [ "$state" != "ready" ]; then
-      printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, rồi chờ app sẵn sàng)\n' "$reachable" "$state"
+      printf 'NOT_READY: Orca reachable=%s state=%s (fix: orca open, then wait for the app to be ready)\n' "$reachable" "$state"
       problems=$((problems + 1))
     fi
-    case "$caps" in
-      *orchestration.contract.v1*) ;;
-      *) printf 'NOT_READY: Orca thiếu capability orchestration.contract.v1 (fix: cập nhật app Orca)\n'
-         problems=$((problems + 1)) ;;
-    esac
+    # EXACT membership, not a substring: `*orchestration.contract.v1*` would
+    # also match `orchestration.contract.v10` and
+    # `x-orchestration.contract.v1`, i.e. report success while the real
+    # capability is actually missing.
+    if ! printf '%s' "$status" | jq -e --arg c orchestration.contract.v1 \
+         '((.result.capabilities // []) | index($c)) != null' >/dev/null 2>&1; then
+      printf 'NOT_READY: Orca is missing capability orchestration.contract.v1 (fix: update the Orca app)\n'
+      problems=$((problems + 1))
+    fi
   fi
-  if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
-    printf 'NOT_READY: gh chưa đăng nhập (fix: gh auth login)\n'
+  if [ -z "${VIZIER_SKIP_GH_AUTH:-}" ] && command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
+    printf 'NOT_READY: gh is not logged in (fix: gh auth login)\n'
     problems=$((problems + 1))
   fi
   if [ "$problems" -eq 0 ]; then
-    printf 'doctor: ok — orca ready, jq/git/gh sẵn sàng\n'
+    printf 'doctor: ok -- orca ready, jq/git/gh available\n'
     return 0
   fi
   return 1
@@ -1600,42 +2109,56 @@ cmd_install() {
   local want=all
   while [ $# -gt 0 ]; do
     case "$1" in
-      --harness) want=${2:?--harness cần giá trị}; shift 2 ;;
+      --harness) want=${2:?--harness needs a value}; shift 2 ;;
       *) printf 'unknown flag: %s\n' "$1" >&2; return 2 ;;
     esac
   done
   case "$want" in
     all|claude|cursor) ;;
-    *) printf 'error: harness "%s" chưa hỗ trợ. v1 chỉ có claude và cursor.\n' "$want" >&2; return 1 ;;
+    *) printf 'error: harness "%s" is not supported. v1 only has claude and cursor.\n' "$want" >&2; return 1 ;;
   esac
   _sync_dist || return 1
   local did=0
   if [ "$want" = all ] || [ "$want" = claude ]; then
-    if bash "$DIST/bin/ofm-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$want" = claude ]; then
-      bash "$DIST/bin/ofm-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
+    if bash "$DIST/bin/vizier-adapter-claude.sh" detect >/dev/null 2>&1 || [ "$want" = claude ]; then
+      bash "$DIST/bin/vizier-adapter-claude.sh" install "$DIST" "$CLAUDE_SKILLS" || return 1
       did=$((did + 1))
     fi
   fi
   if [ "$want" = all ] || [ "$want" = cursor ]; then
-    if bash "$DIST/bin/ofm-adapter-cursor.sh" detect >/dev/null 2>&1 || [ "$want" = cursor ]; then
-      bash "$DIST/bin/ofm-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
+    if bash "$DIST/bin/vizier-adapter-cursor.sh" detect >/dev/null 2>&1 || [ "$want" = cursor ]; then
+      bash "$DIST/bin/vizier-adapter-cursor.sh" install "$DIST" "$CURSOR_HOOKS" || return 1
       did=$((did + 1))
     fi
   fi
-  [ "$did" -gt 0 ] || { printf 'không tìm thấy harness nào được hỗ trợ trên máy\n' >&2; return 1; }
-  printf 'xong. Mở một phiên mới rồi gõ /firstmate.\n'
+  [ "$did" -gt 0 ] || { printf 'no supported harness found on this machine\n' >&2; return 1; }
+  printf 'done. Open a new session and type /vizier.\n'
 }
 
 cmd_uninstall() {
-  [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
-  [ -d "$DIST" ] && bash "$DIST/bin/ofm-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
+  [ -d "$DIST" ] && bash "$DIST/bin/vizier-adapter-claude.sh" uninstall "$CLAUDE_SKILLS" >/dev/null 2>&1
+  [ -d "$DIST" ] && bash "$DIST/bin/vizier-adapter-cursor.sh" uninstall "$CURSOR_HOOKS" >/dev/null 2>&1
   rm -rf "$DIST"
-  # Dọn cả những gì install.sh tạo ra, nếu không captain gỡ xong vẫn còn một
-  # lệnh chết trên PATH trỏ vào clone đã mồ côi.
-  local bin_link="${OFM_BIN_DIR:-$HOME/.local/bin}/orca-firstmate"
+  # Also clean up whatever install.sh created, otherwise the captain finishes
+  # uninstalling and still has a dead command on PATH pointing at an orphaned
+  # clone.
+  local bin_link="${VIZIER_BIN_DIR:-$HOME/.local/bin}/vizier"
   [ -L "$bin_link" ] && rm -f "$bin_link"
-  rm -rf "$(ofm_home)/src"
-  printf 'đã gỡ adapter, payload, symlink và clone. requests/ và projects/ giữ nguyên ở %s\n' "$(ofm_home)"
+  # DO NOT delete the directory currently holding this very script: bash
+  # reads a script in chunks, and deleting it mid-run is undefined behavior.
+  # Print the command for the captain instead.
+  local src src_canon
+  src="$VIZIER_HOME_DIR/src"
+  src_canon=$(_canon "$src")
+  case "$REPO_DIR/" in
+    "${src_canon:-$src}"/*|"${src_canon:-$src}/")
+      printf 'removed the adapter, payload, and symlink. requests/ and projects/ are kept at %s\n' "$(vizier_home)"
+      printf 'the source checkout remains (cannot self-delete because this command is running from it):\n'
+      printf '  rm -rf %s\n' "$src"
+      return 0 ;;
+  esac
+  rm -rf "$src"
+  printf 'removed the adapter, payload, symlink, and clone. requests/ and projects/ are kept at %s\n' "$(vizier_home)"
 }
 
 case "${1:-}" in
@@ -1643,185 +2166,255 @@ case "${1:-}" in
   install)   shift; cmd_install "$@" ;;
   update)    shift; cmd_install "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
-  *) printf 'usage: orca-firstmate install [--harness claude|cursor]|doctor|update|uninstall\n' >&2; exit 2 ;;
+  *) printf 'usage: vizier install [--harness claude|cursor]|doctor|update|uninstall\n' >&2; exit 2 ;;
 esac
 ```
 
-- [ ] **Step 4: Chạy toàn bộ test cho pass**
+- [ ] **Step 4: Run every test until it passes**
 
-Run: `chmod +x bin/orca-firstmate && bash tests/run-all.sh`
-Expected: PASS — mọi file test in `ok:`, kết thúc bằng `ALL TEST FILES PASSED`
+Run: `chmod +x bin/vizier && bash tests/cli.test.sh`
+Expected: PASS -- every test file prints `ok:`, ending with `ALL TEST FILES PASSED`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bin/orca-firstmate tests/cli.test.sh
+git add bin/vizier tests/cli.test.sh
 git commit -m "feat: add the installer CLI"
 ```
 
 ---
 
-### Task 10: Bootstrap `install.sh` — cài bằng một lệnh
+### Task 10: The `install.sh` bootstrap -- installing with one command
 
-Đây là thứ mọi người dùng chạm đầu tiên, nên nó phải có test như mọi thứ khác. Test dùng một
-bare repo local qua `file://` nên chạy được offline, không cần repo đã publish.
+This is the thing every user touches first, so it needs a test just like everything else. The
+test uses a local bare repo over `file://` so it runs offline, with no need for a published repo.
 
 **Files:**
 - Create: `install.sh`
 - Create: `tests/install-sh.test.sh`
 
 **Interfaces:**
-- Consumes: `bin/orca-firstmate` (chỉ để symlink; bootstrap không tự chạy `install`)
-- Produces: `install.sh` đọc `OFM_REPO_URL`, `OFM_HOME`, `OFM_BIN_DIR`; clone hoặc cập nhật
-  `$OFM_HOME/src`, symlink `$OFM_BIN_DIR/orca-firstmate`, rồi in bước tiếp theo. rc 0 khi xong,
-  rc 1 khi thiếu `git`/`jq` hoặc clone thất bại.
+- Consumes: `bin/vizier` (only for the symlink; bootstrap does not run `install` itself)
+- Produces: `install.sh` reads `VIZIER_REPO_URL`, `VIZIER_HOME`, `VIZIER_BIN_DIR`; clones or updates
+  `$VIZIER_HOME/src`, symlinks `$VIZIER_BIN_DIR/vizier`, then prints the next step. rc 0 when
+  done, rc 1 when `git`/`jq` is missing or the clone fails.
 
-> **Tiền đề:** repo đã có remote `origin` trỏ tới một repo **public** trên GitHub. Captain tự
-> đặt remote đó; Step 0 chỉ đọc lại chứ không tạo.
+> **Precondition:** the repo already has an `origin` remote pointing at a **public** repo on
+> GitHub. The captain set that remote themselves; Step 0 only reads it back, it doesn't create it.
 
-> **Bootstrap KHÔNG tự chạy `orca-firstmate install`.** Cài binary và cài vào harness là hai
-> quyết định khác nhau: cái sau sửa `~/.cursor/hooks.json` của captain. Một `curl | sh` không
-> được phép âm thầm làm việc đó.
+> **Bootstrap does NOT run `vizier install` itself.** Installing the binary and installing
+> into a harness are two different decisions: the latter edits the captain's
+> `~/.cursor/hooks.json`. A `curl | sh` is not allowed to do that silently.
 
-- [ ] **Step 0: Lấy URL thật của repo**
+- [ ] **Step 0: Cross-check the repo URL**
 
-Repo là public trên GitHub và remote do captain tự đặt. Đọc nó ra, đừng đoán:
+Already confirmed: the remote is `git@github.com:vantoantrinh96/vizier.git`, and `gh repo
+view` confirms the repo is **PUBLIC**. Run it again to make sure it hasn't changed:
 
 ```bash
-git remote get-url origin
+git remote get-url origin && gh repo view --json visibility,nameWithOwner
 ```
 
-Dùng giá trị đó làm mặc định trong `install.sh` ở Step 3, và thay `OWNER_PLACEHOLDER` bằng
-owner thật. Nếu `git remote get-url origin` chưa có gì, **dừng và hỏi captain** — đừng bịa URL.
+The default in `install.sh` at Step 3 is already the **HTTPS** form of that same repo. If the
+remote differs from the value above, **stop and tell the captain** -- don't change the URL in the
+script yourself.
 
-- [ ] **Step 1: Viết test thất bại**
+- [ ] **Step 1: Write a failing test**
 
 ```bash
 # tests/install-sh.test.sh
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/helpers.sh"
-ofm_test_setup
+vizier_test_setup
 
-# Bare repo local đóng vai remote: test chạy offline, không phụ thuộc repo đã publish.
-ORIGIN="$OFM_TEST_TMP/origin.git"
-WORK="$OFM_TEST_TMP/work"
+# A local bare repo stands in for the remote: the test runs offline, with no dependency on the published repo.
+ORIGIN="$VIZIER_TEST_TMP/origin.git"
+WORK="$VIZIER_TEST_TMP/work"
 git init --quiet --bare "$ORIGIN"
 git clone --quiet "$ORIGIN" "$WORK"
 mkdir -p "$WORK/bin"
-printf '#!/usr/bin/env bash\necho stub-cli\n' > "$WORK/bin/orca-firstmate"
-chmod +x "$WORK/bin/orca-firstmate"
-cp "$OFM_TEST_REPO/install.sh" "$WORK/install.sh"
+printf '#!/usr/bin/env bash\necho stub-cli\n' > "$WORK/bin/vizier"
+chmod +x "$WORK/bin/vizier"
+cp "$VIZIER_TEST_REPO/install.sh" "$WORK/install.sh"
 git -C "$WORK" add -A
 git -C "$WORK" -c user.email=t@t -c user.name=t commit --quiet -m init
 git -C "$WORK" push --quiet origin HEAD:refs/heads/main
 git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
 
-export OFM_REPO_URL="file://$ORIGIN"
-export OFM_BIN_DIR="$OFM_TEST_TMP/bin"
+export VIZIER_REPO_URL="file://$ORIGIN"
+export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"
 
-out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
-assert_rc "$rc" 0 "bootstrap thành công"
-[ -d "$OFM_HOME/src/.git" ]; assert_rc $? 0 "clone vào src/"
-[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 0 "tạo symlink"
-assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-cli" "symlink chạy đúng CLI"
-assert_contains "$out" "orca-firstmate install" "in bước tiếp theo"
+out=$(sh "$VIZIER_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 0 "bootstrap succeeds"
+[ -d "$VIZIER_HOME/src/.git" ]; assert_rc $? 0 "clones into src/"
+[ -L "$VIZIER_BIN_DIR/vizier" ]; assert_rc $? 0 "creates the symlink"
+assert_eq "$("$VIZIER_BIN_DIR/vizier")" "stub-cli" "the symlink runs the right CLI"
+assert_contains "$out" "vizier install" "prints the next step"
 
-# KHÔNG được tự cài vào harness: đó là quyết định riêng, có sửa file của người khác
-assert_eq "$(ls "$OFM_HOME/dist" 2>/dev/null)" "" "bootstrap không tự chạy install"
+# MUST NOT auto-install into a harness: that's a separate decision, it edits someone else's file
+assert_eq "$(ls "$VIZIER_HOME/dist" 2>/dev/null)" "" "bootstrap does not run install on its own"
 
-# Chạy lại là cập nhật, không hỏng
-printf '#!/usr/bin/env bash\necho stub-v2\n' > "$WORK/bin/orca-firstmate"
+# Running it again is an update, not a breakage
+printf '#!/usr/bin/env bash\necho stub-v2\n' > "$WORK/bin/vizier"
 git -C "$WORK" -c user.email=t@t -c user.name=t commit --quiet -am v2
 git -C "$WORK" push --quiet origin HEAD:refs/heads/main
-sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "chạy lại thành công"
-assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "chạy lại thì cập nhật lên bản mới"
+sh "$VIZIER_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "rerunning succeeds"
+assert_eq "$("$VIZIER_BIN_DIR/vizier")" "stub-v2" "rerunning updates to the new version"
 
-# Thay đổi local trong src bị ghi đè, không làm bootstrap kẹt
-printf 'rác\n' > "$OFM_HOME/src/bin/orca-firstmate"
-sh "$OFM_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "src bẩn vẫn cập nhật được"
-assert_eq "$("$OFM_BIN_DIR/orca-firstmate")" "stub-v2" "src bẩn được khôi phục"
+# Local changes inside src get overwritten, without getting bootstrap stuck
+printf 'junk\n' > "$VIZIER_HOME/src/bin/vizier"
+sh "$VIZIER_TEST_REPO/install.sh" >/dev/null 2>&1; assert_rc $? 0 "a dirty src still updates"
+assert_eq "$("$VIZIER_BIN_DIR/vizier")" "stub-v2" "a dirty src gets restored"
 
-# Mặc định phải là URL thật, không phải placeholder. Test này là thứ bắt lỗi
-# "quên điền" thay vì để nó trôi tới máy người dùng.
-grep -q 'OWNER_PLACEHOLDER' "$OFM_TEST_REPO/install.sh"; assert_rc $? 1 "không còn placeholder owner"
-default_url=$(sed -n 's/^REPO_URL="\${OFM_REPO_URL:-\(.*\)}"$/\1/p' "$OFM_TEST_REPO/install.sh")
-assert_contains "$default_url" "github.com" "mặc định trỏ tới GitHub"
-assert_contains "$default_url" "orca-firstmate" "mặc định trỏ đúng repo"
+# The default must be a real URL and must be HTTPS. SSH would break on a fresh
+# machine with no key, and since the repo is public HTTPS needs no auth -- this
+# is what catches "pasted the raw SSH remote in" instead of letting it drift
+# to the first user.
+default_url=$(sed -n 's/^REPO_URL="\${VIZIER_REPO_URL:-\(.*\)}"$/\1/p' "$VIZIER_TEST_REPO/install.sh")
+assert_contains "$default_url" "https://github.com/" "the default is HTTPS, not SSH"
+# `github.com` alone does NOT distinguish: the SSH string `git@github.com:...`
+# also contains it. Must catch the actual SSH marker.
+case "$default_url" in *git@*) assert_eq "ssh" "https" "the default must NOT be in SSH form" ;; esac
+assert_contains "$default_url" "vizier" "the default points at the right repo"
+case "$default_url" in *git@*) assert_eq "ssh" "https" "the default must NOT be in SSH form" ;; esac
 
-# URL hỏng thì fail rõ ràng, không để lại symlink chết
-export OFM_REPO_URL="file://$OFM_TEST_TMP/does-not-exist.git"
-rm -rf "$OFM_HOME/src" "$OFM_BIN_DIR/orca-firstmate"
-out=$(sh "$OFM_TEST_REPO/install.sh" 2>&1); rc=$?
-assert_rc "$rc" 1 "URL hỏng thì rc 1"
-[ -L "$OFM_BIN_DIR/orca-firstmate" ]; assert_rc $? 1 "thất bại thì không để lại symlink chết"
+# Target on PATH is already a DIRECTORY: must be REFUSED, must not report success.
+# On macOS's BSD ln, `-f` does not replace a directory, it creates the link
+# INSIDE it and exits 0 -- reporting "installed" while what's on PATH does not run.
+mkdir -p "$VIZIER_BIN_DIR/vizier"
+out=$(sh "$VIZIER_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "target is a directory gives rc 1"
+assert_contains "$out" "not a symlink" "clearly states the reason"
+rmdir "$VIZIER_BIN_DIR/vizier"
 
-ofm_test_teardown
-ofm_test_report
+# $SRC exists but is not a git repo: report it clearly and give the delete command, do NOT auto-delete
+rm -rf "$VIZIER_HOME/src"; mkdir -p "$VIZIER_HOME/src"; printf 'junk\n' > "$VIZIER_HOME/src/junk"
+out=$(sh "$VIZIER_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "src not being a git repo gives rc 1"
+assert_contains "$out" "rm -rf" "prints the delete command for the captain"
+rm -rf "$VIZIER_HOME/src"
+
+# Delete the local `refs/remotes/origin/HEAD` ref then rerun: the update path
+# must still run smoothly.
+#
+# THIS IS ALL THIS CASE PROVES. It does NOT prove the `remote set-head` line
+# is necessary: measured directly by removing that line and the suite still
+# stayed green, because a `file://` clone environment cannot reproduce a real
+# missing-origin/HEAD state. That line is kept as a defense, based on a
+# reviewer having reproduced the stuck state on a bare repo with HEAD deleted.
+# Name the assertion for what it actually measures, rather than let a name
+# promise more than the truth -- this project has already had five tests
+# stay green while measuring the wrong thing.
+sh "$VIZIER_TEST_REPO/install.sh" >/dev/null 2>&1
+git -C "$VIZIER_HOME/src" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+sh "$VIZIER_TEST_REPO/install.sh" >/dev/null 2>&1
+assert_rc $? 0 "rerunning after deleting the local origin/HEAD ref still updates"
+
+# A broken URL fails clearly, without leaving behind a dead symlink
+export VIZIER_REPO_URL="file://$VIZIER_TEST_TMP/does-not-exist.git"
+rm -rf "$VIZIER_HOME/src" "$VIZIER_BIN_DIR/vizier"
+out=$(sh "$VIZIER_TEST_REPO/install.sh" 2>&1); rc=$?
+assert_rc "$rc" 1 "a broken URL gives rc 1"
+[ -L "$VIZIER_BIN_DIR/vizier" ]; assert_rc $? 1 "a failure leaves no dead symlink behind"
+
+vizier_test_teardown
+vizier_test_report
 ```
 
-- [ ] **Step 2: Chạy để thấy nó fail**
+- [ ] **Step 2: Run it to see it fail**
 
 Run: `bash tests/install-sh.test.sh`
-Expected: FAIL — `install.sh: No such file or directory`
+Expected: FAIL -- `install.sh: No such file or directory`
 
-- [ ] **Step 3: Viết `install.sh`**
+- [ ] **Step 3: Write `install.sh`**
 
 ```bash
 #!/usr/bin/env sh
-# Bootstrap orca-firstmate.
+# Bootstrap vizier.
 #
 #   curl -fsSL <RAW_URL>/install.sh | sh
 #
-# Chỉ làm hai việc: lấy source về $OFM_HOME/src và đặt một symlink lên PATH.
-# CỐ TÌNH KHÔNG chạy `orca-firstmate install`: bước đó sửa cấu hình harness của
-# captain (với Cursor là ~/.cursor/hooks.json, file Orca cũng dùng), nên nó
-# phải là một quyết định tường minh, không phải hệ quả của `curl | sh`.
+# Does exactly two things: fetches the source into $VIZIER_HOME/src and places a
+# symlink on PATH. DELIBERATELY DOES NOT run `vizier install`: that
+# step edits the captain's harness config (for Cursor that's
+# ~/.cursor/hooks.json, a file Orca also uses), so it must be an explicit
+# decision, not a side effect of `curl | sh`.
 #
-# POSIX sh, không bashism: nó chạy qua `sh` của người dùng, không phải bash.
+# POSIX sh, no bashisms: this runs through the user's `sh`, not bash.
 set -eu
 
-# Repo public trên GitHub, nên clone và curl đều không cần auth.
-# OWNER lấy từ `git remote get-url origin` ở Step 0; không để nguyên chuỗi này.
-REPO_URL="${OFM_REPO_URL:-https://github.com/OWNER_PLACEHOLDER/orca-firstmate.git}"
+# The repo is public on GitHub, so both clone and curl need no auth.
+#
+# USE HTTPS, NOT SSH. The checkout's own remote is in SSH form
+# (git@github.com:vantoantrinh96/vizier.git), but bootstrap runs on a
+# fresh machine via `curl | sh` where there's no guarantee of an SSH key for
+# that account -- and since the repo is already public, an HTTPS clone needs
+# no auth at all. Take the owner/name from the remote, emit it as HTTPS.
+REPO_URL="${VIZIER_REPO_URL:-https://github.com/vantoantrinh96/vizier.git}"
 
-HOME_DIR="${OFM_HOME:-$HOME/.orca-firstmate}"
+HOME_DIR="${VIZIER_HOME:-$HOME/.vizier}"
 SRC="$HOME_DIR/src"
-BIN_DIR="${OFM_BIN_DIR:-$HOME/.local/bin}"
+BIN_DIR="${VIZIER_BIN_DIR:-$HOME/.local/bin}"
 
 for t in git jq; do
-  command -v "$t" >/dev/null 2>&1 || { echo "error: cần $t (brew install $t)" >&2; exit 1; }
+  command -v "$t" >/dev/null 2>&1 || { echo "error: need $t (brew install $t)" >&2; exit 1; }
 done
 
 mkdir -p "$HOME_DIR"
 if [ -d "$SRC/.git" ]; then
-  git -C "$SRC" fetch --quiet origin || { echo "error: fetch thất bại từ $REPO_URL" >&2; exit 1; }
-  # reset --hard: $SRC do tool sở hữu, không phải chỗ để sửa tay. Sửa tay ở đó
-  # bị ghi đè có chủ đích, thay vì làm bootstrap kẹt mãi.
-  git -C "$SRC" reset --quiet --hard origin/HEAD || { echo "error: reset thất bại" >&2; exit 1; }
+  git -C "$SRC" fetch --quiet origin || { echo "error: fetch failed from $REPO_URL" >&2; exit 1; }
+  # origin/HEAD may not be set yet (an old clone, or a remote that doesn't
+  # publish HEAD). When that happens, `reset --hard origin/HEAD` reports
+  # "unknown revision" and bootstrap gets stuck permanently. `set-head -a`
+  # asks the remote again and self-heals; a failure here does not block.
+  git -C "$SRC" remote set-head origin -a >/dev/null 2>&1 || true
+  # reset --hard: $SRC is owned by the tool, not a place for hand edits. A
+  # hand edit there is deliberately overwritten, rather than leaving
+  # bootstrap stuck forever.
+  git -C "$SRC" reset --quiet --hard origin/HEAD || { echo "error: reset failed" >&2; exit 1; }
+elif [ -e "$SRC" ]; then
+  # $SRC exists but is not a git repo -- usually a botched previous clone.
+  # DO NOT auto-delete it: it's a directory on the captain's machine. Say so
+  # clearly and give the exact command.
+  echo "error: $SRC already exists but is not a git repo (a botched clone?)" >&2
+  echo "  delete it and rerun:  rm -rf $SRC" >&2
+  exit 1
 else
-  git clone --quiet "$REPO_URL" "$SRC" || { echo "error: clone thất bại từ $REPO_URL" >&2; exit 1; }
+  git clone --quiet "$REPO_URL" "$SRC" || { echo "error: clone failed from $REPO_URL" >&2; exit 1; }
 fi
 
-[ -x "$SRC/bin/orca-firstmate" ] || { echo "error: source thiếu bin/orca-firstmate" >&2; exit 1; }
-mkdir -p "$BIN_DIR"
-ln -sf "$SRC/bin/orca-firstmate" "$BIN_DIR/orca-firstmate"
+[ -x "$SRC/bin/vizier" ] || { echo "error: source is missing bin/vizier" >&2; exit 1; }
+mkdir -p "$BIN_DIR" || { echo "error: could not create $BIN_DIR" >&2; exit 1; }
 
-echo "đã cài orca-firstmate -> $BIN_DIR/orca-firstmate"
+# `ln -sf` is NOT safe when the target is already a DIRECTORY. On macOS's
+# BSD ln -- the only platform we ship to -- `-f` does not replace a
+# directory; it creates the link INSIDE that directory and exits 0, so the
+# script would print "installed" successfully while what's on PATH is a
+# directory that can't run. Guard before, and verify again after.
+LINK="$BIN_DIR/vizier"
+if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
+  echo "error: $LINK already exists and is not a symlink; move it aside and rerun" >&2
+  exit 1
+fi
+ln -sf "$SRC/bin/vizier" "$LINK" || { echo "error: could not create symlink $LINK" >&2; exit 1; }
+[ -L "$LINK" ] || { echo "error: $LINK is not a symlink after install" >&2; exit 1; }
+
+echo "installed vizier -> $LINK"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) echo "lưu ý: $BIN_DIR chưa nằm trong PATH; thêm nó vào shell profile" ;;
+  *) echo "note: $BIN_DIR is not on PATH yet; add it to your shell profile" ;;
 esac
 echo
-echo "tiếp theo:"
-echo "  orca-firstmate doctor     # kiểm Orca, jq, git, gh"
-echo "  orca-firstmate install    # cài vào harness (sẽ sửa cấu hình harness)"
+echo "next:"
+echo "  vizier doctor     # check Orca, jq, git, gh"
+echo "  vizier install    # install into a harness (will edit harness config)"
 ```
 
-- [ ] **Step 4: Chạy test cho pass**
+- [ ] **Step 4: Run the test until it passes**
 
 Run: `chmod +x install.sh && bash tests/install-sh.test.sh`
-Expected: PASS — `ok: 15 asserts passed (install-sh.test.sh)`
+Expected: PASS -- the last line is `ok: <n> asserts passed (install-sh.test.sh)`. The exact number is NOT a contract: if it's off, recounting the asserts in the test is correct, don't change the test to match the number.
 
 - [ ] **Step 5: Commit**
 
@@ -1832,29 +2425,42 @@ git commit -m "feat: add the one-line bootstrap installer"
 
 ---
 
-### Task 11: Smoke test thật hai harness
+### Task 11: A real two-harness smoke test
 
-Test tự động không chạm Orca thật và không chạm harness thật. Task này đóng khoảng cách đó, và là **cách duy nhất** chứng minh đường wake của Cursor.
+Automated tests never touch real Orca and never touch a real harness. This task closes that gap, and is the **only way** to prove Cursor's wake path.
 
 **Files:**
 - Create: `tests/smoke/pty-drive.py`
 - Create: `docs/verification/2026-08-31-smoke-install.md`
 
 **Interfaces:**
-- Consumes: `orca-firstmate install`, `/firstmate`, cả hai wake hook
-- Produces: một file bằng chứng ghi rõ version app và version harness đã kiểm
+- Consumes: `vizier install`, `/vizier`, both wake hooks
+- Produces: an evidence file recording the exact app version and harness version checked
 
-- [ ] **Step 1: Viết `tests/smoke/pty-drive.py`**
+- [ ] **Step 1: Write `tests/smoke/pty-drive.py`**
 
 ```python
 #!/usr/bin/env python3
-"""Lái một phiên harness tương tác qua pty để kiểm đường wake.
+"""Drives an interactive harness session through a pty to check the wake path.
 
-Headless không dùng được: cursor-agent -p không chạy hook nào cả
-(docs/verification/2026-08-31-plugin-wake.md). Và gõ chữ với Enter phải TÁCH
-RỜI — gửi liền một mạch thì Cursor nhận chữ nhưng không submit.
+Headless doesn't work here: cursor-agent -p runs no hooks at all
+(docs/verification/2026-08-31-plugin-wake.md). And typing text plus Enter
+must be SEPARATE -- sending them together makes Cursor receive the text but
+not submit it.
 
-Dùng: pty-drive.py <cmd> [args...] --send <text> --expect <marker> --wait <sec>
+WARNING ABOUT LOCAL ECHO: the pty echoes back exactly what we write into it,
+so `--expect` would also match the `--send` text itself. Measured: running
+the driver against `sleep 30` -- a program that never reads stdin at all --
+with `--send hello --expect hello` still PASSES. So `--expect` MUST be a
+string GENERATED BY the agent, not the string we sent it. For the Cursor
+smoke test, that's `vizier:` inside the hook's follow-up.
+
+Total run time is --wait PLUS roughly 10-11 seconds: 8s waiting for the TUI
+to come up, 2s pumping after sending, and up to ~1.2s shutting down when the
+child resists signals (0.2s Ctrl-C + 0.5s waiting for SIGTERM + 0.5s waiting
+for SIGKILL). Every normal step has an upper bound.
+
+Usage: pty-drive.py <cmd> [args...] --send <text> --expect <marker> --wait <sec>
 """
 import os, pty, re, select, signal, struct, sys, termios, fcntl, time
 
@@ -1880,6 +2486,16 @@ def main():
         os.execvp(cmd[0], cmd)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 
+    # SIGTERM must become an exception, otherwise `finally` does NOT run.
+    # Measured: pressing Ctrl-C (SIGINT) cleans up the child properly, but
+    # `kill` (SIGTERM) kills Python immediately and the child agent SURVIVES
+    # -- exactly the path a wrapper with a timeout would use. Registered
+    # after the fork so it only applies to the parent process; the child has
+    # already execvp'd and had its handler reset to the default.
+    def _on_term(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_term)
+
     buf = b""
     def pump(sec):
         nonlocal buf
@@ -1895,20 +2511,66 @@ def main():
                 return "found"
         return True
 
-    pump(8)                                  # để TUI dựng xong
-    os.write(fd, send.encode()); pump(2)     # gõ chữ
-    os.write(fd, b"\r")                      # Enter RIÊNG
-    found = pump(wait)
+    def shutdown():
+        # Ctrl-C through the pty first (the polite way to ask a TUI), then
+        # escalate through signals and REAP. Without the reap + SIGKILL step,
+        # an agent that installs its own TERM/INT/HUP handler would survive
+        # and become an orphan -- reproduced, and exactly the kind of process
+        # leak this project already fixed once in the wake library. A driver
+        # that leaves a live cursor-agent behind on every call is not
+        # something that can be handed to the captain.
+        try:
+            os.write(fd, b"\x03"); time.sleep(0.2); os.write(fd, b"\x03")
+        except OSError:
+            pass
+        for sig, grace in ((signal.SIGTERM, 0.5), (signal.SIGKILL, 0.5)):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            deadline = time.time() + grace
+            while time.time() < deadline:
+                try:
+                    done, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    return
+                if done == pid:
+                    return
+                time.sleep(0.05)
+        try:
+            os.waitpid(pid, 0)
+        except (ChildProcessError, OSError):
+            pass
 
+    # try/finally, NOT just try/except OSError. Catching only OSError still
+    # leaves every other exception unhandled -- and the most likely one is
+    # KeyboardInterrupt: the captain pressing Ctrl-C on the very smoke run
+    # in progress. In that case `shutdown()` wouldn't run and the agent would
+    # leak, exactly the hole just closed above. `finally` covers every exit path.
+    found = None
+    write_err = None
     try:
-        os.write(fd, b"\x03"); time.sleep(0.4); os.write(fd, b"\x03")
-        os.kill(pid, signal.SIGTERM)
-    except Exception:
-        pass
+        pump(8)                                  # let the TUI finish coming up
+        # The write can raise OSError if the child has already died (Errno 5 on a pty).
+        os.write(fd, send.encode()); pump(2)     # type the text
+        os.write(fd, b"\r")                      # Enter, SEPARATELY
+        found = pump(wait)
+    except OSError as e:
+        write_err = e
+    finally:
+        shutdown()
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    if write_err is not None:
+        print(f"FAIL: could not write to the pty ({write_err})", file=sys.stderr)
+        return 1
 
     if found == "found":
-        print(f"PASS: thấy {expect!r}"); return 0
-    print(f"FAIL: không thấy {expect!r} trong {wait}s", file=sys.stderr)
+        print(f"PASS: saw {expect!r}"); return 0
+    print(f"FAIL: did not see {expect!r} within {wait}s", file=sys.stderr)
     sys.stderr.write(ANSI.sub(b'', buf)[-2000:].decode('utf-8', 'replace'))
     return 1
 
@@ -1916,15 +2578,28 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2: Chạy smoke Claude Code bằng tay**
+> **The driver's own verification must NOT use an `--expect` identical to `--send`.** The pty
+> echoes back exactly the input, so a test like `pty-drive.py cat --send hello --expect hello`
+> PASSES even against `sleep 30` -- a program that never reads stdin at all. A correct test must
+> catch the child TRANSFORMING the input, for example:
+>
+> ```bash
+> python3 tests/smoke/pty-drive.py tr 'a-z' 'A-Z' --send "hello" --expect "HELLO" --wait 5
+> ```
+>
+> `HELLO` only appears if the child process genuinely read the input and wrote it back out --
+> local echo doesn't produce it. Add one negative control: the same command with `sleep 5` must
+> make the child FAIL.
+
+- [ ] **Step 2: Run the Claude Code smoke test by hand**
 
 ```bash
-orca-firstmate install --harness claude
-orca-firstmate doctor          # phải in "doctor: ok"
-# Mở phiên mới, gõ /firstmate, rồi tạo một request giả để hook có việc chờ:
-cat > ~/.orca-firstmate/requests/smoke.md <<'EOF'
+vizier install --harness claude
+vizier doctor          # must print "doctor: ok"
+# Open a new session, type /vizier, then create a fake request so the hook has something to wait on:
+cat > ~/.vizier/requests/smoke.md <<'EOF'
 ---
-run_id: <run id thật từ `orca orchestration run-create --objective smoke`>
+run_id: <a real run id from `orca orchestration run-create --objective smoke`>
 project: smoke
 host: local
 status: open
@@ -1934,25 +2609,26 @@ smoke test
 EOF
 ```
 
-Từ một terminal khác, gửi một message vào Run đó rồi xem phiên Claude Code có tự tỉnh không.
-Expected: phiên đang idle tự chạy một lượt mới, mang dòng `orca-firstmate: worker_done run=…`.
+From another terminal, send a message into that Run and see whether the Claude Code session wakes on its own.
+Expected: the idle session runs a new turn on its own, carrying the line `vizier: worker_done run=...`.
 
-- [ ] **Step 3: Chạy smoke Cursor bằng pty**
+- [ ] **Step 3: Run the Cursor smoke test via pty**
 
 ```bash
-orca-firstmate install --harness cursor
+vizier install --harness cursor
 python3 tests/smoke/pty-drive.py cursor-agent --trust \
-  --send "hi" --expect "orca-firstmate:" --wait 90
+  --send "hi" --expect "vizier:" --wait 90
 ```
 
-Expected: `PASS: thấy 'orca-firstmate:'` — nghĩa là stop hook park, chờ mailbox, và Cursor đã
-chạy một lượt mới mang follow-up.
+Expected: `PASS: saw 'vizier:'` -- meaning the stop hook parked, waited on the mailbox, and
+Cursor ran a new turn carrying the follow-up.
 
-- [ ] **Step 4: Ghi bằng chứng**
+- [ ] **Step 4: Record the evidence**
 
-Tạo `docs/verification/2026-08-31-smoke-install.md` ghi: version app Orca (`orca status --json`),
-version Claude Code (`claude --version`), version Cursor **lấy từ dòng TUI** chứ không phải
-`--version`, lệnh đã chạy, và kết quả từng bước. Ghi cả những gì **không** kiểm được.
+Create `docs/verification/2026-08-31-smoke-install.md` recording: the Orca app version (`orca
+status --json`), the Claude Code version (`claude --version`), the Cursor version **taken from the
+TUI line** rather than `--version`, the commands run, and the result of each step. Also record
+what **could not** be checked.
 
 - [ ] **Step 5: Commit**
 
@@ -1963,12 +2639,14 @@ git commit -m "test: add the interactive smoke driver and record its evidence"
 
 ---
 
-## Phần Plan 2 sẽ làm (không thuộc plan này)
+## What Plan 2 will do (out of scope for this plan)
 
-Request lifecycle và `requests/<slug>.md`; skill `routing` (khám phá host, eligibility, chọn host
-một lần mỗi request); skill `supervise` (batch mailbox, thứ tự xử-lý-trước-ack, release/reuse
-terminal); skill `brief` (4 tầng); skill `delivery` (mode, hợp đồng giao hàng, chính sách
-ask-user); mở rộng `fake-orca` cho `run-create`/`task-create`/`worker-start`/`worker-release`.
+The request lifecycle and `requests/<slug>.md`; the `routing` skill (host discovery, eligibility,
+choosing a host once per request); the `supervise` skill (mailbox batches, process-before-ack
+ordering, release/reuse of terminals); the `brief` skill (4 layers); the `delivery` skill (mode,
+delivery contract, ask-user policy); extending `fake-orca` for
+`run-create`/`task-create`/`worker-start`/`worker-release`.
 
-Plan 1 cố tình dựng sẵn chỗ cho chúng: `ofm_open_run_ids` đã đọc đúng frontmatter mà Plan 2 sẽ
-ghi, và `skills/identity/SKILL.md` đã phát biểu các hard rule mà skill của Plan 2 phải tuân.
+Plan 1 deliberately lays the ground for them: `vizier_open_run_ids` already reads exactly the
+frontmatter that Plan 2 will write, and `skills/identity/SKILL.md` already states the hard rules
+that Plan 2's skill must follow.
