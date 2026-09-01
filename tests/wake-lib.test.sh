@@ -70,20 +70,66 @@ assert_eq "$(printf '%s' "$s" | grep -c . )" "1" "the summary is always exactly 
 # subshell (measured: leaked=1), so that measurement wouldn't reflect
 # production. `set -m` HERE, in the test, makes the background job its own
 # group leader; the library must absolutely never turn it on.
+#
+# BOTH WAITS AROUND THE KILL ARE BOUNDED POLLS, NOT SLEEPS, and neither may be
+# replaced by a longer sleep. This probe used to `sleep 0.8`, kill, `sleep
+# 0.8`, count -- and it failed 2 runs in 10 of the full suite under 8-way CPU
+# load (`got: 1 want: 0`), 0 in 10 idle. Under load the child `orca` had
+# sometimes not spawned yet when the kill landed, appeared afterwards, and got
+# counted. That race has a nastier second half: on exactly those runs the
+# probe never tested what it claims, because killing a group before the child
+# exists proves nothing about cleaning the child up. So the wait BEFORE the
+# kill is asserted, not just waited -- if the child never appears the probe is
+# vacuous and must say so. And a longer sleep AFTER the kill would hide a real
+# leak exactly as well as it hides the race, whereas a poll with a deadline
+# still fails when cleanup never happens; it only stops failing when cleanup
+# merely happened late.
+#
+# WHAT THIS PROBE ACTUALLY MEASURES, for whoever next mutates the library to
+# check the probe still bites: it is the PROCESS GROUP, not the trap, that
+# does the cleanup on this path -- `kill -TERM -<pgid>` reaches the child
+# `orca` directly. Deleting either trap from `vizier_wait_any_run`, or both,
+# therefore leaves this probe green (measured), because the traps cover the
+# clean-exit path that a different assertion would have to cover. The
+# mutation that genuinely leaks here is `set -m` inside the library (children
+# escape the harness's group) together with no trap to reap them; against
+# that, this probe reports `leaked: 1` and fails inside its deadline.
+count_orphanprobe() { pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' '; }
+count_in_group() { pgrep -g "$1" 2>/dev/null | wc -l | tr -d ' '; }
+
+# Ceilings are in 10ms ticks rather than wall-clock, so the budget stretches
+# with the load that slows the polls down -- generous when the machine is
+# busy, still finite when the condition is simply never going to be true. The
+# spawn ceiling is the larger one because spawn latency under load is the
+# thing that was actually measured going long; the kill takes effect at once
+# or not at all.
+wait_until_count() {  # <test-op> <n> <max_ticks> <cmd...>
+  local op=$1 n=$2 max=$3; shift 3
+  local i=0
+  while [ "$i" -lt "$max" ]; do
+    [ "$("$@")" "$op" "$n" ] && return 0
+    i=$((i + 1))
+    sleep 0.01
+  done
+  return 1
+}
+
 printf -- '---\nrun_id: run_orphanprobe\nstatus: open\n---\nx\n' > "$(vizier_requests_dir)/orphan.md"
 set -m
 ( printf 'run_orphanprobe\n' | vizier_wait_any_run 30000 >/dev/null 2>&1 ) & waiter=$!
 set +m
-sleep 0.8
+wait_until_count -gt 0 500 count_orphanprobe; spawned=$?
+assert_rc "$spawned" 0 "the child orca is running before the kill (or this probe proves nothing)"
 kill -TERM -"$waiter" 2>/dev/null || kill -TERM "$waiter" 2>/dev/null || true
-sleep 0.8
-leaked=$(pgrep -f 'run_orphanprobe' 2>/dev/null | wc -l | tr -d ' ')
+wait_until_count -eq 0 300 count_orphanprobe || true
+leaked=$(count_orphanprobe)
 assert_eq "$leaked" "0" "killing the process group leaves no orphaned orca"
 # `pgrep -f run_orphanprobe` ONLY matches the child orca's argv, so it used to
 # report 0 while the wrapping shell was still alive and spinning its poll
 # loop. Counting the whole process group is what actually catches it:
 # $waiter is the pgid because this block runs under `set -m`.
-remaining=$(pgrep -g "$waiter" 2>/dev/null | wc -l | tr -d ' ')
+wait_until_count -eq 0 300 count_in_group "$waiter" || true
+remaining=$(count_in_group "$waiter")
 assert_eq "$remaining" "0" "the whole process group is gone, not just the child orca"
 pkill -f 'run_orphanprobe' 2>/dev/null || true
 rm -f "$(vizier_requests_dir)/orphan.md"
