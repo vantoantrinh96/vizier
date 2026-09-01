@@ -57,9 +57,9 @@ vizier_lock_matches() {  # <session_id>
 #
 # <since> is optional and defaults to "now". vizier_lock_claim's composed
 # reclaim/refresh path always passes it precomputed, so that the `date`
-# fork does not sit inside the window (see the comment on that path) --
-# callers that just want to claim an empty lock (or the brief's direct
-# tests of this primitive) can omit it.
+# fork does not sit inside the missing-lock window (see the comment on that
+# path) -- callers that just want to claim an empty lock (or the brief's
+# direct tests of this primitive) can omit it.
 _vizier_lock_create_exclusive() {  # <session_id> <harness> <pid> [since]
   local f since
   f=$(vizier_lock_path)
@@ -79,26 +79,40 @@ _vizier_lock_create_exclusive() {  # <session_id> <harness> <pid> [since]
 # Take the CURRENT lock file out of the way, but only if it is still byte-for
 # -byte the file we inspected and judged dead (or, on the refresh path,
 # byte-for-byte what we last knew ourselves to hold). Rc 0 means the slot is
-# now ours to create into, and prints the temp path holding the old bytes --
-# the CALLER removes it, and only after its own create_exclusive has
-# finished, so that fork sits outside the missing-lock window (see
-# vizier_lock_claim). `mv` of one specific path succeeds for exactly one
-# racer -- the losers find the file already gone -- so the move itself is
-# the atomic step; the content comparison after it is what catches a third
-# session that legitimately claimed the slot between our inspection and our
-# move.
-_vizier_lock_take_stale() {  # <snapshot>
+# now ours to create into, and prints the path holding the old bytes -- the
+# CALLER removes it (or restores it), and only after its own
+# create_exclusive has finished, so that fork sits outside the missing-lock
+# window (see vizier_lock_claim). `mv` of one specific path succeeds for
+# exactly one racer -- the losers find the file already gone -- so the move
+# itself is the atomic step; the content comparison after it is what catches
+# a third session that legitimately claimed the slot between our inspection
+# and our move.
+#
+# <stale_path> is optional. vizier_lock_claim's composed path precomputes
+# and passes one, BEFORE calling this function, so that its own trap (set up
+# before this call) already knows the exact name to restore even if a signal
+# lands while this function is still running -- there would otherwise be a
+# gap between this function's internal `mv` succeeding and the caller
+# learning the resulting path back from us. Direct callers (and the brief's
+# own tests of this primitive) can omit it and get the original self-named
+# behavior.
+_vizier_lock_take_stale() {  # <snapshot> [stale_path]
   local f stale
   f=$(vizier_lock_path)
-  stale="$f.stale.$$.$RANDOM"
+  stale=${2:-"$f.stale.$$.$RANDOM"}
   mv "$f" "$stale" 2>/dev/null || return 1
   if [ "$(cat "$stale" 2>/dev/null)" != "$1" ]; then
     # Test-only seam: lets tests/lock.test.sh simulate a legitimate
     # claimant landing in the vacated slot during the restore attempt
     # below, so the `set -C` guard on that restore has a real
-    # mutation-detecting test instead of only a lint-shaped one. Inert
-    # unless a test sets this variable.
-    [ -n "${VIZIER_TEST_TAKE_STALE_RESTORE_INJECT:-}" ] && eval "$VIZIER_TEST_TAKE_STALE_RESTORE_INJECT"
+    # mutation-detecting test instead of only a lint-shaped one. A plain
+    # function check, not an env-var `eval` -- this file is sourced by the
+    # wake hook after every turn of every session on the machine, and an
+    # env-var-triggered `eval` there is a code-execution surface even when
+    # guarded by `${VAR:-}`. A function can only exist here because code
+    # already running in THIS shell defined it, so no environment variable
+    # can ever reach it.
+    command -v _vizier_test_take_stale_seam >/dev/null 2>&1 && _vizier_test_take_stale_seam
     # It changed between our inspection and our move: a third session claimed
     # it legitimately. Put it back if the slot is still free, and refuse.
     # Restoring through `set -C` matters -- an unguarded `>` here would
@@ -110,6 +124,25 @@ _vizier_lock_take_stale() {  # <snapshot>
   fi
   printf '%s' "$stale"
   return 0
+}
+
+# Restore a backup _vizier_lock_take_stale produced, guarded by `set -C` for
+# the same reason its own restore is: a legitimate new owner may already
+# occupy the slot by the time this runs, and an unguarded write would
+# silently steal it from them. A no-op if nothing was actually taken (the
+# path does not exist), which is what makes it safe to call unconditionally
+# from a trap that may fire before any `mv` ever happened. Used by
+# vizier_lock_claim on EVERY create-failure path, not only refresh: for a
+# reclaim the old owner was already dead so restoring it back is harmless
+# (it just stays reclaimable), but for a refresh the backup IS the caller's
+# own live lock -- discarding it unconditionally on a create failure that
+# had nothing to do with losing a race used to silently unlock a live first
+# mate.
+_vizier_lock_restore_stale() {  # <stale_path>
+  local stale=$1
+  [ -n "$stale" ] && [ -e "$stale" ] || return 0
+  ( set -C; cat "$stale" > "$(vizier_lock_path)" ) 2>/dev/null
+  rm -f "$stale"
 }
 
 # Shared refusal for "we did not end up holding the lock". Prints
@@ -131,7 +164,7 @@ _vizier_lock_refuse_current() {
 }
 
 vizier_lock_claim() {  # <session_id> <harness> <pid>
-  local sid=$1 harness=$2 pid=$3 owner owner_pid snapshot since stale take_rc verb detail
+  local sid=$1 harness=$2 pid=$3 owner owner_pid snapshot since verb detail
   # The lock file is line-based key=value and read with sed, so a session_id
   # containing a newline would write a file that we ourselves cannot read back
   # -> a lone claimant gets refused for no obvious reason. Block it right at
@@ -151,6 +184,15 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
   # which of our own checks (owner, liveness) ran on the old bytes in the
   # meantime.
   snapshot=$(cat "$(vizier_lock_path)" 2>/dev/null)
+  # Test-only seam, placed HERE deliberately: review round 1 shipped this
+  # seam further down (after the liveness decision), which is downstream of
+  # the entire vulnerable region and made the composed-path test unable to
+  # see the bug it was written for -- a faithful revert of the snapshot
+  # ordering still passed the suite. It must fire before owner/liveness are
+  # even derived, so a test can simulate the interleave landing anywhere in
+  # that region. A plain function check, not an env-var `eval` -- see the
+  # matching comment on _vizier_lock_take_stale for why.
+  command -v _vizier_test_lock_seam >/dev/null 2>&1 && _vizier_test_lock_seam
 
   if [ -z "$snapshot" ]; then
     if ! _vizier_lock_create_exclusive "$sid" "$harness" "$pid"; then
@@ -173,7 +215,12 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
     # and reclaim it in between our snapshot and our write. Without going
     # through take_stale, both sides would print success and only one
     # write survives -- exactly the bug this task exists to close, just
-    # entered from the refresh side instead of the reclaim side.
+    # entered from the refresh side instead of the reclaim side. The cost
+    # of that protection is real and is spelled out in the RESIDUAL WINDOW
+    # comment below: unifying refresh into this sequence means an ALIVE
+    # owner's own refresh now unlinks its lock for the width of that
+    # window too, where it previously never did (mktemp+mv was a single
+    # atomic replace with no missing-file window at all).
     verb=refreshed
     detail="session_id=$sid"
   else
@@ -200,38 +247,84 @@ vizier_lock_claim() {  # <session_id> <harness> <pid>
   # RESIDUAL WINDOW: from here until _vizier_lock_create_exclusive's `>`
   # below succeeds, the lock file does not exist, and vizier_lock_matches
   # returns false for the TRUE owner -- the wake hook reads that as "not
-  # us" and silently skips the turn. Measured after narrowing (mkdir
-  # hoisted out via the builtin `[ -d ]` test above, `date` precomputed
-  # here instead of inside create_exclusive, and the stale file's cleanup
-  # `rm` deferred past the create below): see task-2b-report.md for the
-  # real numbers. What remains is the `mv` and `cat` inside
-  # _vizier_lock_take_stale (both external execs the compare-and-swap
-  # genuinely needs) plus the `set -C` subshell in create_exclusive. This
-  # window cannot be closed further without a second file (a mutex), which
-  # this task's brief explicitly rules out. A fresh claimant that lands
-  # IN this window sees an empty lock and is free to claim it -- that
-  # claimant would then dispossess the true (about to be restored) owner.
-  # That is the residual risk this fix accepts, not a case this fix misses.
+  # us" and silently skips the turn. This now applies to REFRESH as well as
+  # reclaim (see the comment above): review round 1 measured 150 refreshes
+  # by a live owner against a concurrent different-sid thief hammering
+  # vizier_lock_claim and found 0/0 successful steals on the pre-unification
+  # library (4ab6d86) versus 1/2 on this one (51ec567) -- unifying refresh
+  # into this sequence made the window newly reachable by the very session
+  # that legitimately owns the lock, not just by a reclaimer. The trade-off
+  # is judged net-positive (a wrong owner is worse than a skipped hook
+  # turn), not reverted; this comment exists so that judgment is visible,
+  # not assumed.
+  #
+  # Narrowed twice: round 1 hoisted `mkdir` behind a builtin `-d` test,
+  # precomputed `date` (see `since` below), and deferred
+  # _vizier_lock_take_stale's cleanup `rm` past this create. Round 2 closed
+  # an orphaning gap: a signal landing between take_stale's `mv` and this
+  # create used to leave a `lock.stale.*` backup on disk and NO lock at
+  # all, permanently, because nothing was there to restore it -- the trap
+  # below now does that unconditionally on every exit from this section.
+  #
+  # What is left: the `mv` and `cat` inside _vizier_lock_take_stale (both
+  # external execs the compare-and-swap genuinely needs) and the `set -C`
+  # subshell in create_exclusive. This is not proven to be the floor --
+  # a `mktemp` + `mv`-into-place swap in place of the `set -C` subshell
+  # would shave one more fork -- but going further than that (closing the
+  # window to zero) needs a second file (a mutex), which this task's brief
+  # explicitly rules out. Measured max (8 busy-loop processes, `perl
+  # Time::HiRes` polling the file's existence): see task-2b-report.md. A
+  # fresh claimant that lands IN whatever window remains sees an empty lock
+  # and is free to claim it -- that claimant would then dispossess the true
+  # (about to be restored) owner. That is the residual risk this fix
+  # accepts, not a case this fix misses.
   since=$(date +%s)
-  # Test-only seam: lets tests/lock.test.sh simulate a legitimate claimant
-  # landing between our snapshot/liveness decision and our take_stale call
-  # -- the exact interleave that used to dispossess a live owner. Inert
-  # unless a test sets this variable.
-  [ -n "${VIZIER_TEST_LOCK_CLAIM_INJECT:-}" ] && eval "$VIZIER_TEST_LOCK_CLAIM_INJECT"
 
-  stale=$(_vizier_lock_take_stale "$snapshot"); take_rc=$?
-  if [ "$take_rc" -ne 0 ]; then
+  # The take-stale -> create-or-restore sequence lives in its own subshell
+  # so ITS trap belongs only to it, not to vizier_lock_claim's caller --
+  # same reason lib/vizier-wake-lib.sh's vizier_wait_any_run scopes its
+  # trap to a subshell (a bare `trap - ...` afterward would otherwise erase
+  # any trap the caller had already installed for itself). TWO traps, not
+  # one, for the same reason recorded there too: a bash SIGNAL trap runs
+  # its handler and then CONTINUES execution -- it does NOT end the
+  # process -- so a cleanup-only EXIT trap is not enough by itself; the
+  # INT/TERM/HUP trap must `exit` explicitly, and it repeats the same
+  # cleanup call rather than relying on that `exit` re-triggering the EXIT
+  # trap, matching the belt-and-suspenders style already established there.
+  # `stale_target` is computed HERE, before the `mv` inside take_stale even
+  # runs, specifically so the trap already knows the exact path to restore
+  # even if the signal lands while take_stale is still executing --
+  # _vizier_lock_restore_stale itself is a safe no-op if that path does not
+  # exist yet (signal arrived before the `mv`) or no longer exists (we
+  # already succeeded and cleaned it up).
+  (
+    stale_target="$(vizier_lock_path).stale.$$.$RANDOM"
+    success=""
+    # `[ -n "$success" ] ||` guards both traps: once create_exclusive has
+    # actually succeeded, the backup must NEVER be restored over the fresh
+    # lock it just wrote, even if a signal lands in the sliver between that
+    # success and our own explicit `rm -f` two lines down.
+    trap '[ -n "$success" ] || _vizier_lock_restore_stale "$stale_target"' EXIT
+    trap '[ -n "$success" ] || _vizier_lock_restore_stale "$stale_target"; exit 1' INT TERM HUP
+
+    if ! _vizier_lock_take_stale "$snapshot" "$stale_target" >/dev/null; then
+      _vizier_lock_refuse_current
+      exit 1
+    fi
+    if _vizier_lock_create_exclusive "$sid" "$harness" "$pid" "$since"; then
+      success=1
+      rm -f "$stale_target"
+      printf '%s %s\n' "$verb" "$detail"
+      exit 0
+    fi
+    # Create failed for ANY reason -- lost race, or something else entirely
+    # (e.g. the home going unwritable between the take and the create).
+    # The EXIT trap above restores $stale_target unconditionally; nothing
+    # further to do here except report why.
     _vizier_lock_refuse_current
-    return 1
-  fi
-  if ! _vizier_lock_create_exclusive "$sid" "$harness" "$pid" "$since"; then
-    rm -f "$stale"
-    _vizier_lock_refuse_current
-    return 1
-  fi
-  rm -f "$stale"
-  printf '%s %s\n' "$verb" "$detail"
-  return 0
+    exit 1
+  )
+  return $?
 }
 
 vizier_lock_release() {  # <session_id> -- only the true owner can remove it

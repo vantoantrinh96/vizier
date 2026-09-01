@@ -95,18 +95,30 @@ assert_eq "$out" "refused" "a stale snapshot never dispossesses a live owner"
 assert_eq "$(vizier_lock_get session_id)" "live-one" "the live owner still holds it"
 
 # --- the same rule, driven through vizier_lock_claim itself, not the bare
-# primitives (review round 1, Important 2) ----------------------------------
-# A dead-pid lock is seeded; the injection seam fires right after
-# vizier_lock_claim has decided "dead, proceed to reclaim" but before it
-# calls _vizier_lock_take_stale -- the exact interleave the reviewer
-# demonstrated dispossessing a live owner when the snapshot was taken AFTER
-# the liveness check instead of before it. The claim must refuse, naming the
-# ACTUAL live owner (not the stale snapshot's), and that live owner's lock
-# must survive untouched.
+# primitives (review round 1, Important 2; seam relocated + made
+# function-based in review round 2) ------------------------------------------
+# A dead-pid lock is seeded; the seam fires immediately after the snapshot is
+# taken and BEFORE owner/liveness are even derived from it -- review round 1
+# placed this seam too late (after the liveness decision), which is
+# downstream of the whole vulnerable region: a faithful revert of the
+# snapshot-first ordering still passed the suite because the seam fired
+# after the vulnerable code had already run. It must fire here to actually
+# exercise that region. Also switched from an env-var `eval` to a plain
+# function existence check (`command -v ... && ...`): an env-var-triggered
+# `eval`, even behind `${VAR:-}`, is a code-execution surface in a file the
+# wake hook sources after every turn of every session on the machine. A
+# function can only exist here because code already running in THIS shell
+# defined it, so no environment variable can ever reach it.
+#
+# The claim must refuse, naming the ACTUAL live owner (not the stale
+# snapshot's), and that live owner's lock must survive untouched.
 rm -f "$(vizier_lock_path)"
 printf 'session_id=ghost\nharness=claude\npid=999999\nsince=1\n' > "$(vizier_lock_path)"
-inject='printf "session_id=live-one\nharness=claude\npid=%s\nsince=2\n" '"$$"' > "$(vizier_lock_path)"'
-out=$(VIZIER_TEST_LOCK_CLAIM_INJECT="$inject" vizier_lock_claim thief claude $$); rc=$?
+_vizier_test_lock_seam() {
+  printf 'session_id=live-one\nharness=claude\npid=%s\nsince=2\n' $$ > "$(vizier_lock_path)"
+}
+out=$(vizier_lock_claim thief claude $$); rc=$?
+unset -f _vizier_test_lock_seam
 assert_rc "$rc" 1 "a mid-flight legitimate claim refuses the reclaimer (composed path)"
 assert_contains "$out" "held_by=live-one" "names the actual live owner, not the stale snapshot's"
 assert_eq "$(vizier_lock_get session_id)" "live-one" "the live owner survives the interleave"
@@ -116,17 +128,22 @@ assert_eq "$(vizier_lock_get session_id)" "live-one" "the live owner survives th
 # The demonstrated bug: A refreshes its own (believed-current) lock at the
 # same moment B legitimately reclaims it as dead, and -- on the old
 # unconditional-write refresh -- BOTH print success though only one write
-# survives. Simulate B's reclaim landing between A's snapshot and A's
-# take_stale call; A's refresh must now refuse rather than lie about holding it.
+# survives. Simulate B's reclaim landing right after A's snapshot (before A
+# even derives owner/liveness from it); A's refresh must now refuse rather
+# than lie about holding it.
 rm -f "$(vizier_lock_path)"
 printf 'session_id=sess-a\nharness=claude\npid=999999\nsince=1\n' > "$(vizier_lock_path)"
-inject='printf "session_id=sess-b\nharness=claude\npid=%s\nsince=2\n" '"$$"' > "$(vizier_lock_path)"'
-out=$(VIZIER_TEST_LOCK_CLAIM_INJECT="$inject" vizier_lock_claim sess-a claude $$); rc=$?
+_vizier_test_lock_seam() {
+  printf 'session_id=sess-b\nharness=claude\npid=%s\nsince=2\n' $$ > "$(vizier_lock_path)"
+}
+out=$(vizier_lock_claim sess-a claude $$); rc=$?
+unset -f _vizier_test_lock_seam
 assert_rc "$rc" 1 "a refresh that loses a concurrent reclaim refuses instead of lying"
 assert_eq "$(vizier_lock_get session_id)" "sess-b" "the reclaiming session's lock survives"
 
 # --- mutation-detecting: the restore's `set -C` guard specifically (review
-# round 1, minor) ------------------------------------------------------------
+# round 1, minor; seam made function-based in review round 2 for the same
+# code-execution-surface reason as the claim seam above) --------------------
 # Simulate a legitimate third claimant landing in the vacated slot exactly
 # between take_stale detecting the mismatch and attempting its restore
 # write. The guard must refuse to clobber it. Without `set -C` on that
@@ -136,11 +153,51 @@ rm -f "$(vizier_lock_path)"
 printf 'session_id=old\nharness=claude\npid=1\nsince=1\n' > "$(vizier_lock_path)"
 snap=$(cat "$(vizier_lock_path)")
 printf 'session_id=changed\nharness=claude\npid=1\nsince=2\n' > "$(vizier_lock_path)"
-inject='printf "session_id=third\nharness=claude\npid=%s\nsince=3\n" '"$$"' > "$(vizier_lock_path)"'
-VIZIER_TEST_TAKE_STALE_RESTORE_INJECT="$inject" _vizier_lock_take_stale "$snap"
-assert_rc "$?" 1 "take-stale still refuses when a legitimate claimant lands during its own restore"
+_vizier_test_take_stale_seam() {
+  printf 'session_id=third\nharness=claude\npid=%s\nsince=3\n' $$ > "$(vizier_lock_path)"
+}
+_vizier_lock_take_stale "$snap"; rc=$?
+unset -f _vizier_test_take_stale_seam
+assert_rc "$rc" 1 "take-stale still refuses when a legitimate claimant lands during its own restore"
 assert_eq "$(vizier_lock_get session_id)" "third" \
   "and does not clobber that legitimate claimant's lock (set -C guards the restore)"
+
+# --- restore-on-any-create-failure, not just reclaim (review round 2,
+# Important 3) ----------------------------------------------------------------
+# _vizier_lock_restore_stale is the primitive vizier_lock_claim's trap now
+# calls unconditionally on EVERY create-failure path (not only refresh):
+# restoring a dead owner's lock back is harmless (still reclaimable), but
+# for a refresh the backup IS the caller's own live lock -- silently
+# discarding it (the old behavior on a create failure unrelated to losing a
+# race) used to unlock a live first mate. Test the primitive directly.
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
+stale=$(_vizier_lock_take_stale "$(cat "$(vizier_lock_path)")")
+_vizier_lock_restore_stale "$stale"
+assert_eq "$(vizier_lock_get session_id)" "sess-a" \
+  "restore-stale gives the backup back when the slot is still free"
+assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "and leaves no orphaned backup behind"
+
+# ... but must not clobber a legitimate new owner that claimed the freed
+# slot before the restore is attempted (same set -C guard as take_stale's
+# own restore, and the same reason).
+rm -f "$(vizier_lock_path)"
+printf 'session_id=sess-a\nharness=claude\npid=%s\nsince=1\n' $$ > "$(vizier_lock_path)"
+stale=$(_vizier_lock_take_stale "$(cat "$(vizier_lock_path)")")
+_vizier_lock_create_exclusive newcomer claude $$ >/dev/null  # a legitimate racer claims the freed slot
+_vizier_lock_restore_stale "$stale"
+assert_eq "$(vizier_lock_get session_id)" "newcomer" \
+  "restore-stale does NOT clobber a legitimate new owner"
+assert_eq "$(ls "$(vizier_home)"/lock.stale.* 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "and still leaves no orphaned backup, even when it refuses to restore"
+
+# A no-op call (nothing was ever taken) must not blow up under set -u and
+# must not create anything.
+_vizier_lock_restore_stale ""
+assert_rc "$?" 0 "restore-stale with no path is a harmless no-op"
+_vizier_lock_restore_stale "$VIZIER_TEST_TMP/never-existed"
+assert_rc "$?" 0 "restore-stale with a nonexistent path is a harmless no-op"
 
 # --- a create that fails for a NON-competitive reason must not claim
 # held_by= (review round 1, minor) -------------------------------------------
