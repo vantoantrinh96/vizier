@@ -285,7 +285,10 @@ fake_orca_seed_worker() {  # <dispatch_id> <terminal_handle>
 
 - [ ] **Step 4: Rewrite fake-orca**
 
-Replace `tests/fake-orca/orca` entirely:
+Replace `tests/fake-orca/orca` entirely (this is the file as actually shipped
+in `791635f`; the first draft of this plan omitted the `exit 0` on every branch
+but `orchestration check`, so successful calls fell through to the `exit 64`
+handler — found by the Task 1 implementer and confirmed by the reviewer):
 
 ```bash
 #!/usr/bin/env bash
@@ -357,32 +360,38 @@ case "$1 ${2:-}" in
       '{target:{kind:"local"},app:{running:true,pid:0,desktopWindowStatus:"available"},runtime:$rt,graph:{state:"ready"}}')
     result="${VIZIER_FAKE_ORCA_STATUS_RESULT:-$default_result}"
     envelope "$result"
+    exit 0
     ;;
 
   "host list")
     hosts=$(jq -cs '.' "$STATE/hosts" 2>/dev/null || printf '[]')
     envelope "$(jq -cn --argjson h "${hosts:-[]}" '{hosts:$h}')"
+    exit 0
     ;;
 
   "project setups")
     all=$(jq -cs '.' "$STATE/setups" 2>/dev/null || printf '[]')
     envelope "$(jq -cn --argjson s "${all:-[]}" --arg p "$project" --arg h "$host" \
       '{setups: ($s | map(select(($p=="" or .projectId==$p) and ($h=="" or .hostId==$h))))}')"
+    exit 0
     ;;
 
   "worktree ps")
     envelope '{"totalCount":0,"truncated":false,"worktrees":[]}'
+    exit 0
     ;;
 
   "orchestration run-create")
     id=$(next_id run run)
     envelope "$(jq -cn --arg id "$id" --arg o "$objective" '{run:{id:$id,objective:$o}}')"
+    exit 0
     ;;
 
   "orchestration task-create")
     id=$(next_id task task)
     printf '%s' "$spec" > "$STATE/spec.$id"
     envelope "$(jq -cn --arg id "$id" --arg r "$run_id" '{task:{id:$id,run_id:$r}}')"
+    exit 0
     ;;
 
   "orchestration worker-start")
@@ -392,21 +401,25 @@ case "$1 ${2:-}" in
     [ -f "$STATE/workers/$id" ] || printf 'term-%s\n' "$n" > "$STATE/workers/$id"
     envelope "$(jq -cn --arg id "$id" --arg t "$task" --arg on "$on_host" \
       '{dispatch:{id:$id,task_id:$t,on:$on,state:"running"}}')"
+    exit 0
     ;;
 
   "orchestration worker-show")
     h=$(cat "$STATE/workers/$dispatch" 2>/dev/null || printf '')
     envelope "$(jq -cn --arg d "$dispatch" --arg h "$h" \
       '{worker:{dispatch_id:$d,agent_terminal_handle:$h,state:"settled"}}')"
+    exit 0
     ;;
 
   "orchestration worker-release")
     st="${VIZIER_FAKE_ORCA_RELEASE_STATE:-released}"
     envelope "$(jq -cn --arg d "$dispatch" --arg s "$st" '{release:{dispatch_id:$d,state:$s}}')"
+    exit 0
     ;;
 
   "orchestration worker-list")
     envelope '{"workers":[]}'
+    exit 0
     ;;
 
   "orchestration check")
@@ -445,6 +458,7 @@ case "$1 ${2:-}" in
   "orchestration send"|"orchestration reply"|"orchestration ask")
     id=$(next_id msg msg)
     envelope "$(jq -cn --arg id "$id" --arg r "$msg_id" '{message:{id:$id,in_reply_to:$r}}')"
+    exit 0
     ;;
 
 esac
