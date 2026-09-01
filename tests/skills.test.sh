@@ -42,5 +42,21 @@ has $f "requires --model" "effort depends on model"
 has $f "--retry-of" "retries chain"
 has $f "never retry blind" "receipts are read"
 
+# --- supervise --------------------------------------------------------
+f=skills/supervise/SKILL.md
+assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "supervise skill exists"
+has $f "vizier_supervise_plan" "dispositions come from the library"
+has $f "orca orchestration check" "the mailbox is read with check"
+has $f "--ack" "ack exists"
+has $f "only after" "ack comes only after processing"
+has $f "agent_terminal_handle" "terminal transfer reads the handle"
+has $f "--terminal" "transfer reuses the terminal"
+has $f "worker-release --dispatch" "release is by dispatch"
+has $f "release_pending" "pending release receipts are handled"
+has $f "terminal close" "the forbidden substitution is named"
+has $f "one" "the captain gets one consolidated report"
+has $f "delivery" "questions route through the delivery policy"
+has $f "worker-read" "a quiet worker is diagnosed, not guessed at"
+
 vizier_test_teardown
 vizier_test_report
