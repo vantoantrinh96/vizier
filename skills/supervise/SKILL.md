@@ -43,12 +43,18 @@ Build a per-dispatch mode map from the request file's own dispatch notes.
 `brief` writes one line per dispatch, `task <id> -> dispatch <id> (<mode>)` —
 keyed by dispatch id. The per-task override note is **not** a usable join
 key here: it's keyed by task number, and the batch you're resolving only
-carries `dispatch_id`. Pull dispatch id and mode out of the dispatch note:
+carries `dispatch_id`. Pull dispatch id and mode out of the dispatch note —
+**anchored to the start of the line**, never a bare `.*` search across the
+whole file: the request body holds the captain's own words verbatim, and a
+captain who pastes a previous run's notes into a new request can reproduce
+`-> dispatch <id> (<mode>)`-shaped prose by accident, with no need for
+anyone to exploit anything. Only a line that actually starts with `task `
+and has the real note's shape counts:
 
 ```bash
 f=$(vizier_request_path "$slug")
 map=$(mktemp)
-sed -n 's/.*-> dispatch \([^[:space:]]*\) (\(.*\))$/\1\t\2/p' "$f" > "$map"
+sed -n 's/^task [^[:space:]]* -> dispatch \([^[:space:]]*\) (\(.*\))$/\1\t\2/p' "$f" > "$map"
 ```
 
 The fallback for a dispatch the map doesn't name is the project's own

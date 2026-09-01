@@ -115,6 +115,24 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
   # falls back to <default_mode> -- which itself already fails closed to
   # the strict check unless it is the exact string `direct-PR` (see
   # vizier_msg_disposition above).
+  #
+  # THE LAST MATCHING LINE FOR A GIVEN DISPATCH WINS, NOT THE FIRST. The
+  # map file can legitimately (or, per review round 4, accidentally -- a
+  # captain who pastes a previous run's notes into a new request's body
+  # reproduces this without trying) contain more than one line for the
+  # same dispatch id: the request file's extraction pattern is anchored to
+  # a genuine `task ... -> dispatch ...` note (see the supervise skill),
+  # but nothing stops the file from holding TWO genuine-looking lines for
+  # one id -- an old one quoted in prose that happens to satisfy the
+  # anchor, or a corrected note appended after a mistaken one. Reading the
+  # LAST one matches the intuition "the most recent note about this
+  # dispatch is the one that's true," and fails toward the strict path
+  # exactly as often as it fails toward the lenient one -- it does not
+  # itself make either direction safer, unlike the mode-string default in
+  # vizier_msg_disposition, which deliberately fails toward strict. What
+  # makes this safe in practice is the skill's anchored extraction pattern
+  # keeping stray prose out of the map in the first place; this rule is the
+  # second layer, for on the rare case a lookalike line still gets in.
   local default_mode="$1" map_file="${2:-}"
   local plan="" last="" bad=0
   local line id dispatch mode looked
@@ -137,7 +155,9 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
     if [ -n "$map_file" ] && [ -r "$map_file" ]; then
       dispatch=$(printf '%s' "$line" | jq -r '.dispatch_id // empty' 2>/dev/null)
       if [ -n "$dispatch" ]; then
-        looked=$(awk -F'\t' -v d="$dispatch" '$1==d{print $2; exit}' "$map_file")
+        # END-block accumulation, not `{print;exit}` on first match: see
+        # the LAST MATCHING LINE WINS comment above vizier_supervise_plan.
+        looked=$(awk -F'\t' -v d="$dispatch" '$1==d{v=$2} END{print v}' "$map_file")
         [ -n "$looked" ] && mode="$looked"
       fi
     fi
