@@ -1,102 +1,102 @@
-# orca-firstmate — Design
+# orca-firstmate -- Design
 
-Ngày: 2026-08-30
-Cập nhật: 2026-08-31 — bổ sung Delivery mode/no-mistakes; entry point thành plugin đa harness + CLI cài đặt
-Trạng thái: đã duyệt design trong chat, chờ duyệt spec
+Date: 2026-08-30
+Updated: 2026-08-31 -- added Delivery mode/no-mistakes; entry point becomes a multi-harness plugin + install CLI
+Status: design approved in chat, spec approval pending
 
-## Tóm tắt
+## Summary
 
-`orca-firstmate` là một **agent distro** lấy triết lý của [firstmate](https://github.com/kunchenguid/firstmate) nhưng xây lại từ đầu, Orca-native: cài như một **Claude Code plugin**, rồi gõ `/firstmate` trong bất kỳ phiên Claude Code nào ở bất kỳ thư mục nào để phiên đó thành **first mate** — một liaison duy nhất mà captain (người dùng) trò chuyện, thường qua floating window của Orca. First mate điều phối crew agent chạy trong worktree/terminal do Orca quản lý, trên nhiều host (hiện tại: local + Mac mini; danh sách host thay đổi được trong tương lai).
+`orca-firstmate` is an **agent distro** that takes the philosophy of [firstmate](https://github.com/kunchenguid/firstmate) but is rebuilt from scratch, Orca-native: installed as a **Claude Code plugin**, then typing `/firstmate` in any Claude Code session in any directory turns that session into a **first mate** -- a single liaison the captain (the user) talks to, usually through Orca's floating window. The first mate coordinates crew agents running in worktrees/terminals managed by Orca, across multiple hosts (currently: local + Mac mini; the host list can change in the future).
 
-Nguyên tắc phân vai:
+Role-splitting principle:
 
-- **Orca sở hữu cơ khí**: worktree, terminal, Run/Task/Dispatch, mailbox, settle, release, federation xuyên host. Distro không bao giờ chép lại state này.
-- **First mate sở hữu phán đoán**: chia yêu cầu thành task, sinh brief, chọn host, đọc `worker_done` và quyết bước tiếp theo, nói chuyện với captain bằng ngôn ngữ kết quả.
-- **State riêng tối thiểu**: chỉ sổ `requests/` (khái niệm host-dính-theo-request là của distro, Orca không có chỗ chứa) và tri thức `projects/`.
+- **Orca owns the mechanics**: worktree, terminal, Run/Task/Dispatch, mailbox, settle, release, cross-host federation. The distro never duplicates this state.
+- **The first mate owns judgment**: splitting requests into tasks, generating briefs, picking a host, reading `worker_done` and deciding the next step, talking to the captain in the language of outcomes.
+- **Minimal private state**: just the `requests/` ledger (the concept of a host pinned to a request belongs to the distro; Orca has no place to hold it) and `projects/` knowledge.
 
-Khác firstmate ở chỗ: không có 162 script bash, không watcher tự chế, không `state/*.meta`, không backend đa multiplexer, và không phải `cd` vào một thư mục distro. Toàn bộ cơ khí thay bằng `orca orchestration` + một Stop hook nhỏ.
+Different from firstmate in that: no 162 bash scripts, no homegrown watcher, no `state/*.meta`, no multi-multiplexer backend, and no need to `cd` into a distro directory. All the mechanics are replaced by `orca orchestration` + one small Stop hook.
 
-## Bối cảnh và lý do
+## Context and rationale
 
-firstmate có backend Orca nhưng chỉ dùng 8 lệnh CLI mức thấp (`status`, `repo add/show`, `worktree create/rm/show`, `terminal create/send/read/close`) và nhét Orca vào khuôn tmux, nên chịu các giới hạn: không busy signal, không secondmate, tự dựng steering inbox. Trong khi Orca (đã kiểm chứng trên máy captain, app 1.4.191, 57 capabilities) có sẵn:
+firstmate has an Orca backend but only uses 8 low-level CLI commands (`status`, `repo add/show`, `worktree create/rm/show`, `terminal create/send/read/close`) and forces Orca into a tmux mold, so it inherits the limits: no busy signal, no secondmate, a homegrown steering inbox. Whereas Orca (verified on the captain's machine, app 1.4.191, 57 capabilities) already has:
 
-- `orchestration run/task/dispatch/worker-*` — vòng đời worker có giám sát, receipt tường minh.
-- `orchestration check --wait --types worker_done,escalation,question` — mailbox blocking, FIFO, replay-tới-khi-ack, hoạt động xuyên host.
-- `worktree ps --json` — ảnh chụp toàn fleet một lệnh, gồm `agents[].state`, `linkedPR`, `lastOutputAt`.
-- `worker-start --on <environment>` — dispatch sang host khác; sau đó mọi lệnh route bằng Dispatch ID.
+- `orchestration run/task/dispatch/worker-*` -- a supervised worker lifecycle, explicit receipts.
+- `orchestration check --wait --types worker_done,escalation,question` -- blocking mailbox, FIFO, replay-until-ack, works across hosts.
+- `worktree ps --json` -- a whole-fleet snapshot in one command, including `agents[].state`, `linkedPR`, `lastOutputAt`.
+- `worker-start --on <environment>` -- dispatch to another host; after that every command routes by Dispatch ID.
 - Idempotency capabilities (`worktree.create-idempotency.v1`, `terminal.create-idempotency.v2`).
 
-Giá trị giữ lại từ firstmate là phần Orca **không** có: kỷ luật liaison một đầu mối, authority không suy diễn, brief có hợp đồng, không release khi chưa land, host lỗi không âm thầm thay thế.
+The value kept from firstmate is the part Orca **doesn't** have: single-point-of-contact liaison discipline, authority that isn't inferred, briefs with a contract, no release before landing, a failed host is never silently swapped.
 
-Nỗi đau captain cần giải (đã xác nhận): (1) phải tự đi xem từng worktree — cần giám sát tập trung, tự thức dậy theo sự kiện; (2) lặp lại context cho mỗi agent — cần brief sinh tự động từ tri thức project.
+Captain pains that need solving (confirmed): (1) having to check each worktree by hand -- needs centralized supervision, event-driven self-waking; (2) repeating context for every agent -- needs briefs auto-generated from project knowledge.
 
-## Kiến trúc
+## Architecture
 
 ```
-captain ── chat (Orca floating window / terminal bất kỳ)
-   │
-   ▼
-┌────────────────────────────────────────────┐
-│ phiên Claude Code bất kỳ, cwd bất kỳ       │
-│  + plugin orca-firstmate (skills, hook)    │
-│  đã gõ /firstmate → giữ lock → là first mate│
-└──────┬─────────────────────────────────────┘
-       │ đọc/ghi
-       ▼
-┌────────────────────────────────────────────┐
-│ ~/.orca-firstmate/  (home cố định)          │
-│  lock        — session_id + pid chủ hiện tại│
-│  requests/   — sổ request đang mở           │
-│  projects/   — tri thức từng project        │
-└──────┬─────────────────────────────────────┘
-       │ orca orchestration …
-       ▼
+captain -- chat (Orca floating window / any terminal)
+   |
+   v
++------------------------------------------------+
+| any Claude Code session, any cwd                |
+|  + orca-firstmate plugin (skills, hook)         |
+|  typed /firstmate -> holds lock -> is first mate |
++------+-------------------------------------------+
+       | reads/writes
+       v
++------------------------------------------------+
+| ~/.orca-firstmate/  (fixed home)                |
+|  lock        -- session_id + pid of current owner|
+|  requests/   -- ledger of open requests         |
+|  projects/   -- per-project knowledge            |
++------+-------------------------------------------+
+       | orca orchestration ...
+       v
   Orca Run (1 request = 1 Run)
-       │ worker-start [--on <host>]
-  ┌────┴─────┬──────────┐
-  ▼          ▼          ▼
-Dispatch  Dispatch  Dispatch     local / Mac mini / host tương lai
-(worktree + terminal + agent, Orca quản trọn vòng đời)
+       | worker-start [--on <host>]
+  +----+-----+----------+
+  v          v          v
+Dispatch  Dispatch  Dispatch     local / Mac mini / future host
+(worktree + terminal + agent, Orca owns the full lifecycle)
 ```
 
-### Cấu trúc plugin (thứ được cài)
+### Plugin structure (what gets installed)
 
 ```
 orca-firstmate/
   .claude-plugin/plugin.json
   commands/
-    firstmate.md             # /firstmate — kích hoạt phiên, giữ lock, gợi ý project từ cwd
+    firstmate.md             # /firstmate -- activates the session, holds the lock, suggests a project from cwd
   skills/
-    brief/SKILL.md           # sinh spec 4 tầng cho task-create
-    routing/SKILL.md         # khám phá host, eligibility, chọn host per-request
-    supervise/SKILL.md       # xử lý batch mailbox, release/reuse, ack, báo cáo
-    delivery/SKILL.md        # delivery mode, hợp đồng giao hàng, chính sách ask-user
-    identity/SKILL.md        # identity + hard rules; /firstmate và PostCompact đều nạp nó
+    brief/SKILL.md           # generates the 4-layer spec for task-create
+    routing/SKILL.md         # host discovery, eligibility, per-request host choice
+    supervise/SKILL.md       # processes mailbox batches, release/reuse, ack, reporting
+    delivery/SKILL.md        # delivery mode, delivery contract, ask-user policy
+    identity/SKILL.md        # identity + hard rules; both /firstmate and PostCompact load it
   hooks/
     hooks.json               # Stop (asyncRewake) + PostCompact
-    wake.sh                  # Stop: gate lock → chờ mailbox → exit 2 (~60 dòng)
-    reidentify.sh            # PostCompact: lock khớp thì in lại identity ra stderr
+    wake.sh                  # Stop: gate on lock -> wait on mailbox -> exit 2 (~60 lines)
+    reidentify.sh            # PostCompact: if the lock matches, reprints identity to stderr
   tests/
-    fake-orca/               # orca giả trên PATH trả JSON mẫu
+    fake-orca/               # fake orca on PATH returning sample JSON
     *.test.sh
-  docs/superpowers/specs/    # spec này và các spec sau
-  docs/verification/         # bằng chứng chạy thật kèm version app
+  docs/superpowers/specs/    # this spec and later specs
+  docs/verification/         # real-run evidence with the app version
 ```
 
-### Home (thứ được sinh ra lúc chạy)
+### Home (what gets generated at runtime)
 
 ```
 ~/.orca-firstmate/
-  lock                       # {session_id, pid, since} — chủ first mate hiện tại
-  requests/<slug>.md         # sổ request đang mở
-  projects/<tên>.md          # tri thức project: delivery mode, build/test/ship, convention, bẫy, gợi ý model
+  lock                       # {session_id, pid, since} -- current first mate owner
+  requests/<slug>.md         # ledger of an open request
+  projects/<name>.md         # project knowledge: delivery mode, build/test/ship, conventions, pitfalls, model hints
 ```
 
-Home tách khỏi plugin có chủ đích: gỡ hoặc nâng cấp plugin không đụng tới state, và state không bao giờ phụ thuộc cwd của phiên.
+Home is deliberately separate from the plugin: removing or upgrading the plugin doesn't touch state, and state never depends on the session's cwd.
 
-## Entry point và kích hoạt
+## Entry point and activation
 
-**Cài một lần, dùng mọi nơi.** Một lệnh:
+**Install once, use everywhere.** One command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vantoantrinh96/orca-firstmate/main/install.sh | sh
@@ -104,98 +104,98 @@ orca-firstmate doctor
 orca-firstmate install
 ```
 
-Repo là **public trên GitHub**, nên `curl` và `git clone` đều không cần auth. Lệnh đầu chỉ clone source vào `~/.orca-firstmate/src` và symlink CLI lên PATH — **cố tình không** tự cài vào harness, vì bước đó sửa cấu hình harness của captain và phải là quyết định tường minh. Lệnh cuối dò harness nào có trên máy rồi cài adapter cho từng cái — **và cách cài khác nhau theo harness**, xem mục CLI cài đặt. Sau đó mọi phiên của harness đó, ở mọi repo, đều **có sẵn** skill và hook nhưng **không** hành xử như first mate.
+The repo is **public on GitHub**, so neither `curl` nor `git clone` needs auth. The first command only clones the source into `~/.orca-firstmate/src` and symlinks the CLI onto PATH -- it **deliberately does not** auto-install into the harness, because that step edits the captain's harness config and must be an explicit decision. The last command detects which harnesses are present on the machine and installs an adapter for each -- **and how it installs differs by harness**, see the Install CLI section. After that, every session of that harness, in every repo, **has** the skill and hook available but **does not** behave as a first mate.
 
-**`/firstmate` là công tắc.** Gõ nó thì phiên đó:
+**`/firstmate` is the switch.** Typing it makes that session:
 
-1. Ghi `~/.orca-firstmate/lock` = `{session_id, pid, since}`. Lock đã có và chủ còn sống → **từ chối**, báo phiên nào đang giữ. Chủ chết mà chưa dọn → thu hồi. **Một first mate tại một thời điểm**, để hai phiên không cùng ghi `requests/`.
-2. Nạp skill `identity` — identity và hard rules vào context.
-3. Đọc git remote ở cwd và **gợi ý** project cho request đầu tiên. Chỉ là gợi ý; cwd không bao giờ là authority, captain gật mới tính.
+1. Write `~/.orca-firstmate/lock` = `{session_id, pid, since}`. If the lock already exists and its owner is alive -> **refuse**, reporting which session holds it. If the owner is dead and hasn't cleaned up -> reclaim it. **One first mate at a time**, so two sessions never write `requests/` at once.
+2. Load the `identity` skill -- identity and hard rules into context.
+3. Read the git remote at cwd and **suggest** a project for the first request. It's only a suggestion; cwd is never authority, only the captain's nod counts.
 
-Phiên không gõ `/firstmate` thì không giữ lock, nên hook câm và không có gì thay đổi với nó.
+A session that doesn't type `/firstmate` never holds the lock, so the hook stays silent and nothing changes for it.
 
-**Sống sót qua compact.** Hook `PostCompact`: lock khớp phiên này thì in lại identity + hard rules ra stderr. Không có nó, một lần nén context là first mate quên mình là ai trong khi vẫn đang giữ lock và vẫn đang bị đánh thức.
+**Surviving compaction.** The `PostCompact` hook: if the lock matches this session, reprint identity + hard rules to stderr. Without it, a single context compaction leaves the first mate forgetting who it is while still holding the lock and still being woken.
 
-**Không dùng `CLAUDE.md` của plugin** cho identity — file đó nạp vào *mọi* phiên, kể cả phiên bạn chỉ muốn sửa code. Identity phải là thứ được kích hoạt, không phải thứ luôn bật.
+**Don't use the plugin's `CLAUDE.md`** for identity -- that file loads into *every* session, including one where you just want to edit code. Identity must be something activated, not something always on.
 
-**Truy cập home.** Phiên first mate có cwd bất kỳ, còn state ở `~/.orca-firstmate/`. First mate đọc/ghi home qua Bash. Nếu captain chạy permission mode chặt, thêm `--add-dir ~/.orca-firstmate` khi mở phiên.
+**Home access.** The first mate session has any cwd, while state lives at `~/.orca-firstmate/`. The first mate reads/writes home via Bash. If the captain runs a strict permission mode, add `--add-dir ~/.orca-firstmate` when opening the session.
 
-## CLI cài đặt và adapter harness
+## Install CLI and harness adapters
 
-**Luật cứng: CLI chỉ tồn tại lúc cài và lúc chẩn đoán, không bao giờ nằm trên đường chạy.** Cài xong, first mate nói chuyện thẳng với `orca`; không đường runtime nào gọi `orca-firstmate`. Bỏ luật này là xây lại 162 script của firstmate dưới cái tên đẹp hơn.
+**Hard rule: the CLI only exists at install time and diagnostic time, never on the runtime path.** Once installed, the first mate talks straight to `orca`; no runtime path calls `orca-firstmate`. Breaking this rule is rebuilding firstmate's 162 scripts under a prettier name.
 
-Năm lệnh: `install [--harness …]`, `doctor` (preflight ở mục Entry point, cộng kiểm chính bản đã cài còn nguyên), `update` (fetch trong `src` rồi chép lại), `uninstall` (gỡ payload, **giữ nguyên** `requests/` và `projects/`), và `unlock` (in chủ lock hiện tại rồi xoá lock). `unlock` tồn tại vì `CLAUDE_PID` là tiến trình `claude`, không phải phiên: sau `/clear` hoặc một lần resume, lock giữ một pid còn sống mà session id không khớp gì cả — `ofm_lock_claim` từ chối mãi, `/firstmate` bị cấm tự xoá lock, và nếu không có lệnh này thì không còn đường phục hồi nào được hỗ trợ. Viết bằng bash: CLI này chỉ chép file và kiểm vài thứ, Orca lại chỉ chạy macOS, nên một binary Go cho ~200 dòng là nghi lễ thừa.
+Five commands: `install [--harness ...]`, `doctor` (the preflight from the Entry point section, plus a check that the installed copy itself is intact), `update` (fetch in `src` then copy back over), `uninstall` (removes the payload, **keeps** `requests/` and `projects/` intact), and `unlock` (prints the current lock owner then removes the lock). `unlock` exists because `CLAUDE_PID` is the `claude` process, not the session: after `/clear` or a resume, the lock can hold a pid that's still alive but whose session id matches nothing -- `ofm_lock_claim` refuses forever, `/firstmate` is forbidden from clearing the lock itself, and without this command there is no supported recovery path at all. Written in bash: this CLI only copies files and checks a few things, and Orca only runs on macOS anyway, so a Go binary for ~200 lines is unnecessary ceremony.
 
-### Một repo, nhiều manifest
+### One repo, multiple manifests
 
-Mô hình đã được `superpowers` chứng minh và đang chạy trên máy captain — cùng một payload nằm trong cả `~/.claude/skills/` lẫn `~/.cursor/skills/`, mỗi harness một manifest nhỏ cạnh nhau:
+The model is already proven by `superpowers` and running on the captain's machine -- the same payload sits in both `~/.claude/skills/` and `~/.cursor/skills/`, with a small manifest for each harness side by side:
 
 ```
 orca-firstmate/
-  .claude-plugin/plugin.json   # manifest Claude Code (Cursor không dùng manifest:
-                               # plugin Cursor không nạp hook, đã đo)
-  commands/firstmate.md        # dùng chung
-  skills/                      # dùng chung: identity, brief, routing, supervise, delivery
+  .claude-plugin/plugin.json   # Claude Code manifest (Cursor uses no manifest:
+                               # the Cursor plugin doesn't load hooks, measured)
+  commands/firstmate.md        # shared
+  skills/                      # shared: identity, brief, routing, supervise, delivery
   hooks/
-    hooks.json                 # schema Claude: Stop (asyncRewake) + PostCompact
+    hooks.json                 # Claude schema: Stop (asyncRewake) + PostCompact
     wake-claude.sh
-    wake-cursor.sh             # KHÔNG khai trong manifest nào: adapter Cursor
-                               # merge nó vào ~/.cursor/hooks.json lúc install
+    wake-cursor.sh             # declared in NO manifest: the Cursor adapter
+                               # merges it into ~/.cursor/hooks.json at install time
   install.sh
   bin/orca-firstmate
 ```
 
-**Skill portable gần như miễn phí; wake thì mỗi harness một lần làm.** Đó là toàn bộ chi phí của đa harness, và nó nằm gọn trong hai file `wake-*.sh`.
+**A portable skill is almost free; wake is a one-time cost per harness.** That's the entire cost of being multi-harness, and it fits neatly into two `wake-*.sh` files.
 
-`install` chép chứ không symlink: một symlink nằm trong thư mục plugin là loại thứ hỏng âm thầm.
+`install` copies rather than symlinks: a symlink inside the plugin directory is the kind of thing that breaks silently.
 
-**Cursor không cài được dạng plugin.** Đã đo: cùng một hook, đặt trong `~/.cursor/skills/<name>/` với `.cursor-plugin/plugin.json` khai `"hooks"`, **không bao giờ fire** — kể cả khi ép bằng `--plugin-dir`; đặt trong `~/.cursor/hooks.json` thì chạy đủ vòng (`docs/verification/2026-08-31-plugin-wake.md`). Nên adapter Cursor buộc phải **merge phẫu thuật, idempotent** vào `~/.cursor/hooks.json` — chính file Orca đã có 8 entry trong đó: thêm đúng entry của mình, không đụng entry của ai khác, chạy lại không nhân bản, `uninstall` gỡ đúng entry của mình. Đây là ngoại lệ **có bằng chứng** của nguyên tắc "không sửa file config của tool khác", và nó là rủi ro cài đặt lớn nhất của distro.
+**Cursor can't be installed as a plugin.** Measured: the same hook, placed in `~/.cursor/skills/<name>/` with `.cursor-plugin/plugin.json` declaring `"hooks"`, **never fires** -- even when forced with `--plugin-dir`; placed in `~/.cursor/hooks.json` it runs the full loop (`docs/verification/2026-08-31-plugin-wake.md`). So the Cursor adapter is forced into a **surgical, idempotent merge** into `~/.cursor/hooks.json` -- the very file where Orca already has 8 entries: add exactly its own entry, don't touch anyone else's entries, re-running doesn't duplicate, `uninstall` removes exactly its own entry. This is an **evidence-backed** exception to the principle of "don't edit another tool's config file," and it's the distro's biggest install risk.
 
 | | Claude Code | Cursor |
 |---|---|---|
-| Cài vào | plugin riêng trong `~/.claude/skills/<name>/` | **merge vào `~/.cursor/hooks.json` dùng chung** |
-| Gỡ | xoá thư mục | gỡ đúng entry của mình |
-| Hỏng thì sao | không ảnh hưởng ai | **có thể phá config Orca và các tool khác** |
+| Installs into | its own plugin in `~/.claude/skills/<name>/` | **merges into the shared `~/.cursor/hooks.json`** |
+| Removal | delete the directory | remove exactly its own entry |
+| If it breaks | affects no one else | **can break Orca's config and other tools'** |
 
-### Hợp đồng adapter — ba câu
+### Adapter contract -- three questions
 
-Mỗi harness phải trả lời được, và câu 3 là câu giết:
+Every harness must be able to answer these, and question 3 is the killer:
 
-1. Nạp skill ở thư mục nào, format nào?
-2. Đăng ký turn-end hook bằng schema nào?
-3. Cơ chế "chạy nền lâu rồi đánh thức phiên đang idle" là gì?
+1. Which directory and format does it load skills from?
+2. Which schema registers the turn-end hook?
+3. What's the mechanism for "run in the background a long time, then wake an idle session"?
 
-Hai adapter của v1 trả lời **khác hẳn nhau**, nên đừng viết chung:
+The two v1 adapters answer **completely differently**, so don't write them as one:
 
 | | Claude Code | Cursor |
 |---|---|---|
 | Event | `Stop` | `stop` |
-| Cách chạy | nền, không chặn (`asyncRewake: true`) | **đồng bộ, park giữ turn boundary mở** |
-| Kênh đánh thức | `exit 2` + stderr | **`{"followup_message":…}` ra stdout, exit 0** |
-| `exit 2` | đánh thức | **no-op im lặng** |
-| Chặn vòng lặp | `stop_hook_active` | `loop_count` + `loop_limit` khai trong hooks |
-| Tranh chấp | không — async, mỗi Stop một lần bắn | **cần park-owner**: tin captain gõ lúc đang park không giết hook, hai park cùng thấy một message sẽ báo trùng |
-| Headless `-p` | fire | **không fire hook nào cả** — đã đo ở cả ba vị trí khai hook |
-| Payload nhận diện | `session_id`, `cwd` | `session_id`, `workspace_roots`, `loop_count`, `transcript_path`, `status` |
-| Test tự động | được — spike đã tự động hoá trọn vẹn | **không** — phải lái phiên TUI thật qua pty, và gõ text với Enter phải tách rời |
-| Token khi chờ | 0 | 0 |
+| How it runs | background, non-blocking (`asyncRewake: true`) | **synchronous, parks holding the turn boundary open** |
+| Wake channel | `exit 2` + stderr | **`{"followup_message":...}` on stdout, exit 0** |
+| `exit 2` | wakes | **silent no-op** |
+| Loop blocking | `stop_hook_active` | `loop_count` + `loop_limit` declared in hooks |
+| Contention | none -- async, one firing per Stop | **needs a park-owner**: a captain message arriving mid-park doesn't kill the hook, two parks seeing the same message would both report it |
+| Headless `-p` | fires | **fires no hook at all** -- measured at all three hook-declaration locations |
+| Identifying payload | `session_id`, `cwd` | `session_id`, `workspace_roots`, `loop_count`, `transcript_path`, `status` |
+| Automated test | yes -- the spike fully automated it | **no** -- must drive a real TUI session via pty, and typing text with Enter must be separate |
+| Tokens while waiting | 0 | 0 |
 
-Hệ quả cho Cursor: cần thêm `~/.orca-firstmate/park-owner` (seq tăng dần); trước khi phát follow-up, park phải xác nhận mình còn là chủ mới nhất, không thì im lặng exit 0. Và `loop_limit` khai trong hooks phải cao hơn trần tự chặn của ta, để bound của ta cắn trước và còn kịp báo một câu.
+Consequence for Cursor: needs an additional `~/.orca-firstmate/park-owner` (an increasing seq); before emitting a follow-up, the park must confirm it's still the latest owner, otherwise exit 0 silently. And the `loop_limit` declared in hooks must be higher than our own self-imposed ceiling, so our bound bites first and still has time to report a line.
 
-### Tuyên bố giảm cấp
+### Degradation disclosure
 
-`install` phải **in ra giới hạn của từng harness** ngay lúc cài, không để captain phát hiện sau ba ngày:
+`install` must **print each harness's limits** right at install time, not leave the captain to discover them three days later:
 
-- Cursor: không dùng được ở headless `cursor-agent -p` — **không hook nào fire ở chế độ đó**; phải chạy phiên tương tác. Cursor còn đòi trust theo từng thư mục workspace, nên lời hứa "gõ `/firstmate` ở mọi nơi" ở Cursor kèm một lần trust cho mỗi thư mục mới.
-- Harness chưa có adapter: `install` báo thẳng "chưa hỗ trợ", không im lặng bỏ qua.
-- **`install` không tham số KHÔNG cài Cursor.** Nửa Cursor chưa có đường kích hoạt (`ofm-activate.sh` phụ thuộc biến môi trường chỉ Claude Code có), nên một entry cắm vào `~/.cursor/hooks.json` chỉ đọc lock rồi exit 0: không chức năng, mà vẫn nhận trọn rủi ro ghi vào file Orca dùng chung. Muốn cài thì phải yêu cầu tường minh `--harness cursor`, và adapter in rõ giới hạn đó.
-- Harness không trả lời được câu 3 — Codex là ca đã biết, cơ chế của nó là "bounded foreground checkpoints" nên **không đánh thức được phiên idle** — thì adapter đó phải nói rõ orca-firstmate ở đó chạy giảm cấp: vẫn dispatch, vẫn brief, nhưng captain phải tự hỏi "xong chưa".
+- Cursor: unusable in headless `cursor-agent -p` -- **no hook fires in that mode**; an interactive session is required. Cursor also requires trust per workspace directory, so the promise "type `/firstmate` anywhere" comes with a one-time trust step per new directory on Cursor.
+- A harness with no adapter yet: `install` reports "not supported" outright, it doesn't silently skip it.
+- **Bare `install` does NOT install Cursor.** The Cursor side has no activation path yet (`ofm-activate.sh` depends on an environment variable only Claude Code has), so an entry plugged into `~/.cursor/hooks.json` would just read the lock and exit 0: no function, while still taking on the full risk of writing to the file Orca shares. Installing it requires the explicit `--harness cursor`, and the adapter prints that limit clearly.
+- A harness that can't answer question 3 -- Codex is the known case, its mechanism is "bounded foreground checkpoints" so it **cannot wake an idle session** -- that adapter must state plainly that orca-firstmate runs degraded there: it still dispatches, still briefs, but the captain has to ask "is it done" themselves.
 
-## Khái niệm Request (đơn vị điều phối)
+## The Request concept (unit of coordination)
 
-**Một yêu cầu ban đầu của captain = một Request = một Orca Run.** Không nhất thiết là "feature" — bất kỳ yêu cầu nào ("sửa flaky test rồi thêm dark mode" là một request với hai task).
+**One initial captain request = one Request = one Orca Run.** Not necessarily a "feature" -- any request counts ("fix the flaky test then add dark mode" is one request with two tasks).
 
-File `requests/<slug>.md` (frontmatter + ghi chú):
+File `requests/<slug>.md` (frontmatter + notes):
 
 ```markdown
 ---
@@ -205,170 +205,170 @@ host: local | <environment name>
 status: open | closed
 opened: 2026-08-30
 ---
-Yêu cầu gốc của captain, các quyết định đã chốt, task đã tạo.
+The captain's original request, decisions locked in, tasks created.
 ```
 
-Vòng đời:
+Lifecycle:
 
-1. **Mở**: captain nêu yêu cầu → first mate xác định project → chạy routing (dưới) → **hỏi captain chọn host một lần** → `run-create --objective` → ghi file request.
-2. **Chạy**: mỗi việc con → skill `brief` sinh spec → `task-create --spec` → `worker-start --task <id> --worktree new-top-level --name <n> --agent claude [--model … --effort …] [--on <host>] --setup run`. Mọi task trong request — kể cả fix theo review, retry, việc phát sinh — **kế thừa host đã chọn, không hỏi lại**. Delivery mode thì ngược lại: chốt riêng cho từng task tại lúc tạo (mục Delivery mode), ghi vào file request kèm một dòng lý do khi lệch posture của project.
-3. **Theo dõi**: sự kiện đánh thức first mate (phần Supervision), xử lý, báo captain phần đáng báo.
-4. **Đóng**: captain xác nhận request hoàn tất → first mate release mọi Dispatch còn lại của Run, đặt `status: closed`. Host hết dính. Request mới hỏi host lại từ đầu.
+1. **Open**: captain states a request -> first mate identifies the project -> runs routing (below) -> **asks the captain to pick a host once** -> `run-create --objective` -> writes the request file.
+2. **Run**: for each sub-task -> the `brief` skill generates a spec -> `task-create --spec` -> `worker-start --task <id> --worktree new-top-level --name <n> --agent claude [--model ... --effort ...] [--on <host>] --setup run`. Every task in the request -- including review fixes, retries, spawned work -- **inherits the chosen host, no re-asking**. Delivery mode is the opposite: locked in per task at creation time (see the Delivery mode section), written into the request file with a one-line reason whenever it departs from the project's posture.
+3. **Track**: events wake the first mate (the Supervision section), it processes them, reports what's worth reporting to the captain.
+4. **Close**: captain confirms the request is complete -> first mate releases every remaining Dispatch of the Run, sets `status: closed`. The host pinning ends. A new request asks for a host again from scratch.
 
-Nhiều request mở song song được, mỗi cái một Run, host có thể khác nhau.
+Multiple requests can be open in parallel, each its own Run, hosts can differ.
 
-## Routing host
+## Host routing
 
-Không có danh sách host trong config — host là first-class của Orca, thêm/xóa bằng `orca environment add/rm`, distro chỉ đọc. Tại thời điểm mở request:
+No host list lives in config -- hosts are first-class in Orca, added/removed with `orca environment add/rm`, the distro only reads them. At request-open time:
 
-1. **Khám phá**: `orca host list --json` — tập host hiện hữu, không cache.
-2. **Sức khỏe**: từng host qua `orca status [--environment <X>] --json`, yêu cầu `reachable=true` và `state="ready"`. Không đạt → loại khỏi vòng chọn.
-3. **Khả dụng project**: `orca project setups --project <id> --json` phải có setup `ready` trên host đó. Ràng buộc Orca: dispatch remote chỉ nhận selector worktree remote chính xác hoặc `new-top-level` + `--repo` remote tường minh — nên project chưa setup trên host thì không dispatch được. Captain vẫn chọn host đó → first mate đề nghị `project setup-clone`, chỉ chạy sau khi captain đồng ý.
-4. **Chọn**: trình danh sách host đủ điều kiện kèm số worker đang chạy mỗi host (từ `worktree ps` / `worker-list`) → **captain chốt**. Đó là lần hỏi duy nhất của request.
+1. **Discover**: `orca host list --json` -- the current set of hosts, uncached.
+2. **Health**: each host via `orca status [--environment <X>] --json`, requiring `reachable=true` and `state="ready"`. Fails -> excluded from selection.
+3. **Project availability**: `orca project setups --project <id> --json` must have a `ready` setup on that host. Orca's constraint: a remote dispatch only accepts an exact remote worktree selector or `new-top-level` + an explicit remote `--repo` -- so a project not yet set up on a host can't be dispatched to. If the captain still picks that host -> first mate proposes `project setup-clone`, run only after the captain agrees.
+4. **Choose**: present the list of eligible hosts along with the number of running workers per host (from `worktree ps` / `worker-list`) -> **the captain decides**. That's the request's only ask.
 
-Quy tắc cứng (kế thừa firstmate): **host đã dính mà giữa chừng không reachable → dừng và báo captain, không bao giờ âm thầm chuyển task sang host khác.** Route không khả dụng không bao giờ biến thành local replacement.
+Hard rule (inherited from firstmate): **a pinned host that becomes unreachable mid-flight -> stop and report to the captain, never silently move the task to another host.** An unavailable route never turns into a local replacement.
 
-Chi tiết federation của Orca cần tôn trọng: `--on` chỉ dùng ở `worker-start`; Run và Task luôn ở server hiện tại (local); các lệnh sau route bằng Dispatch ID, không lặp `--on`.
+Orca federation detail that must be respected: `--on` is used only at `worker-start`; Run and Task always live on the current server (local); subsequent commands route by Dispatch ID, without repeating `--on`.
 
-## Supervision — tự thức dậy theo sự kiện
+## Supervision -- waking itself on events
 
-Hai nửa ghép lại:
+Two halves fit together:
 
-**Nửa Orca** — mailbox blocking:
+**The Orca half** -- blocking mailbox:
 
 ```bash
 orca orchestration check --wait --types worker_done,escalation,question --timeout-ms <n> --json
 ```
 
-Block tới khi có message cho Run; FIFO; replay cùng Delivery tới khi `--ack`; keepalive JSON mỗi 15s ra stderr (lọc bằng `_keepalive`). Hoạt động xuyên host.
+Blocks until there's a message for the Run; FIFO; replays the same Delivery until `--ack`; JSON keepalive every 15s to stderr (filter on `_keepalive`). Works across hosts.
 
-**Nửa Claude Code** — `hooks/wake.sh` đăng ký trong `hooks/hooks.json` của plugin dạng Stop hook `"asyncRewake": true`, timeout dài (tham khảo firstmate: 28800s). Claude Code bắn Stop hook trên **mọi** Stop của **mọi** phiên trên máy và không dedupe, nên thứ tự cổng chặn là bắt buộc, rẻ trước đắt sau:
+**The Claude Code half** -- `hooks/wake.sh` registered in the plugin's `hooks/hooks.json` as a Stop hook with `"asyncRewake": true`, a long timeout (following firstmate's lead: 28800s). Claude Code fires the Stop hook on **every** Stop of **every** session on the machine and does not dedupe, so the gate ordering is mandatory, cheap first then expensive:
 
-- `session_id` trong payload stdin **không khớp** `~/.orca-firstmate/lock` → exit 0. Một lần đọc file; đây là thứ giữ hook câm trong mọi phiên Claude Code khác.
-- Khớp lock nhưng không có request nào `status: open` → exit 0, im lặng, không tốn gì.
-- **`stop_hook_active: true` trong payload và ta ĐÃ có message → exit 0.** Vì hook dùng `--peek`, message chưa được ack vẫn còn đó ở lượt sau; không có chặn này thì mỗi lần tỉnh lại sinh ra một lần tỉnh nữa — vòng vô hạn. Ta đã nói một lần rồi; nếu first mate không ack, đó là lỗi của first mate, không phải chỗ để hook nói lại. Trước khi im, in một dòng nêu rõ đã chạm trần.
-- Có → `check --wait --peek` (peek: không đánh dấu đã đọc), `--timeout-ms` đặt ngắn hơn timeout của hook một khoảng an toàn (ví dụ hook 28800s → wait 28500s) để hook luôn tự thoát có kiểm soát. Có message → in một dòng tóm tắt ra stderr, **exit 2** → Claude Code tỉnh dậy kể cả khi idle. Timeout → exit 2 với lý do "re-arm" để lượt kế cắm lại vòng chờ. **Không được exit 0 ở đây**: phiên đang idle không sinh thêm Stop event nào, nên im lặng lúc hết giờ là giám sát chết vĩnh viễn tới khi captain tự gõ gì đó. Vòng re-arm không phải vòng xoáy — mỗi lần nó chờ tới tám tiếng.
-- **Hook không bao giờ ack.** Ack thuộc về first mate sau khi xử lý xong. Nhờ replay-tới-ack, hook chết giữa chừng không mất message; phiên mới chỉ cần `check` là thấy lại mọi thứ chưa ack — restart-proof đến từ Orca, không phải từ distro.
+- `session_id` in the stdin payload **doesn't match** `~/.orca-firstmate/lock` -> exit 0. One file read; this is what keeps the hook silent in every other Claude Code session.
+- Matches the lock but no request has `status: open` -> exit 0, silent, costs nothing.
+- **`stop_hook_active: true` in the payload and we ALREADY have a message -> exit 0.** Because the hook uses `--peek`, an unacked message is still there on the next turn; without this block, every wake spawns another wake -- an infinite loop. We already said it once; if the first mate doesn't ack, that's the first mate's bug, not something the hook should repeat. Before going silent, print one line stating the ceiling was hit.
+- Otherwise -> `check --wait --peek` (peek: doesn't mark as read), `--timeout-ms` set shorter than the hook's own timeout by a safety margin (e.g. hook 28800s -> wait 28500s) so the hook always exits under its own control. A message arrives -> print one summary line to stderr, **exit 2** -> Claude Code wakes up even from idle. Timeout -> exit 2 with a "re-arm" reason so the next turn re-arms the wait. **exit 0 is forbidden here**: an idle session generates no further Stop events, so going silent on timeout is supervision dying permanently until the captain types something themselves. The re-arm loop is not a spin loop -- each cycle waits up to eight hours.
+- **The hook never acks.** Acking belongs to the first mate, after it finishes processing. Thanks to replay-until-ack, a hook dying mid-flight never loses a message; a new session just needs `check` to see everything unacked again -- the restart-proofing comes from Orca, not from the distro.
 
-Khi tỉnh, first mate (skill `supervise`):
+On waking, the first mate (skill `supervise`):
 
-1. `check` đọc batch → xử lý **từng** message trước khi ack.
-2. Mỗi `worker_done` được chấp nhận: quyết terminal đi đâu **trước khi ack** — có task nối tiếp cho đúng agent đó → đọc `worker.agent_terminal_handle` từ `worker-show`, rồi `worker-start --task <next> --terminal <handle>` (Orca chuyển ownership cleanup); không → `worker-release --dispatch <id>`. Release chạy cho cả `worker_done` thành công lẫn thất bại, trừ khi captain yêu cầu giữ terminal (`worker-retain`).
-3. `--ack <delivery_id>` chỉ sau khi mọi message trong batch được xử lý.
-4. Báo captain **một** tin gộp, chỉ điều đáng nói: outcome, PR, quyết định cần captain. `escalation`/`question` → chuyển thành câu hỏi kèm ngữ cảnh; trả lời của captain đi ngược qua `orchestration reply`. `question` mang một ask-user finding của no-mistakes đi qua chính sách của skill `delivery` trước, không mặc định chuyển thẳng cho captain.
+1. `check` reads a batch -> processes **each** message before acking.
+2. Every accepted `worker_done`: decide where the terminal goes **before acking** -- a follow-on task exists for that same agent -> read `worker.agent_terminal_handle` from `worker-show`, then `worker-start --task <next> --terminal <handle>` (Orca transfers ownership cleanup); otherwise -> `worker-release --dispatch <id>`. Release runs for both a successful and a failed `worker_done`, unless the captain asked to keep the terminal (`worker-retain`).
+3. `--ack <delivery_id>` only after every message in the batch is processed.
+4. Report the captain **one** consolidated message, only what's worth saying: outcome, PR, decisions the captain needs to make. `escalation`/`question` -> turned into a question with context; the captain's answer goes back through `orchestration reply`. A `question` carrying a no-mistakes ask-user finding goes through the `delivery` skill's policy first, it is not forwarded straight to the captain by default.
 
-Toàn bộ chuỗi này đã kiểm chứng chạy thật ở dạng plugin — xem `docs/verification/2026-08-31-plugin-wake.md`.
+This entire chain has been verified running for real as a plugin -- see `docs/verification/2026-08-31-plugin-wake.md`.
 
-Quy tắc cứng: **không release vì timeout, TUI idle, heartbeat, status, question, escalation, hay `worker_done` bị reject/stale** — chỉ release sau `worker_done` thật đã xử lý. Thêm một điều kiện cho mode `no-mistakes`: `worker_done` chỉ được coi là terminal khi body báo outcome axi terminal (`passed`, `checks-passed`, `failed`, `cancelled`); thiếu thì **không release**, vì có thể một run vẫn đang sở hữu nhánh. Worker im lâu bất thường → `worker-read --dispatch` (nguồn `auto`: transcript hook-proven hoặc terminal-bounded) để chẩn đoán rồi báo captain.
+Hard rule: **never release on timeout, TUI idle, heartbeat, status, question, escalation, or a rejected/stale `worker_done`** -- release only after a real, processed `worker_done`. One extra condition for `no-mistakes` mode: a `worker_done` is only considered terminal when the body reports a terminal axi outcome (`passed`, `checks-passed`, `failed`, `cancelled`); missing that, **do not release**, because a run might still own the branch. A worker gone unusually quiet -> `worker-read --dispatch` (source `auto`: hook-proven transcript or terminal-bounded) to diagnose, then report to the captain.
 
-## Brief tự động
+## Automatic briefs
 
-Mỗi project một file `projects/<tên>.md`, captain sửa trực tiếp được. Skill `brief` ghép bốn tầng thành `--spec` cho `task-create`:
+One `projects/<name>.md` file per project, the captain can edit it directly. The `brief` skill assembles four layers into the `--spec` for `task-create`:
 
-1. **Bất biến** (mọi worker): báo xong đúng cú pháp `orchestration send --type worker_done … --outcome succeeded|failed` (thất bại phải nằm trong `--outcome`, không chỉ trong prose); bí thì `orchestration ask` chứ không đoán; không tự merge; không rời worktree được giao; **dùng CLI chính chủ** — `git` và `gh` cho GitHub, không wrapper bên thứ ba, trừ khi file tri thức project khai công cụ khác cho project đó; **không bao giờ stop/restart/update daemon `no-mistakes`** — một instance dùng chung mọi worktree và host, restart là giết run đang chạy của người khác, gặp lỗi daemon thì escalate rồi dừng.
-2. **Project** (từ file tri thức): cách build/test, convention, cách ship (PR vào nhánh nào, format commit), bẫy đã biết, link tài liệu.
-3. **Hợp đồng giao hàng** (từ mode đã chốt): mở đầu bằng một dòng cố định `Delivery contract: mode=<mode>`, kèm định nghĩa hoàn thành riêng của mode đó — chi tiết ở mục Delivery mode dưới.
-4. **Task** (từ yêu cầu captain): việc cụ thể + định nghĩa hoàn thành.
+1. **Invariant** (every worker): report done with the exact syntax `orchestration send --type worker_done ... --outcome succeeded|failed` (a failure must be in `--outcome`, not only in prose); stuck -> `orchestration ask` rather than guessing; never self-merge; never leave the assigned worktree; **use the canonical CLI** -- `git` and `gh` for GitHub, no third-party wrapper, unless the project's knowledge file declares a different tool for that project; **never stop/restart/update the `no-mistakes` daemon** -- one instance shared across every worktree and host, a restart kills someone else's running run, hitting a daemon error means escalate then stop.
+2. **Project** (from the knowledge file): how to build/test, conventions, how to ship (which branch the PR targets, commit format), known pitfalls, doc links.
+3. **Delivery contract** (from the locked-in mode): opens with a fixed line `Delivery contract: mode=<mode>`, plus that mode's own definition of done -- details in the Delivery mode section below.
+4. **Task** (from the captain's request): the concrete work + definition of done.
 
-Captain chỉ mô tả tầng 4; tầng 3 first mate tự chốt tại intake. File project **tự dày lên**: worker vấp bẫy mới → first mate đề nghị thêm một dòng vào file (captain gật mới ghi) — worker sau thừa hưởng.
+The captain only describes layer 4; layer 3 the first mate locks in at intake. The project file **thickens on its own**: a worker hits a new pitfall -> first mate proposes adding a line to the file (only written once the captain nods) -- later workers inherit it.
 
-File project có thể khai gợi ý model per loại task (scout → model rẻ/effort thấp, ship → model mạnh), first mate áp qua `worker-start --model … --effort …` (chỉ với terminal mới; `--effort` đòi `--model`).
+The project file can declare model hints per task type (scout -> cheap model/low effort, ship -> strong model), the first mate applies them via `worker-start --model ... --effort ...` (only for new terminals; `--effort` requires `--model`).
 
-## Delivery mode và no-mistakes
+## Delivery mode and no-mistakes
 
-[`no-mistakes`](https://github.com/kunchenguid/no-mistakes) là một tool ngoài, không phải phần của distro: nó dựng một git proxy nội bộ đứng trước remote thật, và khi ta `git push no-mistakes` thì daemon tạo worktree dùng-một-lần, chạy pipeline cố định `intent → rebase → review → test → document → lint → push → pr → ci`, chỉ forward nhánh tới push target và mở PR sau khi mọi bước qua. Agent lái nó qua `no-mistakes axi`, một surface non-interactive in TOON ra stdout.
+[`no-mistakes`](https://github.com/kunchenguid/no-mistakes) is an external tool, not part of the distro: it stands up an internal git proxy in front of the real remote, and when we `git push no-mistakes` the daemon creates a one-shot worktree, runs a fixed pipeline `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`, only forwarding the branch to the push target and opening a PR after every step passes. An agent drives it via `no-mistakes axi`, a non-interactive surface that prints TOON to stdout.
 
-Phân vai giữ đúng tinh thần firstmate: **no-mistakes sở hữu pipeline, distro chỉ chọn mode và định tuyến quyết định.** Không chép lại cơ chế gate vào đây; `axi --help` của bản đang cài là authoritative.
+Role-splitting keeps firstmate's exact spirit: **no-mistakes owns the pipeline, the distro only picks the mode and routes decisions.** Don't duplicate the gate mechanism here; the installed version's `axi --help` is authoritative.
 
 ### Mode
 
-v1 có hai mode:
+v1 has two modes:
 
-- **`direct-PR`** (mặc định): worker implement, push nhánh riêng, mở PR. Không pipeline.
-- **`no-mistakes`**: worker implement, commit, rồi lái pipeline qua `axi`.
+- **`direct-PR`** (default): worker implements, pushes its own branch, opens a PR. No pipeline.
+- **`no-mistakes`**: worker implements, commits, then drives the pipeline via `axi`.
 
-Mode khai trong frontmatter `projects/<tên>.md` (`delivery: direct-PR`) — đó là posture chuẩn của project. Captain chỉ định khác cho một task cụ thể thì task đó theo captain, first mate ghi lý do một dòng vào file request. **Project chưa có file tri thức → hỏi captain, không đoán mode.**
+Mode is declared in `projects/<name>.md`'s frontmatter (`delivery: direct-PR`) -- that's the project's standard posture. If the captain specifies something different for one specific task, that task follows the captain, and the first mate writes a one-line reason into the request file. **A project with no knowledge file yet -> ask the captain, never guess the mode.**
 
-`local-only` (nhánh sạch tại chỗ, không remote) ngoài phạm vi v1.
+`local-only` (a clean local branch, no remote) is out of scope for v1.
 
-### Hợp đồng giao hàng trong brief
+### Delivery contract in the brief
 
-Tầng 3 của brief mở đầu bằng dòng cố định `Delivery contract: mode=<mode>`, rồi:
+Layer 3 of the brief opens with the fixed line `Delivery contract: mode=<mode>`, then:
 
-- **`direct-PR`**: implement → push nhánh riêng → mở PR **bằng `gh`** → `worker_done --outcome succeeded` kèm URL `https://…` đầy đủ. Không bao giờ push nhánh mặc định, không bao giờ tự merge.
-- **`no-mistakes`**: chạy `no-mistakes doctor`, nếu repo chưa init trong worktree thì `no-mistakes init`; implement → commit → `axi run --intent <ý định của captain>` → lái tiếp **mọi** `axi run`/`axi respond` cho tới outcome. `worker_done` chỉ gửi khi axi trả outcome terminal, và **body phải chứa outcome đó** (`passed` / `checks-passed` / `failed` / `cancelled`) cùng PR URL.
+- **`direct-PR`**: implement -> push its own branch -> open a PR **with `gh`** -> `worker_done --outcome succeeded` with the full `https://...` URL. Never push the default branch, never self-merge.
+- **`no-mistakes`**: run `no-mistakes doctor`, if the repo isn't yet initialized in the worktree run `no-mistakes init`; implement -> commit -> `axi run --intent <the captain's intent>` -> keep driving **every** `axi run`/`axi respond` until an outcome. `worker_done` is only sent once axi returns a terminal outcome, and **the body must contain that outcome** (`passed` / `checks-passed` / `failed` / `cancelled`) plus the PR URL.
 
-Vì brief đã bắt worker tự chạy `doctor`/`init`, **routing không cần probe gate readiness trên host** — host thiếu binary thì worker escalate. Đỡ hẳn một vòng khám phá xuyên host.
+Since the brief already makes the worker run `doctor`/`init` itself, **routing doesn't need to probe gate readiness on the host** -- a host missing the binary makes the worker escalate. That saves an entire round of cross-host discovery.
 
-### Ask-user finding đi qua mailbox Orca
+### Ask-user findings go through Orca's mailbox
 
-Pipeline dừng ở finding cần người quyết. Worker **không bao giờ tự trả lời finding của chính nó**: nó gọi `orchestration ask` kèm finding ID, step, các lựa chọn, và khuyến nghị của nó. First mate tỉnh dậy qua đúng message type `question` đã có sẵn trong mục Supervision, quyết theo chính sách dưới, rồi `orchestration reply` trả về **một quyết định chính xác**: action, finding ID, và câu lệnh `axi respond` cụ thể. Worker áp dụng và lái tiếp.
+The pipeline stops at a finding that needs a human decision. A worker **never answers its own finding**: it calls `orchestration ask` with the finding ID, the step, the choices, and its recommendation. The first mate wakes via the exact `question` message type already covered in the Supervision section, decides per the policy below, then `orchestration reply` returns **one precise decision**: the action, the finding ID, and the specific `axi respond` command. The worker applies it and keeps driving.
 
-**First mate không bao giờ tự gọi `axi respond` cho run của worker.** Một run có đúng một người lái.
+**The first mate never calls `axi respond` for a worker's run itself.** A run has exactly one driver.
 
-Chính sách quyết (skill `delivery` là owner duy nhất):
+Decision policy (the `delivery` skill is the sole owner):
 
-- **First mate tự quyết** finding không mơ hồ so với intent đã chấp nhận: sửa lỗi thật, hoàn thiện thiết kế đã duyệt, sửa hồi quy do một vòng fix trước làm hỏng, sửa nhỏ bắt buộc để hành vi đã chấp nhận đúng — kể cả khi khó.
-- **Escalate lên captain** khi: Fix sẽ mở rộng hợp đồng (thêm guarantee, subsystem, abstraction, bề mặt tương thích, yêu cầu giám sát liên tục mà intent không đòi); là quyết định sản phẩm hoặc kiến trúc chưa chốt; nhiều finding cùng một chủ đề cho thấy các vòng fix đang đắp máy móc quanh một abstraction đáng ngờ; hoặc destructive, không đảo ngược được, nhạy cảm bảo mật.
-- Nhãn của reviewer (`security`, `correctness`, `required`) là **bằng chứng về finding, không phải thẩm quyền nới scope**.
+- **The first mate decides itself** any finding unambiguous relative to accepted intent: a genuine bug fix, completing an approved design, fixing a regression a previous fix round caused, a small fix required for accepted behavior to be correct -- even when it's hard.
+- **Escalate to the captain** when: the fix would expand the contract (adding a guarantee, subsystem, abstraction, compatibility surface, or a requirement for ongoing supervision that intent doesn't call for); it's a product or architecture decision not yet locked in; multiple findings on the same theme show fix rounds piling machinery around a questionable abstraction; or it's destructive, irreversible, or security-sensitive.
+- A reviewer's label (`security`, `correctness`, `required`) is **evidence about the finding, not authority to expand scope**.
 
-Escalation gửi captain nêu đủ: yêu cầu gốc, phần hợp đồng bị nới, phương án nhỏ nhất không nới, hệ quả của nhận và của từ chối, và khuyến nghị kèm lý do.
+An escalation sent to the captain states in full: the original request, the part of the contract being expanded, the smallest option that doesn't expand it, the consequences of accepting and of refusing, and a recommendation with its reasoning.
 
-### An toàn release
+### Release safety
 
-Với task mode `no-mistakes`, `worker_done` thiếu outcome axi terminal thì **không release** — `worker-read --dispatch` để chẩn đoán rồi báo captain. Đây là chỗ Orca-native rẻ hơn firstmate thật: firstmate phải có một lớp attribution đối chiếu branch/head để đoán run nào thuộc worktree nào, còn ở đây hợp đồng brief bắt worker tự khai outcome, nên distro không cần lớp đó.
+For a `no-mistakes`-mode task, a `worker_done` missing a terminal axi outcome means **do not release** -- `worker-read --dispatch` to diagnose, then report to the captain. This is where being Orca-native is cheaper than real firstmate: firstmate needs an attribution layer cross-referencing branch/head to guess which run belongs to which worktree, whereas here the brief contract makes the worker declare its own outcome, so the distro doesn't need that layer.
 
 ### Merge authority
 
-v1: **captain merge mọi PR.** Thẩm quyền merge thường trực kiểu `yolo` ngoài phạm vi — nhưng ghi lại cho đúng: `yolo` là một trục **trực giao** với delivery mode, nó chỉ nói ai được merge, không nói work đi qua pipeline nào.
+v1: **the captain merges every PR.** Standing merge authority in the style of `yolo` is out of scope -- but noting it correctly: `yolo` is an axis **orthogonal** to delivery mode, it only says who may merge, not which pipeline the work goes through.
 
-## Phụ thuộc bên ngoài
+## External dependencies
 
-Cố ý giữ ngắn. Toàn bộ bề mặt phụ thuộc của distro:
+Deliberately kept short. The distro's entire dependency surface:
 
-| Thứ | Bắt buộc | Vì sao |
+| Thing | Required | Why |
 |---|---|---|
-| Orca app + `orca` CLI | luôn | worktree, terminal, Run/Task/Dispatch, mailbox, federation |
-| Claude Code **hoặc** Cursor | luôn | harness của first mate; mỗi cái một cơ chế đánh thức, xem mục CLI cài đặt |
-| `git`, `gh` | luôn | worker push nhánh và mở PR |
-| `jq` | luôn | hook parse payload JSON trên stdin và adapter Cursor merge JSON |
-| `no-mistakes` | chỉ khi task mode `no-mistakes` | chạy validation pipeline; xem mục Delivery mode |
+| Orca app + `orca` CLI | always | worktree, terminal, Run/Task/Dispatch, mailbox, federation |
+| Claude Code **or** Cursor | always | first mate's harness; each has its own wake mechanism, see the Install CLI section |
+| `git`, `gh` | always | worker pushes branches and opens PRs |
+| `jq` | always | hooks parse the JSON payload on stdin and the Cursor adapter merges JSON |
+| `no-mistakes` | only for `no-mistakes`-mode tasks | runs the validation pipeline; see the Delivery mode section |
 
-**Không dùng wrapper CLI của bên thứ ba.** firstmate bơm `gh-axi`, `chrome-devtools-axi`, `lavish-axi`, `tasks-axi`, `quota-axi` vào mọi brief và mọi lần bootstrap; orca-firstmate không. Lý do: phần lớn trong số đó tồn tại để dựng lại thứ Orca đã có (`tasks-axi` là sổ backlog tự chế — ở đây là `requests/` + Orca Run; `lavish-axi` board là fleet view tự chế — ở đây là `worktree ps --json`), còn phần còn lại chỉ là lớp mỏng trên CLI chính chủ. Đổi lại: worker parse JSON của `gh` tốn token hơn TOON, chấp nhận được.
+**No third-party CLI wrappers.** firstmate injects `gh-axi`, `chrome-devtools-axi`, `lavish-axi`, `tasks-axi`, `quota-axi` into every brief and every bootstrap; orca-firstmate doesn't. Reason: most of those exist to rebuild something Orca already has (`tasks-axi` is a homegrown backlog ledger -- here that's `requests/` + the Orca Run; the `lavish-axi` board is a homegrown fleet view -- here that's `worktree ps --json`), and the rest are just a thin layer over the canonical CLI. In exchange: a worker parsing `gh`'s JSON costs more tokens than TOON, which is acceptable.
 
-`no-mistakes` là ngoại lệ có chủ đích, không phải wrapper: nó **là** pipeline, không có CLI chính chủ nào thay thế.
+`no-mistakes` is a deliberate exception, not a wrapper: it **is** the pipeline, there's no canonical CLI to replace it with.
 
-## Xử lý lỗi
+## Error handling
 
-- `worker-start` thất bại hoặc `outcome_unknown`: exit ≠ 0, JSON có `stage`/`failedStage`, `setup`, `effects`, `residualResources`, lệnh recovery. Quy tắc: **đọc receipt, làm đúng recovery ghi trong đó, không retry mù.** `--retry-of <dispatch_id>` khi thử lại để nối lịch sử (nhớ lặp lại placement vì retry không kế thừa). Còn tài nguyên dư → báo captain.
-- Wait-for-setup timeout để setup ở trạng thái `running` là bình thường, không phải bằng chứng thất bại — kiểm tra lại trước khi kết luận.
-- `worker-release` trả `release_pending`/`release_unknown`: theo đúng recovery action trong receipt; **cấm** thay bằng `terminal close`. Replay của mailbox delivery có thể lặp `worker-release` an toàn.
-- Host dính chết giữa request: dừng, báo, chờ captain quyết (đổi host cho request là quyết định của captain, không của first mate).
-- `ask` của worker timeout: câu hỏi vẫn pending, resume bằng message ID gốc — không tạo câu hỏi trùng.
-- Lỗi daemon `no-mistakes`: worker escalate rồi dừng, không tự chữa. First mate cũng không restart daemon để "thông" một run — daemon dùng chung, restart giết run của worker khác. Đây là việc của captain trên máy sở hữu daemon.
+- `worker-start` fails or returns `outcome_unknown`: exit != 0, JSON has `stage`/`failedStage`, `setup`, `effects`, `residualResources`, a recovery command. Rule: **read the receipt, do exactly the recovery it specifies, never retry blind.** Use `--retry-of <dispatch_id>` on retry to chain the history (remember to repeat placement, since retry doesn't inherit it). Leftover resources -> report to the captain.
+- A wait-for-setup timeout leaving setup in `running` state is normal, not evidence of failure -- check again before concluding anything.
+- `worker-release` returns `release_pending`/`release_unknown`: follow the exact recovery action in the receipt; substituting `terminal close` is **forbidden**. Mailbox delivery replay can safely repeat `worker-release`.
+- The pinned host dies mid-request: stop, report, wait for the captain to decide (changing a request's host is the captain's decision, not the first mate's).
+- A worker's `ask` times out: the question is still pending, resume with the original message ID -- don't create a duplicate question.
+- A `no-mistakes` daemon error: the worker escalates then stops, it doesn't self-heal. The first mate also doesn't restart the daemon to "unstick" a run -- the daemon is shared, a restart kills another worker's run. That's the captain's job, on the machine that owns the daemon.
 
-## Kiểm thử
+## Testing
 
-- **fake-orca**: script `tests/fake-orca/orca` đặt trước PATH, trả JSON mẫu đã đối chiếu với schema thật (lấy từ `orca agent-context --json` và output thật trên máy captain). Test lifecycle không cần app: routing loại host không ready, brief ghép đúng 4 tầng, hook exit 0 khi không có request mở / exit 2 khi có message, supervise không ack trước khi xử lý xong batch. Thêm ba ca cho delivery: brief mode `no-mistakes` sinh đúng dòng `Delivery contract:` và DoD chờ outcome axi; supervise **không** release khi `worker_done` của task `no-mistakes` thiếu outcome; `question` mang ask-user finding đi vào chính sách của `delivery` thay vì ack thẳng. Và ba ca cho entry point: `wake.sh` exit 0 khi `session_id` không khớp lock; `/firstmate` từ chối khi lock còn chủ sống; `/firstmate` thu hồi lock khi chủ đã chết.
-- **Smoke thật** (chạy tay, có Orca thật): mở request → 1 task echo → worker chạy → `worker_done` → hook đánh thức → release → đóng request. Một biến thể `--on "Mac mini"`.
-- Ghi kết quả smoke thật vào `docs/verification/` kèm version app đã kiểm (học cách firstmate làm evidence theo version, vì Orca không có protocol version marker — capabilities trong `orca status` là gate tương thích).
+- **fake-orca**: the `tests/fake-orca/orca` script placed ahead on PATH, returning sample JSON checked against the real schema (taken from `orca agent-context --json` and real output on the captain's machine). Lifecycle tests need no app: routing excludes a not-ready host, brief assembles exactly 4 layers, hook exits 0 with no open request / exits 2 with a message, supervise doesn't ack before the batch is fully processed. Three more cases for delivery: `no-mistakes`-mode brief generates the exact `Delivery contract:` line and a DoD that waits for an axi outcome; supervise **does not** release when a `no-mistakes` task's `worker_done` lacks an outcome; a `question` carrying an ask-user finding goes into the `delivery` policy instead of being acked outright. And three cases for the entry point: `wake.sh` exits 0 when `session_id` doesn't match the lock; `/firstmate` refuses when the lock has a live owner; `/firstmate` reclaims the lock when the owner is dead.
+- **Real smoke test** (run by hand, with real Orca): open a request -> 1 echo task -> worker runs -> `worker_done` -> hook wakes -> release -> close the request. One variant with `--on "Mac mini"`.
+- Record real smoke-test results into `docs/verification/` with the app version checked (following firstmate's practice of version-stamped evidence, since Orca has no protocol version marker -- capabilities in `orca status` serve as the compatibility gate).
 
-## Ngoài phạm vi v1 (YAGNI, chủ động ghi lại để khỏi bò vào)
+## Out of scope for v1 (YAGNI, deliberately recorded so it doesn't creep in)
 
-- `local-only` (nhánh sạch tại chỗ, merge có kiểm soát vào `main` local) — v1 chỉ `direct-PR` và `no-mistakes`.
-- Registry mode đầy đủ kiểu `no-mistakes-prod-only` (mode có điều kiện, phân loại bề mặt từng task) — v1 mode phẳng theo project, captain override được từng task.
-- `yolo` / thẩm quyền merge thường trực — v1 captain merge mọi PR.
+- `local-only` (a clean local branch, controlled merge into local `main`) -- v1 has only `direct-PR` and `no-mistakes`.
+- A full registry-mode setup like `no-mistakes-prod-only` (conditional mode, per-task surface classification) -- v1 has a flat, per-project mode, the captain can override it per task.
+- `yolo` / standing merge authority -- v1 has the captain merge every PR.
 - Relay (X/Discord), AFK mode, voice.
-- Secondmate/coordinator lồng nhau — flat: một first mate, N worker.
-- Tự cân bằng tải giữa host — captain chọn host per-request là đủ.
-- Scout report format riêng — v1 scout trả kết quả trong `worker_done` body; tách format khi thấy cần.
+- Nested secondmate/coordinator -- flat: one first mate, N workers.
+- Automatic load balancing across hosts -- the captain choosing a host per request is enough.
+- A dedicated scout report format -- v1 has scouts return results in the `worker_done` body; split out a format when it's actually needed.
 
-## Rủi ro đã biết
+## Known risks
 
-- **Gắn chặt schema orchestration của Orca**: Orca không có version marker ổn định; đổi contract sẽ lộ lúc runtime. Giảm nhẹ: kiểm `orchestration.contract.v1` trong capabilities lúc session start; fake-orca fixtures ghi rõ version app đã đối chiếu.
-- **Stop hook `asyncRewake` là hành vi của Claude Code**, đổi harness là mất cơ chế wake — chấp nhận: distro này chọn Claude Code làm harness duy nhất của v1. Đã kiểm chứng trên 2.1.236 ở dạng plugin (`docs/verification/2026-08-31-plugin-wake.md`); docs Claude Code có ghi field này cho command hook nhưng **không** nói plugin hook honor nó, nên đây là hành vi cần đo lại khi lên version mới.
-- **Adapter Cursor ghi vào file dùng chung.** Đã kiểm chứng cơ chế wake chạy đủ vòng ở `~/.cursor/hooks.json` cấp user, nhưng cũng vì thế `install` phải sửa một file Orca đang dùng. Merge sai là phá supervision của Orca, không chỉ của ta. Giảm nhẹ: merge idempotent theo khoá riêng, sao lưu trước khi ghi, và `doctor` kiểm lại entry của mình còn nguyên vẹn.
-- **Cursor TUI báo version khác `--version`.** TUI in `2026.08.25-3e8eec8` còn `--version` in `2026.08.11-e8db854`. Đừng gate tương thích bằng `--version`.
-- **Plugin hook chạy trong mọi phiên Claude Code trên máy.** Một `wake.sh` lỗi là lỗi toàn máy, không chỉ lỗi first mate. Giảm nhẹ: cổng lock đứng trước mọi thứ khác và mọi nhánh không chắc chắn đều exit 0.
-- App Orca phải đang chạy — `orca open` ở session start nếu chưa.
-- **Phụ thuộc thêm vào `no-mistakes`** cho mode cùng tên: tên outcome và tên lệnh `axi` có thể đổi giữa các version. Giảm nhẹ có sẵn trong thiết kế: distro **không bao giờ parse output TOON của axi** — worker lái pipeline và tự khai outcome trong `worker_done`, nên bề mặt gắn kết chỉ là bốn tên outcome terminal, không phải cả schema.
+- **Tightly coupled to Orca's orchestration schema**: Orca has no stable version marker; a contract change will surface at runtime. Mitigation: check `orchestration.contract.v1` in capabilities at session start; fake-orca fixtures record the exact app version checked against.
+- **The Stop hook's `asyncRewake` is Claude Code behavior**; changing harness loses the wake mechanism -- accepted: this distro picks Claude Code as v1's sole harness. Verified on 2.1.236 as a plugin (`docs/verification/2026-08-31-plugin-wake.md`); Claude Code's docs document this field for a command hook but **don't** say whether a plugin hook honors it, so this is behavior that needs re-measuring on every new version.
+- **The Cursor adapter writes to a shared file.** Verified the wake mechanism runs the full loop at user-level `~/.cursor/hooks.json`, but that also means `install` must edit a file Orca is using. A bad merge breaks Orca's supervision, not just ours. Mitigation: idempotent merge keyed on our own key, back up before writing, and `doctor` re-checks that our entry is still intact.
+- **The Cursor TUI reports a different version than `--version`.** The TUI prints `2026.08.25-3e8eec8` while `--version` prints `2026.08.11-e8db854`. Don't gate compatibility on `--version`.
+- **The plugin hook runs in every Claude Code session on the machine.** A broken `wake.sh` is a machine-wide bug, not just a first mate bug. Mitigation: the lock gate stands before everything else, and every uncertain branch exits 0.
+- The Orca app must be running -- `orca open` at session start if it isn't.
+- **An added dependency on `no-mistakes`** for the mode of the same name: outcome names and `axi` command names can change between versions. Mitigation built into the design: the distro **never parses axi's TOON output** -- the worker drives the pipeline and declares its own outcome in `worker_done`, so the coupling surface is only the four terminal outcome names, not the whole schema.
