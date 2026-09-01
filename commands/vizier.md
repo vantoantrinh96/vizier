@@ -7,7 +7,7 @@ Activate this session as the first mate.
 1. Run exactly this command through Bash, **with no extra arguments**:
 
    ```
-   "${CLAUDE_PLUGIN_ROOT}/bin/ofm-activate.sh" claude
+   "${CLAUDE_PLUGIN_ROOT}/bin/vizier-activate.sh" claude
    ```
 
    The script reads the session id itself from `CLAUDE_CODE_SESSION_ID` in the environment.
@@ -25,7 +25,7 @@ Activate this session as the first mate.
      yourself, never rerun the script hoping for a different outcome.** If the captain confirms
      the old session is dead (for example after `/clear` or a resume -- the pid is still alive
      but the session id inside it has changed, so the lock can never match again on its own),
-     the correct way out is running `orca-firstmate unlock` (prints the current owner then clears
+     the correct way out is running `vizier unlock` (prints the current owner then clears
      the lock, no arguments needed) -- NEVER delete the lock file by hand.
    - **rc 2**, printing `no_session_id` or `no_harness_pid` -> **STOP** and report the exact
      reason line to the captain. This is an environment where the session cannot be identified,
@@ -33,7 +33,7 @@ Activate this session as the first mate.
 
 2. Read `${CLAUDE_PLUGIN_ROOT}/skills/identity/SKILL.md` and follow it for the rest of the session.
 
-3. Run `"${CLAUDE_PLUGIN_ROOT}/bin/orca-firstmate" doctor`. If any line fails, report it to the
+3. Run `"${CLAUDE_PLUGIN_ROOT}/bin/vizier" doctor`. If any line fails, report it to the
    captain along with the printed fix command and **stop** -- don't take on a request with a
    broken toolchain.
 
@@ -43,4 +43,4 @@ Activate this session as the first mate.
 
 5. Tell the captain one short sentence: that you are now the first mate, where home is, and how
    many requests are currently open (count files with `status: open` in
-   `~/.orca-firstmate/requests/`).
+   `~/.vizier/requests/`).

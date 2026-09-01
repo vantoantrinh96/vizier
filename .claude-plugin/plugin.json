@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
-  "name": "orca-firstmate",
+  "name": "vizier",
   "version": "0.1.0",
   "description": "Talk to one first mate; it runs an Orca-managed crew",
   "skills": "./skills/",

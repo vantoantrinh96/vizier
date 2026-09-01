@@ -20,11 +20,11 @@
 set -u
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
-[ -r "$LIB/ofm-home.sh" ] || exit 0
+[ -r "$LIB/vizier-home.sh" ] || exit 0
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 # shellcheck source=/dev/null
-. "$LIB/ofm-wake-lib.sh"
+. "$LIB/vizier-wake-lib.sh"
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -32,12 +32,12 @@ payload=$(cat 2>/dev/null || true)
 session_id=$(printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
 loop_count=$(printf '%s' "$payload" | jq -r '.loop_count // 0' 2>/dev/null)
 
-ofm_lock_matches "$session_id" || exit 0
+vizier_lock_matches "$session_id" || exit 0
 
 # Self-imposed ceiling, set LOWER than the loop_limit registered in
 # hooks.json, so our bound bites first and Cursor never silently stops
 # calling the hook at its own ceiling.
-ceiling=${OFM_CURSOR_LOOP_CEILING:-5}
+ceiling=${VIZIER_CURSOR_LOOP_CEILING:-5}
 case "$loop_count" in ''|*[!0-9]*) loop_count=0 ;; esac
 
 # FIX 8 -- THE CEILING MUST STILL SAY ONE SENTENCE, IT MUST NOT GO SILENT.
@@ -60,11 +60,11 @@ if [ "$loop_count" -gt "$ceiling" ]; then
   exit 0
 fi
 if [ "$loop_count" -eq "$ceiling" ]; then
-  jq -cn --arg m "orca-firstmate: hit the self-wake ceiling ($ceiling turns in a row); stopping here, type something to resume supervision." '{followup_message:$m}'
+  jq -cn --arg m "vizier: hit the self-wake ceiling ($ceiling turns in a row); stopping here, type something to resume supervision." '{followup_message:$m}'
   exit 0
 fi
 
-runs=$(ofm_open_run_ids)
+runs=$(vizier_open_run_ids)
 [ -n "$runs" ] || exit 0
 
 # Claim park ownership before waiting.
@@ -83,11 +83,11 @@ runs=$(ofm_open_run_ids)
 # `current=$my_seq` when the file was garbage, meaning every park believed
 # itself the owner and all of them emitted -- the wrong direction, and worse
 # than the race itself.
-owner_file="$(ofm_home)/park-owner"
-my_claim="${OFM_CURSOR_PARK_CLAIM:-$$.$(date +%s).${RANDOM:-0}}"
+owner_file="$(vizier_home)/park-owner"
+my_claim="${VIZIER_CURSOR_PARK_CLAIM:-$$.$(date +%s).${RANDOM:-0}}"
 printf '%s\n' "$my_claim" > "$owner_file" 2>/dev/null || exit 0
 
-summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
+summary=$(printf '%s\n' "$runs" | vizier_wait_any_run "${VIZIER_WAIT_TIMEOUT_MS:-28500000}")
 [ -n "$summary" ] || exit 0
 
 # Are we still the last writer? If not, stay quiet: the new park will see the
@@ -95,5 +95,5 @@ summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500
 current=$(cat "$owner_file" 2>/dev/null)
 [ "$current" = "$my_claim" ] || exit 0
 
-jq -cn --arg m "orca-firstmate: $summary" '{followup_message:$m}'
+jq -cn --arg m "vizier: $summary" '{followup_message:$m}'
 exit 0

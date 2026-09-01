@@ -17,7 +17,7 @@
 #     no "last-wake" yet).
 # And an exit 0 branch is no longer "absolutely silent" in the old sense: the
 # ceiling branch keyed on message identity (FIX 1, compared against
-# "$(ofm_home)/last-wake") still prints one line to stderr before exiting 0,
+# "$(vizier_home)/last-wake") still prints one line to stderr before exiting 0,
 # so the captain sees that the loop stopped on purpose rather than the hook
 # dying silently.
 #
@@ -31,11 +31,11 @@
 set -u
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
-[ -r "$LIB/ofm-home.sh" ] || exit 0
+[ -r "$LIB/vizier-home.sh" ] || exit 0
 # shellcheck source=/dev/null
-. "$LIB/ofm-home.sh"
+. "$LIB/vizier-home.sh"
 # shellcheck source=/dev/null
-. "$LIB/ofm-wake-lib.sh"
+. "$LIB/vizier-wake-lib.sh"
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -43,16 +43,16 @@ payload=$(cat 2>/dev/null || true)
 session_id=$(printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
 
 # Gate 1 -- cheapest: is this session the first mate?
-ofm_lock_matches "$session_id" || exit 0
+vizier_lock_matches "$session_id" || exit 0
 
 # Gate 2: is there anything to wait on? An empty home costs zero orca calls.
-runs=$(ofm_open_run_ids)
+runs=$(vizier_open_run_ids)
 [ -n "$runs" ] || exit 0
 
 # Wait for less than the hook's own timeout by a safety margin, so the hook
 # always exits under its own control rather than being killed mid-flight by
 # the harness.
-summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500000}")
+summary=$(printf '%s\n' "$runs" | vizier_wait_any_run "${VIZIER_WAIT_TIMEOUT_MS:-28500000}")
 
 # FIX 2 -- A TIMEOUT MUST exit 2, NOT exit 0. An idle session never generates
 # a Stop event on its own, so staying silent here means supervision dies
@@ -62,7 +62,7 @@ summary=$(printf '%s\n' "$runs" | ofm_wait_any_run "${OFM_WAIT_TIMEOUT_MS:-28500
 # spin loop: each re-arm cycle waits up to eight hours, unlike the infinite
 # case FIX 1 guards against below (an unacked message repeating every turn).
 if [ -z "$summary" ]; then
-  printf 'orca-firstmate: mailbox wait timed out, re-arming the wait for the next turn.\n' >&2
+  printf 'vizier: mailbox wait timed out, re-arming the wait for the next turn.\n' >&2
   exit 2
 fi
 
@@ -90,7 +90,7 @@ fi
 # and this would be silent.
 #
 # Fix: compare IDENTITY, not the flag alone. Remember the summary last
-# reported at "$(ofm_home)/last-wake"; stay silent (exit 0) only when the
+# reported at "$(vizier_home)/last-wake"; stay silent (exit 0) only when the
 # flag is true AND this turn's summary is byte-for-byte identical to the one
 # recorded -- i.e. we are certain this is truly the same unacked message, not
 # a guess based on this turn having been hook-caused. Still read
@@ -99,10 +99,10 @@ fi
 # compared against itself and swallowed -- the flag is the condition that
 # makes the identity comparison meaningful, not a condition to skip it.
 stop_hook_active=$(printf '%s' "$payload" | jq -r '.stop_hook_active // false' 2>/dev/null)
-last_wake_file="$(ofm_home)/last-wake"
+last_wake_file="$(vizier_home)/last-wake"
 last_wake=$(cat "$last_wake_file" 2>/dev/null)
 if [ "$stop_hook_active" = "true" ] && [ "$summary" = "$last_wake" ]; then
-  printf 'orca-firstmate: hit the wake ceiling (message is identical to the previous one, matched by content rather than just the stop_hook_active flag, and it is still not acked); stopping here, no more wake-ups until the first mate acks it or the captain types something.\n' >&2
+  printf 'vizier: hit the wake ceiling (message is identical to the previous one, matched by content rather than just the stop_hook_active flag, and it is still not acked); stopping here, no more wake-ups until the first mate acks it or the captain types something.\n' >&2
   exit 0
 fi
 
@@ -114,5 +114,5 @@ fi
 # is always worse than one duplicate report.
 printf '%s' "$summary" > "$last_wake_file" 2>/dev/null
 
-printf 'orca-firstmate: %s\n' "$summary" >&2
+printf 'vizier: %s\n' "$summary" >&2
 exit 2
