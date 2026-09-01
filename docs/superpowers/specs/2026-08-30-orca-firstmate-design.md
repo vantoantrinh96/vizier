@@ -1,4 +1,4 @@
-# orca-firstmate -- Design
+# vizier -- Design
 
 Date: 2026-08-30
 Updated: 2026-08-31 -- added Delivery mode/no-mistakes; entry point becomes a multi-harness plugin + install CLI
@@ -6,7 +6,7 @@ Status: design approved in chat, spec approval pending
 
 ## Summary
 
-`orca-firstmate` is an **agent distro** that takes the philosophy of [firstmate](https://github.com/kunchenguid/firstmate) but is rebuilt from scratch, Orca-native: installed as a **Claude Code plugin**, then typing `/firstmate` in any Claude Code session in any directory turns that session into a **first mate** -- a single liaison the captain (the user) talks to, usually through Orca's floating window. The first mate coordinates crew agents running in worktrees/terminals managed by Orca, across multiple hosts (currently: local + Mac mini; the host list can change in the future).
+`vizier` is an **agent distro** that takes the philosophy of [firstmate](https://github.com/kunchenguid/firstmate) but is rebuilt from scratch, Orca-native: installed as a **Claude Code plugin**, then typing `/vizier` in any Claude Code session in any directory turns that session into a **first mate** -- a single liaison the captain (the user) talks to, usually through Orca's floating window. The first mate coordinates crew agents running in worktrees/terminals managed by Orca, across multiple hosts (currently: local + Mac mini; the host list can change in the future).
 
 Role-splitting principle:
 
@@ -38,13 +38,13 @@ captain -- chat (Orca floating window / any terminal)
    v
 +------------------------------------------------+
 | any Claude Code session, any cwd                |
-|  + orca-firstmate plugin (skills, hook)         |
-|  typed /firstmate -> holds lock -> is first mate |
+|  + vizier plugin (skills, hook)         |
+|  typed /vizier -> holds lock -> is first mate |
 +------+-------------------------------------------+
        | reads/writes
        v
 +------------------------------------------------+
-| ~/.orca-firstmate/  (fixed home)                |
+| ~/.vizier/  (fixed home)                |
 |  lock        -- session_id + pid of current owner|
 |  requests/   -- ledger of open requests         |
 |  projects/   -- per-project knowledge            |
@@ -62,16 +62,16 @@ Dispatch  Dispatch  Dispatch     local / Mac mini / future host
 ### Plugin structure (what gets installed)
 
 ```
-orca-firstmate/
+vizier/
   .claude-plugin/plugin.json
   commands/
-    firstmate.md             # /firstmate -- activates the session, holds the lock, suggests a project from cwd
+    vizier.md             # /vizier -- activates the session, holds the lock, suggests a project from cwd
   skills/
     brief/SKILL.md           # generates the 4-layer spec for task-create
     routing/SKILL.md         # host discovery, eligibility, per-request host choice
     supervise/SKILL.md       # processes mailbox batches, release/reuse, ack, reporting
     delivery/SKILL.md        # delivery mode, delivery contract, ask-user policy
-    identity/SKILL.md        # identity + hard rules; both /firstmate and PostCompact load it
+    identity/SKILL.md        # identity + hard rules; both /vizier and PostCompact load it
   hooks/
     hooks.json               # Stop (asyncRewake) + PostCompact
     wake.sh                  # Stop: gate on lock -> wait on mailbox -> exit 2 (~60 lines)
@@ -86,7 +86,7 @@ orca-firstmate/
 ### Home (what gets generated at runtime)
 
 ```
-~/.orca-firstmate/
+~/.vizier/
   lock                       # {session_id, pid, since} -- current first mate owner
   requests/<slug>.md         # ledger of an open request
   projects/<name>.md         # project knowledge: delivery mode, build/test/ship, conventions, pitfalls, model hints
@@ -100,41 +100,41 @@ Home is deliberately separate from the plugin: removing or upgrading the plugin 
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vantoantrinh96/orca-firstmate/main/install.sh | sh
-orca-firstmate doctor
-orca-firstmate install
+vizier doctor
+vizier install
 ```
 
-The repo is **public on GitHub**, so neither `curl` nor `git clone` needs auth. The first command only clones the source into `~/.orca-firstmate/src` and symlinks the CLI onto PATH -- it **deliberately does not** auto-install into the harness, because that step edits the captain's harness config and must be an explicit decision. The last command detects which harnesses are present on the machine and installs an adapter for each -- **and how it installs differs by harness**, see the Install CLI section. After that, every session of that harness, in every repo, **has** the skill and hook available but **does not** behave as a first mate.
+The repo is **public on GitHub**, so neither `curl` nor `git clone` needs auth. The first command only clones the source into `~/.vizier/src` and symlinks the CLI onto PATH -- it **deliberately does not** auto-install into the harness, because that step edits the captain's harness config and must be an explicit decision. The last command detects which harnesses are present on the machine and installs an adapter for each -- **and how it installs differs by harness**, see the Install CLI section. After that, every session of that harness, in every repo, **has** the skill and hook available but **does not** behave as a first mate.
 
-**`/firstmate` is the switch.** Typing it makes that session:
+**`/vizier` is the switch.** Typing it makes that session:
 
-1. Write `~/.orca-firstmate/lock` = `{session_id, pid, since}`. If the lock already exists and its owner is alive -> **refuse**, reporting which session holds it. If the owner is dead and hasn't cleaned up -> reclaim it. **One first mate at a time**, so two sessions never write `requests/` at once.
+1. Write `~/.vizier/lock` = `{session_id, pid, since}`. If the lock already exists and its owner is alive -> **refuse**, reporting which session holds it. If the owner is dead and hasn't cleaned up -> reclaim it. **One first mate at a time**, so two sessions never write `requests/` at once.
 2. Load the `identity` skill -- identity and hard rules into context.
 3. Read the git remote at cwd and **suggest** a project for the first request. It's only a suggestion; cwd is never authority, only the captain's nod counts.
 
-A session that doesn't type `/firstmate` never holds the lock, so the hook stays silent and nothing changes for it.
+A session that doesn't type `/vizier` never holds the lock, so the hook stays silent and nothing changes for it.
 
 **Surviving compaction.** The `PostCompact` hook: if the lock matches this session, reprint identity + hard rules to stderr. Without it, a single context compaction leaves the first mate forgetting who it is while still holding the lock and still being woken.
 
 **Don't use the plugin's `CLAUDE.md`** for identity -- that file loads into *every* session, including one where you just want to edit code. Identity must be something activated, not something always on.
 
-**Home access.** The first mate session has any cwd, while state lives at `~/.orca-firstmate/`. The first mate reads/writes home via Bash. If the captain runs a strict permission mode, add `--add-dir ~/.orca-firstmate` when opening the session.
+**Home access.** The first mate session has any cwd, while state lives at `~/.vizier/`. The first mate reads/writes home via Bash. If the captain runs a strict permission mode, add `--add-dir ~/.vizier` when opening the session.
 
 ## Install CLI and harness adapters
 
-**Hard rule: the CLI only exists at install time and diagnostic time, never on the runtime path.** Once installed, the first mate talks straight to `orca`; no runtime path calls `orca-firstmate`. Breaking this rule is rebuilding firstmate's 162 scripts under a prettier name.
+**Hard rule: the CLI only exists at install time and diagnostic time, never on the runtime path.** Once installed, the first mate talks straight to `orca`; no runtime path calls `vizier`. Breaking this rule is rebuilding firstmate's 162 scripts under a prettier name.
 
-Five commands: `install [--harness ...]`, `doctor` (the preflight from the Entry point section, plus a check that the installed copy itself is intact), `update` (fetch in `src` then copy back over), `uninstall` (removes the payload, **keeps** `requests/` and `projects/` intact), and `unlock` (prints the current lock owner then removes the lock). `unlock` exists because `CLAUDE_PID` is the `claude` process, not the session: after `/clear` or a resume, the lock can hold a pid that's still alive but whose session id matches nothing -- `ofm_lock_claim` refuses forever, `/firstmate` is forbidden from clearing the lock itself, and without this command there is no supported recovery path at all. Written in bash: this CLI only copies files and checks a few things, and Orca only runs on macOS anyway, so a Go binary for ~200 lines is unnecessary ceremony.
+Five commands: `install [--harness ...]`, `doctor` (the preflight from the Entry point section, plus a check that the installed copy itself is intact), `update` (fetch in `src` then copy back over), `uninstall` (removes the payload, **keeps** `requests/` and `projects/` intact), and `unlock` (prints the current lock owner then removes the lock). `unlock` exists because `CLAUDE_PID` is the `claude` process, not the session: after `/clear` or a resume, the lock can hold a pid that's still alive but whose session id matches nothing -- `vizier_lock_claim` refuses forever, `/vizier` is forbidden from clearing the lock itself, and without this command there is no supported recovery path at all. Written in bash: this CLI only copies files and checks a few things, and Orca only runs on macOS anyway, so a Go binary for ~200 lines is unnecessary ceremony.
 
 ### One repo, multiple manifests
 
 The model is already proven by `superpowers` and running on the captain's machine -- the same payload sits in both `~/.claude/skills/` and `~/.cursor/skills/`, with a small manifest for each harness side by side:
 
 ```
-orca-firstmate/
+vizier/
   .claude-plugin/plugin.json   # Claude Code manifest (Cursor uses no manifest:
                                # the Cursor plugin doesn't load hooks, measured)
-  commands/firstmate.md        # shared
+  commands/vizier.md        # shared
   skills/                      # shared: identity, brief, routing, supervise, delivery
   hooks/
     hooks.json                 # Claude schema: Stop (asyncRewake) + PostCompact
@@ -142,7 +142,7 @@ orca-firstmate/
     wake-cursor.sh             # declared in NO manifest: the Cursor adapter
                                # merges it into ~/.cursor/hooks.json at install time
   install.sh
-  bin/orca-firstmate
+  bin/vizier
 ```
 
 **A portable skill is almost free; wake is a one-time cost per harness.** That's the entire cost of being multi-harness, and it fits neatly into two `wake-*.sh` files.
@@ -180,16 +180,16 @@ The two v1 adapters answer **completely differently**, so don't write them as on
 | Automated test | yes -- the spike fully automated it | **no** -- must drive a real TUI session via pty, and typing text with Enter must be separate |
 | Tokens while waiting | 0 | 0 |
 
-Consequence for Cursor: needs an additional `~/.orca-firstmate/park-owner` (an increasing seq); before emitting a follow-up, the park must confirm it's still the latest owner, otherwise exit 0 silently. And the `loop_limit` declared in hooks must be higher than our own self-imposed ceiling, so our bound bites first and still has time to report a line.
+Consequence for Cursor: needs an additional `~/.vizier/park-owner` (an increasing seq); before emitting a follow-up, the park must confirm it's still the latest owner, otherwise exit 0 silently. And the `loop_limit` declared in hooks must be higher than our own self-imposed ceiling, so our bound bites first and still has time to report a line.
 
 ### Degradation disclosure
 
 `install` must **print each harness's limits** right at install time, not leave the captain to discover them three days later:
 
-- Cursor: unusable in headless `cursor-agent -p` -- **no hook fires in that mode**; an interactive session is required. Cursor also requires trust per workspace directory, so the promise "type `/firstmate` anywhere" comes with a one-time trust step per new directory on Cursor.
+- Cursor: unusable in headless `cursor-agent -p` -- **no hook fires in that mode**; an interactive session is required. Cursor also requires trust per workspace directory, so the promise "type `/vizier` anywhere" comes with a one-time trust step per new directory on Cursor.
 - A harness with no adapter yet: `install` reports "not supported" outright, it doesn't silently skip it.
-- **Bare `install` does NOT install Cursor.** The Cursor side has no activation path yet (`ofm-activate.sh` depends on an environment variable only Claude Code has), so an entry plugged into `~/.cursor/hooks.json` would just read the lock and exit 0: no function, while still taking on the full risk of writing to the file Orca shares. Installing it requires the explicit `--harness cursor`, and the adapter prints that limit clearly.
-- A harness that can't answer question 3 -- Codex is the known case, its mechanism is "bounded foreground checkpoints" so it **cannot wake an idle session** -- that adapter must state plainly that orca-firstmate runs degraded there: it still dispatches, still briefs, but the captain has to ask "is it done" themselves.
+- **Bare `install` does NOT install Cursor.** The Cursor side has no activation path yet (`vizier-activate.sh` depends on an environment variable only Claude Code has), so an entry plugged into `~/.cursor/hooks.json` would just read the lock and exit 0: no function, while still taking on the full risk of writing to the file Orca shares. Installing it requires the explicit `--harness cursor`, and the adapter prints that limit clearly.
+- A harness that can't answer question 3 -- Codex is the known case, its mechanism is "bounded foreground checkpoints" so it **cannot wake an idle session** -- that adapter must state plainly that vizier runs degraded there: it still dispatches, still briefs, but the captain has to ask "is it done" themselves.
 
 ## The Request concept (unit of coordination)
 
@@ -244,7 +244,7 @@ Blocks until there's a message for the Run; FIFO; replays the same Delivery unti
 
 **The Claude Code half** -- `hooks/wake.sh` registered in the plugin's `hooks/hooks.json` as a Stop hook with `"asyncRewake": true`, a long timeout (following firstmate's lead: 28800s). Claude Code fires the Stop hook on **every** Stop of **every** session on the machine and does not dedupe, so the gate ordering is mandatory, cheap first then expensive:
 
-- `session_id` in the stdin payload **doesn't match** `~/.orca-firstmate/lock` -> exit 0. One file read; this is what keeps the hook silent in every other Claude Code session.
+- `session_id` in the stdin payload **doesn't match** `~/.vizier/lock` -> exit 0. One file read; this is what keeps the hook silent in every other Claude Code session.
 - Matches the lock but no request has `status: open` -> exit 0, silent, costs nothing.
 - **`stop_hook_active: true` in the payload and we ALREADY have a message -> exit 0.** Because the hook uses `--peek`, an unacked message is still there on the next turn; without this block, every wake spawns another wake -- an infinite loop. We already said it once; if the first mate doesn't ack, that's the first mate's bug, not something the hook should repeat. Before going silent, print one line stating the ceiling was hit.
 - Otherwise -> `check --wait --peek` (peek: doesn't mark as read), `--timeout-ms` set shorter than the hook's own timeout by a safety margin (e.g. hook 28800s -> wait 28500s) so the hook always exits under its own control. A message arrives -> print one summary line to stderr, **exit 2** -> Claude Code wakes up even from idle. Timeout -> exit 2 with a "re-arm" reason so the next turn re-arms the wait. **exit 0 is forbidden here**: an idle session generates no further Stop events, so going silent on timeout is supervision dying permanently until the captain types something themselves. The re-arm loop is not a spin loop -- each cycle waits up to eight hours.
@@ -334,7 +334,7 @@ Deliberately kept short. The distro's entire dependency surface:
 | `jq` | always | hooks parse the JSON payload on stdin and the Cursor adapter merges JSON |
 | `no-mistakes` | only for `no-mistakes`-mode tasks | runs the validation pipeline; see the Delivery mode section |
 
-**No third-party CLI wrappers.** firstmate injects `gh-axi`, `chrome-devtools-axi`, `lavish-axi`, `tasks-axi`, `quota-axi` into every brief and every bootstrap; orca-firstmate doesn't. Reason: most of those exist to rebuild something Orca already has (`tasks-axi` is a homegrown backlog ledger -- here that's `requests/` + the Orca Run; the `lavish-axi` board is a homegrown fleet view -- here that's `worktree ps --json`), and the rest are just a thin layer over the canonical CLI. In exchange: a worker parsing `gh`'s JSON costs more tokens than TOON, which is acceptable.
+**No third-party CLI wrappers.** firstmate injects `gh-axi`, `chrome-devtools-axi`, `lavish-axi`, `tasks-axi`, `quota-axi` into every brief and every bootstrap; vizier doesn't. Reason: most of those exist to rebuild something Orca already has (`tasks-axi` is a homegrown backlog ledger -- here that's `requests/` + the Orca Run; the `lavish-axi` board is a homegrown fleet view -- here that's `worktree ps --json`), and the rest are just a thin layer over the canonical CLI. In exchange: a worker parsing `gh`'s JSON costs more tokens than TOON, which is acceptable.
 
 `no-mistakes` is a deliberate exception, not a wrapper: it **is** the pipeline, there's no canonical CLI to replace it with.
 
@@ -349,7 +349,7 @@ Deliberately kept short. The distro's entire dependency surface:
 
 ## Testing
 
-- **fake-orca**: the `tests/fake-orca/orca` script placed ahead on PATH, returning sample JSON checked against the real schema (taken from `orca agent-context --json` and real output on the captain's machine). Lifecycle tests need no app: routing excludes a not-ready host, brief assembles exactly 4 layers, hook exits 0 with no open request / exits 2 with a message, supervise doesn't ack before the batch is fully processed. Three more cases for delivery: `no-mistakes`-mode brief generates the exact `Delivery contract:` line and a DoD that waits for an axi outcome; supervise **does not** release when a `no-mistakes` task's `worker_done` lacks an outcome; a `question` carrying an ask-user finding goes into the `delivery` policy instead of being acked outright. And three cases for the entry point: `wake.sh` exits 0 when `session_id` doesn't match the lock; `/firstmate` refuses when the lock has a live owner; `/firstmate` reclaims the lock when the owner is dead.
+- **fake-orca**: the `tests/fake-orca/orca` script placed ahead on PATH, returning sample JSON checked against the real schema (taken from `orca agent-context --json` and real output on the captain's machine). Lifecycle tests need no app: routing excludes a not-ready host, brief assembles exactly 4 layers, hook exits 0 with no open request / exits 2 with a message, supervise doesn't ack before the batch is fully processed. Three more cases for delivery: `no-mistakes`-mode brief generates the exact `Delivery contract:` line and a DoD that waits for an axi outcome; supervise **does not** release when a `no-mistakes` task's `worker_done` lacks an outcome; a `question` carrying an ask-user finding goes into the `delivery` policy instead of being acked outright. And three cases for the entry point: `wake.sh` exits 0 when `session_id` doesn't match the lock; `/vizier` refuses when the lock has a live owner; `/vizier` reclaims the lock when the owner is dead.
 - **Real smoke test** (run by hand, with real Orca): open a request -> 1 echo task -> worker runs -> `worker_done` -> hook wakes -> release -> close the request. One variant with `--on "Mac mini"`.
 - Record real smoke-test results into `docs/verification/` with the app version checked (following firstmate's practice of version-stamped evidence, since Orca has no protocol version marker -- capabilities in `orca status` serve as the compatibility gate).
 

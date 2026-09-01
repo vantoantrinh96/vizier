@@ -67,7 +67,7 @@ cursor-agent: 2026.08.11-e8db854 (the exact version firstmate verified the Curso
 ## Question
 
 firstmate proved Cursor's `stop` mechanism at `.cursor/hooks.json` **project-level** with `--trust`.
-orca-firstmate installs at **user level**. Does the user level fire?
+vizier installs at **user level**. Does the user level fire?
 
 ## Result: headless can't measure that question
 
@@ -95,8 +95,8 @@ after the measurement (sha256 matches: `ba94bfa2...5c7e35c7`).
 - The question "does a user-level plugin load hooks" **remains open**; it must be measured with an
   interactive session.
 - `cursor-agent` requires trust per workspace directory (`--trust` or an interactive decision).
-  Since orca-firstmate "runs everywhere," that means every new directory where the captain types
-  `/firstmate` hits a trust prompt once. This needs consideration in the Cursor adapter.
+  Since vizier "runs everywhere," that means every new directory where the captain types
+  `/vizier` hits a trust prompt once. This needs consideration in the Cursor adapter.
 
 ## Probe left on the machine
 
