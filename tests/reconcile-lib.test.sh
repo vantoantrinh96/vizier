@@ -511,6 +511,33 @@ assert_eq "$(vizier_request_dispatch_notes tabby-mode | cut -f2,3)" \
   "$(printf 'd-t\tdirect-PR retried')" \
   "and supervise's map cannot read it as direct-PR"
 
+# THE ANCHOR STILL MEANS A SPACE AFTER `task`. The tab fold above operates on
+# the CAPTURED mode, not on the file, so it cannot turn `task<TAB>` into a
+# line this reader accepts -- a fix round that folded the file first widened
+# the anchor and let a lookalike win. tests/supervise-mode-map.test.sh pins
+# the disposition; here the extraction itself.
+vizier_request_create tab-anchored run-tab-anchor proj proj-id local "body"
+vizier_request_note tab-anchored "task task_9 -> dispatch d-a (no-mistakes)"
+vizier_request_note tab-anchored "$(printf 'task\t9 -> dispatch d-a (direct-PR)')"
+assert_eq "$(vizier_request_dispatch_notes tab-anchored)" \
+  "$(printf 'task_9\td-a\tno-mistakes')" \
+  "a tab after 'task' does not satisfy the anchor, so only the genuine note is extracted"
+
+# AN EMPTY PARENTHESISED MODE GETS THE `-` SENTINEL, so the report line's
+# "every field always present" contract holds and supervise's `[ -n ]` guard
+# cannot read the row as a miss.
+vizier_request_create empty-mode-note run_52f834f62a96 proj proj-id local "body"
+vizier_request_note empty-mode-note "task task_f5a588ccf365 -> dispatch ctx_70061775b9ca ()"
+assert_eq "$(vizier_request_dispatch_notes empty-mode-note)" \
+  "$(printf 'task_f5a588ccf365\tctx_70061775b9ca\t-')" \
+  "an empty mode is emitted as the - sentinel, never as an empty column"
+report=$(vizier_reconcile_run run_52f834f62a96 \
+  "$(vizier_request_dispatch_notes empty-mode-note)" "$REAL_FAILED")
+assert_eq "$(field_of "$report" ctx_70061775b9ca mode)" "-" \
+  "so the report line carries a value for mode= rather than nothing at all"
+assert_eq "$(field_of "$report" ctx_70061775b9ca health)" "failed" \
+  "and the fields after it stay at their contracted positions"
+
 # A slug with no file at all answers empty and rc 0 -- reconciliation runs
 # over open requests, and a file that vanished mid-scan must not abort it.
 assert_eq "$(vizier_request_dispatch_notes no-such-request)" "" \

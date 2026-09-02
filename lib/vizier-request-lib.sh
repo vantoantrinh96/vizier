@@ -170,12 +170,39 @@ vizier_request_close() {  # <slug>
 # vizier_supervise_plan falls back to `mode="$default_mode"`, and
 # `default_mode` is the PROJECT's `delivery:` field, which can be exactly
 # `direct-PR` -- the single value vizier_msg_disposition lets skip the
-# axi_outcome check. A note that is PRESENT with an unrecognised mode is safe
-# by construction: anything other than the exact string `direct-PR` takes the
-# strict path. So the reader's job is to keep the note, not to tidy it, and
-# an odd mode must survive here unrecognised rather than vanish. Reachable
-# through the ordinary override path: `brief` writes whatever mode the captain
-# named into the note while `default_mode` still comes from the project.
+# axi_outcome check. So the reader's job is to keep the note, not to tidy it,
+# and an odd mode must survive here unrecognised rather than vanish.
+# Reachable through the ordinary override path: `brief` writes whatever mode
+# the captain named into the note while `default_mode` still comes from the
+# project.
+#
+# WHAT THIS FUNCTION GUARANTEES, AND WHAT IT FLATLY DOES NOT. State both,
+# because an earlier version of this very paragraph claimed the guarantee
+# without the exception and that overstatement is what produced the review
+# round that found it.
+#
+#   GUARANTEED: every note this function emits carries a NON-EMPTY mode
+#   column. `vizier_supervise_plan` reads its map through
+#   `[ -n "$looked" ] && mode="$looked"`, so an empty column is
+#   indistinguishable from no row at all -- it is read as a MISS and falls
+#   back to `$default_mode`. Measured: `task task_9 -> dispatch ctx_e ()` on
+#   a `direct-PR` project planned `PLAN mb release ok`, while the same input
+#   with a non-empty odd mode planned `hold no-axi-outcome`. `\(.*\)` accepts
+#   `()` on purpose -- requiring a non-empty mode would make that line match
+#   nothing, which drops the note, which is a miss, which is the same
+#   release by a longer road. So the empty capture is substituted with the
+#   `-` sentinel this project already uses for "nothing to say": non-empty,
+#   so the guard passes, and not a mode `vizier_brief_delivery` recognises
+#   (it knows exactly `direct-PR` and `no-mistakes`), so the strict path is
+#   taken. With that, a note that is PRESENT with an unrecognised mode really
+#   is safe by construction -- anything other than the exact string
+#   `direct-PR` takes the strict axi_outcome path.
+#
+#   NOT GUARANTEED, and nothing in this file can make it so: a dispatch with
+#   NO note at all is a genuine map miss, and a miss still resolves to the
+#   project default, which can itself be exactly `direct-PR`. That is a
+#   fail-open living in vizier_supervise_plan's fallback, not here, and it is
+#   tracked as its own work. Do not read anything above as covering it.
 #
 # The report line's grammar is fixed SEPARATELY, at the reporter that owns
 # that grammar -- _vizier_reconcile_notes collapses whitespace in the
@@ -183,14 +210,31 @@ vizier_request_close() {  # <slug>
 # already does for every Orca-sourced state word. Semantics unchanged there,
 # and the value supervise's map joins on stays the untruncated one.
 #
-# A TAB IS DELETED RATHER THAN CAPTURED, and that is this function's own TSV
-# contract, not tidying. The output is tab-separated, so a tab inside the
+# A TAB INSIDE THE MODE IS FOLDED TO A SPACE, and that is this function's own
+# TSV contract, not tidying. The output is tab-separated, so a tab inside the
 # parenthesised mode would emit a FOURTH column, and `cut -f2,3` would then
 # hand supervise the text up to that tab: `(direct-PR<TAB>junk)` truncates to
 # exactly `direct-PR` and releases. That is the one thing no reading of this
 # file may do -- silently truncate an unrecognised mode INTO a recognised
 # one. Folded to a space, the mode stays whole, stays unrecognised, and stays
 # in one column.
+#
+# THE FOLD RUNS AFTER THE MATCH, NOT BEFORE IT, AND THAT PLACEMENT IS THE
+# WHOLE OF IT. A round of this fix piped the file through `tr '\t' ' '`
+# BEFORE the sed, which folded every tab in the file -- including one
+# immediately after `task `. That widened `^task ` to also accept
+# `task<TAB>`, reopening the anti-lookalike hole this function's anchor
+# exists to close, and through the channel the anchor was written for: the
+# request BODY holds the captain's words verbatim, so a pasted note
+# reproduces it with nobody attacking anything. Measured on one request file
+# holding the genuine `task task_9 -> dispatch ctx_9 (no-mistakes)` followed
+# by a lookalike `task<TAB>9 -> dispatch ctx_9 (direct-PR)`: the anchored
+# pattern alone extracted ONE row and planned `hold no-axi-outcome`, the
+# whole-file fold extracted TWO, the lookalike won under
+# vizier_supervise_plan's last-match-wins lookup, and the same input planned
+# `PLAN ma release ok`. So the sed must see the ORIGINAL bytes, and only the
+# CAPTURED mode may be folded -- which is what rejoining fields 3..NF does
+# below. One hole traded for another is not a fix.
 #
 # Real request files carry OTHER lines that start with `task ` and are not
 # dispatch notes -- measured on the captain's machine: `task 1: mode=direct-PR
@@ -207,10 +251,21 @@ vizier_request_dispatch_notes() {  # <slug> -- one <task>\t<dispatch>\t<mode> li
   [ -r "$f" ] || return 0
   # `tr -d '\r'` for the same reason the frontmatter readers do it: a CRLF
   # file would leave the mode ending in a carriage return, and the mode is
-  # then compared against the exact string `direct-PR`. The tab fold is the
-  # TSV contract described above.
-  tr -d '\r' < "$f" | tr '\t' ' ' \
-    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\(.*\))$/\1\t\2\t\3/p'
+  # then compared against the exact string `direct-PR`.
+  #
+  # The awk pass is the TSV contract described above, applied to what the
+  # anchored sed CAPTURED rather than to the file it read: fields 3..NF are
+  # the one mode column split by a tab it carried, rejoined with a space, and
+  # an empty mode becomes the `-` sentinel so no caller can read it as a
+  # missing row.
+  tr -d '\r' < "$f" \
+    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\(.*\))$/\1\t\2\t\3/p' \
+    | awk -F'\t' -v OFS='\t' '
+        { m = $3
+          for (i = 4; i <= NF; i++) m = m " " $i
+          if (m == "") m = "-"
+          print $1, $2, m }
+      '
   return 0
 }
 

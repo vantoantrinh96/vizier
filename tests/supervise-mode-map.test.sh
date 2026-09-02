@@ -143,5 +143,55 @@ plan=$(orca orchestration check --run run-e4 --json | vizier_supervise_plan dire
 assert_contains "$plan" "PLAN e4 hold no-axi-outcome" \
   "so it holds too, instead of being read as a bare direct-PR and released"
 
+# --- Test 5: A TAB-PREFIXED LOOKALIKE MUST NOT SATISFY THE ANCHOR ---------
+# `^task ` means a SPACE after `task`, and this is the case that proves it.
+# Every other lookalike in this file separates them with a space, which is
+# why a fix round could fold every tab in the file to a space BEFORE the
+# anchored match and pass the whole suite: `task<TAB>` became `task<SPACE>`,
+# the lookalike matched, and it was appended AFTER the genuine note, so
+# last-match-wins handed supervise `direct-PR` and released a terminal a
+# no-mistakes pipeline may still have owned. Measured on this exact file:
+# `hold no-axi-outcome` with the anchor intact, `release ok` with the fold
+# placed ahead of it.
+#
+# The default is deliberately `direct-PR` so a dropped-note fallback cannot
+# make this pass for the wrong reason -- if the genuine note were lost too,
+# the miss would resolve to direct-PR and release.
+vizier_request_create tab-lookalike run-5 proj proj-id local "body"
+vizier_request_note tab-lookalike "task task_9 -> dispatch d-5 (no-mistakes)"
+vizier_request_note tab-lookalike "$(printf 'task\t9 -> dispatch d-5 (direct-PR)')"
+map=$(build_map tab-lookalike)
+assert_eq "$map" "$(printf 'd-5\tno-mistakes')" \
+  "the tab-prefixed lookalike never enters the map -- only a real space after 'task' satisfies the anchor"
+
+map_file="$VIZIER_TEST_TMP/tab-lookalike-map"
+printf '%s\n' "$map" > "$map_file"
+fake_orca_message run-e5 e5 worker_done "done, no outcome line" "$(fake_orca_payload d-5)"
+orca orchestration run-use --id "run-e5" --json >/dev/null
+plan=$(orca orchestration check --run run-e5 --json | vizier_supervise_plan direct-PR "$map_file")
+assert_contains "$plan" "PLAN e5 hold no-axi-outcome" \
+  "end-to-end: the lookalike cannot flip the genuine no-mistakes note into a release"
+
+# --- Test 6: AN EMPTY PARENTHESISED MODE MUST NOT READ AS A MAP MISS ------
+# `()` matches on purpose -- requiring a non-empty mode would drop the note,
+# and a dropped note is a miss, which falls back to the project default.
+# But an empty mode column is ALSO a miss, because the lookup is guarded by
+# `[ -n "$looked" ]`. Measured before the sentinel: `PLAN mb release ok` on a
+# direct-PR project. So the reader substitutes `-`, which is non-empty and is
+# not a mode vizier_brief_delivery recognises, and the strict path holds.
+vizier_request_create empty-mode run-6 proj proj-id local "body"
+vizier_request_note empty-mode "task task_9 -> dispatch d-6 ()"
+map=$(build_map empty-mode)
+assert_eq "$map" "$(printf 'd-6\t-')" \
+  "an empty mode becomes the - sentinel, so the map row cannot be read as no row at all"
+
+map_file="$VIZIER_TEST_TMP/empty-mode-map"
+printf '%s\n' "$map" > "$map_file"
+fake_orca_message run-e6 e6 worker_done "done, no outcome line" "$(fake_orca_payload d-6)"
+orca orchestration run-use --id "run-e6" --json >/dev/null
+plan=$(orca orchestration check --run run-e6 --json | vizier_supervise_plan direct-PR "$map_file")
+assert_contains "$plan" "PLAN e6 hold no-axi-outcome" \
+  "end-to-end: an empty mode holds instead of inheriting the project's direct-PR default"
+
 vizier_test_teardown
 vizier_test_report
