@@ -16,9 +16,12 @@ STATE="${VIZIER_FAKE_ORCA_STATE:?fake-orca needs VIZIER_FAKE_ORCA_STATE}"
 printf '%s\n' "$*" >> "$STATE/calls.log"
 
 # --- argument scan --------------------------------------------------------
-run_id=""; timeout_ms=0; wait_mode=0; peek=0; ack=""; types=""
+run_id=""; timeout_ms=0; wait_mode=0; peek=0; all_mode=0; ack=""; types=""
 dispatch=""; task=""; project=""; host=""; environment=""; objective=""
-spec=""; msg_id=""; on_host=""
+# `--id` names a MESSAGE for send/reply and a RUN for run-use. One variable
+# for both, because that is how the real CLI spells it; the command decides
+# which it means.
+spec=""; id_arg=""; on_host=""; limit=0; wt_name=""; repo_sel=""
 prev=""
 for arg in "$@"; do
   case "$prev" in
@@ -33,16 +36,30 @@ for arg in "$@"; do
     --environment) environment=$arg ;;
     --objective)   objective=$arg ;;
     --spec)        spec=$arg ;;
-    --id)          msg_id=$arg ;;
+    --id)          id_arg=$arg ;;
     --on)          on_host=$arg ;;
+    --limit)       limit=$arg ;;
+    --name)        wt_name=$arg ;;
+    --repo)        repo_sel=$arg ;;
   esac
   [ "$arg" = "--wait" ] && wait_mode=1
   [ "$arg" = "--peek" ] && peek=1
+  # `all_mode`, not `all`: the "project setups" branch below already uses a
+  # variable named `all`, and a scan flag silently clobbered by a later
+  # branch is the kind of bug this file exists to not have.
+  [ "$arg" = "--all" ] && all_mode=1
   prev=$arg
 done
 
 envelope() {  # <result_json>
-  jq -cn --argjson r "$1" '{id:"fake",ok:true,result:$r,_meta:{runtimeId:"fake-runtime"}}'
+  # PRETTY-PRINTED, NOT COMPACT -- and that is a contract, not a preference.
+  # Real `orca ... --json` pretty-prints every response, which puts one FIELD
+  # on each line. A fake that emitted compact JSON would let a caller that
+  # reads the response as newline-delimited JSON pass its tests by accident,
+  # which is exactly how supervision shipped inert: a 3-message batch parses
+  # as 77 unparseable lines against the real app and as 3 tidy messages
+  # against a compact fake.
+  jq -n --argjson r "$1" '{id:"fake",ok:true,result:$r,_meta:{runtimeId:"fake-runtime"}}'
 }
 
 next_id() {  # <counter_name> <prefix> -- prints "<prefix>-<N>"
@@ -83,6 +100,18 @@ case "$1 ${2:-}" in
     exit 0
     ;;
 
+  "worktree create")
+    # SHAPE CAPTURED 2026-09-02. This is how a new worktree is actually made:
+    # `worker-start --worktree new-top-level` does NOT do it -- measured,
+    # `selector_not_found`, with `--name` and a valid `--repo` both present.
+    # The dispatch is a SECOND call against the path this returns.
+    wt_path="/tmp/fake-worktrees/${wt_name:-unnamed}"
+    envelope "$(jq -cn --arg n "${wt_name:-unnamed}" --arg p "$wt_path" --arg r "$repo_sel" \
+      '{worktree:{id:($r + "::" + $p), path:$p, branch:("refs/heads/" + $n),
+                  repoSelector:$r, setupState:"ready"}}')"
+    exit 0
+    ;;
+
   "worktree ps")
     envelope '{"totalCount":0,"truncated":false,"worktrees":[]}'
     exit 0
@@ -102,69 +131,264 @@ case "$1 ${2:-}" in
     ;;
 
   "orchestration worker-start")
+    # CAPTURED FROM A REAL SUCCESSFUL DISPATCH, 2026-09-02. The id is
+    # `.result.dispatchId` -- camelCase, at the TOP of result. There is no
+    # `.result.dispatch` object; that was invented, like the mailbox fields
+    # before it, and every test that read it agreed with the invention.
+    # `state: ready` with `stage: input_accepted` is what success looks like:
+    # the agent launched AND took the prompt. A dispatch that launches but
+    # cannot be prompted reports `failed` with `last_failure`.
     id=$(next_id dispatch dispatch)
     n=${id#dispatch-}
     mkdir -p "$STATE/workers"
     [ -f "$STATE/workers/$id" ] || printf 'term-%s\n' "$n" > "$STATE/workers/$id"
-    envelope "$(jq -cn --arg id "$id" --arg t "$task" --arg on "$on_host" \
-      '{dispatch:{id:$id,task_id:$t,on:$on,state:"running"}}')"
+    envelope "$(jq -cn --arg id "$id" --arg t "$task" --arg r "$run_id" --arg on "$on_host" \
+      '{runId:$r,taskId:$t,dispatchId:$id,state:"ready",stage:"input_accepted",
+        on:$on,timeoutMs:60000,
+        launch:{requested:{agent:"claude",model:null,effort:null},
+                effective:{agent:"claude",model:null,effort:null}},
+        effects:[{kind:"worktree",action:"reused",id:"wt-fake"}]}')"
     exit 0
     ;;
 
   "orchestration worker-show")
+    # SHAPE CAPTURED FROM A REAL DISPATCH, 2026-09-02. It is `.result.dispatch`,
+    # not `.result.worker`; the id field is `id`, not `dispatch_id`; and the
+    # terminal is `assignee_handle`, NOT `agent_terminal_handle` -- that name
+    # exists nowhere in the real response. Note this command is snake_case
+    # while `worker-list` below is camelCase for the same concepts; that is
+    # the real CLI's inconsistency, faithfully reproduced.
     h=$(cat "$STATE/workers/$dispatch" 2>/dev/null || printf '')
     envelope "$(jq -cn --arg d "$dispatch" --arg h "$h" \
-      '{worker:{dispatch_id:$d,agent_terminal_handle:$h,state:"settled"}}')"
+      '{dispatch:{id:$d,run_id:"run-fake",task_id:"task-fake",
+                  assignee_handle:$h,status:"settled",
+                  failure_count:0,last_failure:null,
+                  capability_revoked_at:null,termination_reason:null}}')"
     exit 0
     ;;
 
   "orchestration worker-release")
+    # CAPTURED: the receipt is `.result` itself -- {dispatchId, state,
+    # processAction, archive, lastError, recovery} -- not `.result.release`.
+    # `recovery` is a sentence the caller is told to follow verbatim, which is
+    # why the skill must read the receipt rather than pattern-match a state.
     st="${VIZIER_FAKE_ORCA_RELEASE_STATE:-released}"
-    envelope "$(jq -cn --arg d "$dispatch" --arg s "$st" '{release:{dispatch_id:$d,state:$s}}')"
+    envelope "$(jq -cn --arg d "$dispatch" --arg s "$st" \
+      '{dispatchId:$d,state:$s,processAction:"none",
+        archive:{source:"terminal",status:"captured"},
+        lastError:null,recovery:null}')"
     exit 0
     ;;
 
   "orchestration worker-list")
-    envelope '{"workers":[]}'
+    # CAPTURED: camelCase here, unlike worker-show.
+    envelope '{"workers":[],"counts":{}}'
+    exit 0
+    ;;
+
+  "orchestration run-use")
+    # BINDING IS A READ-PATH OPERATION AND NEEDS NO SENDER TERMINAL.
+    # Measured 2026-09-02: `run-use --id <run>` from a plain shell with no
+    # --from returns ok:true. `consumer_generation` bumps on every rebind,
+    # which is why a rebind must not be interleaved into an open delivery.
+    mkdir -p "$STATE"
+    printf '%s' "$id_arg" > "$STATE/binding"
+    gen=$(next_id generation gen); gen=${gen#gen-}
+    envelope "$(jq -cn --arg id "$id_arg" --argjson g "$gen" \
+      '{run:{id:$id,coordinator_handle:"term_fake",consumer_generation:$g}}')"
+    exit 0
+    ;;
+
+  "orchestration run-current")
+    b=$(cat "$STATE/binding" 2>/dev/null || printf '')
+    if [ -z "$b" ]; then
+      jq -n '{id:"fake",ok:false,error:{code:"no_bound_run",message:"No Run is bound to this coordinator terminal."},_meta:{runtimeId:"fake-runtime"}}'
+      exit 1
+    fi
+    envelope "$(jq -cn --arg id "$b" '{run:{id:$id,coordinator_handle:"term_fake"}}')"
+    exit 0
+    ;;
+
+  "orchestration inbox")
+    # THE UNFENCED, CROSS-RUN READ. No binding, no delivery, no ack -- which
+    # is exactly what a wake hook needs and all it is allowed to do. Measured:
+    # `inbox --json` returns ok:true from a plain shell with no binding, every
+    # row carries `run_id`, and `read` flips to 1 once a delivery is formed.
+    #
+    # `result` is {count, messages} -- NOT the check envelope's key set. Order
+    # across Runs is not modelled: the real app was only ever observed with
+    # one Run holding messages, so nothing here may depend on the order.
+    inbox_all=$(cat "$STATE"/queue/* 2>/dev/null | jq -cs '.' 2>/dev/null || printf '[]')
+    [ -n "$inbox_all" ] || inbox_all='[]'
+    if [ "${limit:-0}" -gt 0 ] 2>/dev/null; then
+      inbox_all=$(printf '%s' "$inbox_all" | jq -c --argjson n "$limit" '.[0:$n]')
+    fi
+    envelope "$(jq -cn --argjson m "$inbox_all" '{count:($m|length),messages:$m}')"
+    exit 0
+    ;;
+
+  "terminal list")
+    terms=$(jq -cs '.' "$STATE/terminals" 2>/dev/null || printf '[]')
+    envelope "$(jq -cn --argjson t "${terms:-[]}" '{terminals:$t}')"
     exit 0
     ;;
 
   "orchestration check")
+    # EVERY SHAPE AND EVERY RULE BELOW WAS MEASURED against Orca 1.4.193 on
+    # 2026-09-02 -- see docs/verification/2026-09-02-mailbox-delivery-contract
+    # .md and the captured responses in tests/fixtures/. This block previously
+    # emitted newline-delimited JSON carrying `delivery_id`/`dispatch_id`
+    # fields that do not exist, and the parser it was tested against had been
+    # built from the same imagination. That is precisely the failure this
+    # file's header forbids, committed in this file.
+    #
+    # THE DELIVERY MODEL, which is the part that matters most:
+    #   - `--peek` and `--all` return messages but create NO delivery, so a
+    #     peeked batch has no ack handle at all.
+    #   - a default read forms a delivery over what it returns, names it
+    #     `result.deliveryId`, and REPLAYS that same delivery -- same id, same
+    #     messages, `replayed: true` -- until it is acked.
+    #   - `--ack <deliveryId>` clears the whole delivery at once. Any other
+    #     id, a message id above all, is refused with `stale_delivery` and
+    #     acks nothing.
     q="$STATE/queue/${run_id:-_none}"
+    dfile="$STATE/delivery/${run_id:-_none}"
+    mkdir -p "$STATE/delivery"
+    acked=""
+
+    # FENCED BY THE BINDING. Measured: reading a Run's mailbox is done as that
+    # Run's bound coordinator terminal; an unbound terminal reads nothing, and
+    # a terminal bound elsewhere gets `consumer_fenced` with the two Run ids
+    # named. A permissive fake here would let a caller ship a `check` with no
+    # `run-use` in front of it and still go green -- the same shape of failure
+    # as the invented message fields.
+    bound=$(cat "$STATE/binding" 2>/dev/null || printf '')
+    if [ "$bound" != "$run_id" ]; then
+      if [ -z "$bound" ]; then
+        fence_msg="This coordinator terminal is no longer bound to Run ${run_id}."
+      else
+        fence_msg="This coordinator terminal is bound to ${bound}, not ${run_id}."
+      fi
+      jq -n --arg m "$fence_msg" '{id:"fake",ok:false,
+        error:{code:"consumer_fenced",message:$m},
+        _meta:{runtimeId:"fake-runtime"}}'
+      exit 1
+    fi
+
     if [ -n "$ack" ]; then
-      # Ack removes exactly the acked delivery, nothing else. A fake that
-      # truncated the queue would hide the real bug this guards: acking a
-      # batch before every message in it has been processed.
+      cur=$(head -n 1 "$dfile" 2>/dev/null || printf '')
+      if [ -z "$cur" ] || [ "$cur" != "$ack" ]; then
+        # Measured verbatim: `--ack msg_08381966f603` -> stale_delivery, rc 1,
+        # and all three messages still queued afterwards.
+        jq -n --arg a "$ack" '{id:"fake",ok:false,
+          error:{code:"stale_delivery",
+                 message:("Delivery " + $a + " does not belong to this Run.")},
+          _meta:{runtimeId:"fake-runtime"}}'
+        exit 1
+      fi
+      # ONLY the delivered ids are removed, never the whole queue. A message
+      # that arrived after the delivery was formed is not part of it and must
+      # survive the ack -- a fake that truncated the queue would hide exactly
+      # the bug this models: acking a batch before every message in it has
+      # been processed.
+      delivered=$(tail -n +2 "$dfile" | jq -R . | jq -cs '.')
       if [ -f "$q" ]; then
-        jq -c --arg a "$ack" 'select(.delivery_id != $a)' "$q" > "$q.tmp" 2>/dev/null || : > "$q.tmp"
+        # `.id as $i` FIRST: inside `$d | index(...)` the input is already the
+        # array, so a bare `.id` there indexes the array with a string and jq
+        # aborts. Binding the id before the pipe is what keeps it a message id.
+        jq -c --argjson d "$delivered" 'select(.id as $i | ($d | index($i)) == null)' "$q" \
+          > "$q.tmp" 2>/dev/null || : > "$q.tmp"
         mv "$q.tmp" "$q"
       fi
+      rm -f "$dfile"
+      acked="$ack"
     fi
-    emit() {
-      [ -s "$q" ] || return 1
+
+    check_messages() {  # -- the matching messages, as a JSON array
+      [ -s "$q" ] || { printf '[]'; return 0; }
       if [ -n "$types" ]; then
-        jq -c --arg t "$types" 'select(($t | split(",")) as $ts | .type as $x | $ts | index($x))' "$q"
+        jq -cs --arg t "$types" \
+          'map(select(($t | split(",")) as $ts | .type as $x | $ts | index($x)))' "$q"
       else
-        cat "$q"
+        jq -cs '.' "$q"
       fi
-      # --peek never consumes. Without --peek the messages stay too: real
-      # Orca replays until --ack, and tests depend on that replay.
-      return 0
     }
-    if emit | grep -q .; then emit; exit 0; fi
-    if [ "$wait_mode" = 1 ]; then
-      slept=0
-      while [ "$slept" -lt "${timeout_ms:-0}" ]; do
-        if emit | grep -q .; then emit; exit 0; fi
-        sleep 0.05; slept=$((slept+50))
-      done
+
+    check_emit() {  # <messages_json> <timed_out>
+      local msgs="$1" to="$2" did="" replayed=false ids
+      if [ "$peek" = 0 ] && [ "$all_mode" = 0 ]; then
+        if [ -s "$dfile" ]; then
+          did=$(head -n 1 "$dfile")
+          replayed=true
+          ids=$(tail -n +2 "$dfile" | jq -R . | jq -cs '.')
+          msgs=$(printf '%s' "$msgs" | jq -c --argjson d "$ids" 'map(select(.id as $i | $d | index($i)))')
+        elif [ "$(printf '%s' "$msgs" | jq 'length')" -gt 0 ]; then
+          did=$(next_id delivery delivery)
+          { printf '%s\n' "$did"; printf '%s' "$msgs" | jq -r '.[].id'; } > "$dfile"
+          # FORMING A DELIVERY MARKS ITS MESSAGES READ. Measured: read was 0
+          # on every message before the first default check and 1 after. The
+          # wake hook's "is this new" test is `read == 0`, so a fake that left
+          # the flag alone would wake forever on messages already in hand.
+          ids_read=$(printf '%s' "$msgs" | jq -c '[.[].id]')
+          jq -c --argjson d "$ids_read" \
+            'if (.id as $i | $d | index($i)) then .read = 1 else . end' "$q" \
+            > "$q.rd" 2>/dev/null && mv "$q.rd" "$q"
+        fi
+      fi
+      # THREE KEY SETS, each copied from a real response rather than
+      # normalised into one: a peek carries no deliveryId/replayed/timedOut at
+      # all, a delivery carries the full set plus `mutation`, and a read that
+      # delivered nothing carries the wait flags without a delivery. A caller
+      # must not be able to tell them apart by anything we invented.
+      if [ "$peek" = 1 ] || [ "$all_mode" = 1 ]; then
+        envelope "$(jq -cn --arg r "$run_id" --argjson m "$msgs" --arg a "$acked" \
+          '{runId:$r, messages:$m, count:($m|length),
+            acknowledged:(if $a == "" then null else $a end)}')"
+      elif [ -n "$did" ]; then
+        envelope "$(jq -cn --arg r "$run_id" --arg d "$did" --argjson m "$msgs" \
+          --argjson rep "$replayed" --arg a "$acked" --argjson to "$to" \
+          '{runId:$r, deliveryId:$d, messages:$m, count:($m|length),
+            replayed:$rep, acknowledged:(if $a == "" then null else $a end),
+            timedOut:$to, cancelled:false, connectionLost:false,
+            mutation:{requestId:"fake-mutation", replayed:$rep}}')"
+      else
+        envelope "$(jq -cn --arg r "$run_id" --argjson m "$msgs" --arg a "$acked" \
+          --argjson to "$to" \
+          '{runId:$r, messages:$m, count:($m|length),
+            acknowledged:(if $a == "" then null else $a end),
+            timedOut:$to, cancelled:false, connectionLost:false}')"
+      fi
+    }
+
+    have_messages() {  # <messages_json>
+      [ "$(printf '%s' "$1" | jq 'length')" -gt 0 ]
+    }
+
+    msgs=$(check_messages)
+    if have_messages "$msgs" || [ "$wait_mode" = 0 ]; then
+      check_emit "$msgs" false
+      exit 0
     fi
+    slept=0
+    while [ "$slept" -lt "${timeout_ms:-0}" ]; do
+      msgs=$(check_messages)
+      if have_messages "$msgs"; then
+        check_emit "$msgs" false
+        exit 0
+      fi
+      sleep 0.05; slept=$((slept+50))
+    done
+    # A TIMED-OUT WAIT STILL ANSWERS. Real Orca returns a normal ok envelope
+    # with `messages: []` and `timedOut: true`; it does not go silent. A fake
+    # that printed nothing let a caller treat "no output" and "no messages" as
+    # the same thing, which they are not -- no output means orca failed.
+    check_emit '[]' true
     exit 0
     ;;
 
   "orchestration send"|"orchestration reply"|"orchestration ask")
     id=$(next_id msg msg)
-    envelope "$(jq -cn --arg id "$id" --arg r "$msg_id" '{message:{id:$id,in_reply_to:$r}}')"
+    envelope "$(jq -cn --arg id "$id" --arg r "$id_arg" '{message:{id:$id,in_reply_to:$r}}')"
     exit 0
     ;;
 

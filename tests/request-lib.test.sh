@@ -3,6 +3,7 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 vizier_test_setup
 . "$VIZIER_TEST_REPO/lib/vizier-home.sh"
+. "$VIZIER_TEST_REPO/lib/vizier-mailbox-lib.sh"
 . "$VIZIER_TEST_REPO/lib/vizier-wake-lib.sh"
 . "$VIZIER_TEST_REPO/lib/vizier-request-lib.sh"
 

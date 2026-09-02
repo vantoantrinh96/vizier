@@ -22,6 +22,7 @@ set -u
 vizier_test_setup
 . "$VIZIER_TEST_REPO/lib/vizier-home.sh"
 . "$VIZIER_TEST_REPO/lib/vizier-request-lib.sh"
+. "$VIZIER_TEST_REPO/lib/vizier-mailbox-lib.sh"
 . "$VIZIER_TEST_REPO/lib/vizier-supervise-lib.sh"
 
 SKILL="$VIZIER_TEST_REPO/skills/supervise/SKILL.md"
@@ -59,8 +60,13 @@ assert_eq "$map" "$(printf 'd-1\tno-mistakes')" "the map holds ONLY the genuine 
 # really is no-mistakes, not direct-PR.
 map_file="$VIZIER_TEST_TMP/lookalike-map"
 printf '%s' "$map" > "$map_file"
-batch='{"delivery_id":"e1","type":"worker_done","dispatch_id":"d-1","body":"still running, no outcome yet"}'
-plan=$(printf '%s\n' "$batch" | vizier_supervise_plan direct-PR "$map_file")
+# The batch goes through fake-orca so the plan reads a REAL envelope, and the
+# dispatch id is where Orca actually puts it -- inside the payload STRING.
+# With the old top-level `.dispatch_id` read, every map lookup missed and this
+# assertion passed for the wrong reason: the fallback happened to be strict.
+fake_orca_message run-e1 e1 worker_done "still running, no outcome yet" "$(fake_orca_payload d-1)"
+orca orchestration run-use --id "run-e1" --json >/dev/null
+plan=$(orca orchestration check --run run-e1 --json | vizier_supervise_plan direct-PR "$map_file")
 assert_contains "$plan" "PLAN e1 hold no-axi-outcome" "end-to-end: the lookalike-prose case resolves to no-mistakes and holds, not direct-PR-and-release"
 
 # --- Test 2: a prose lookalike with NO genuine note for that id at all ----
@@ -75,8 +81,9 @@ assert_eq "$map" "" "a lookalike line with no genuine note produces an EMPTY map
 
 map_file="$VIZIER_TEST_TMP/lookalike-only-map"
 printf '%s' "$map" > "$map_file"
-batch='{"delivery_id":"e2","type":"worker_done","dispatch_id":"d-2","body":"still running, no outcome yet"}'
-plan=$(printf '%s\n' "$batch" | vizier_supervise_plan no-mistakes "$map_file")
+fake_orca_message run-e2 e2 worker_done "still running, no outcome yet" "$(fake_orca_payload d-2)"
+orca orchestration run-use --id "run-e2" --json >/dev/null
+plan=$(orca orchestration check --run run-e2 --json | vizier_supervise_plan no-mistakes "$map_file")
 assert_contains "$plan" "PLAN e2 hold no-axi-outcome" "no genuine note for d-2 -> falls back to the given default (strict), never the prose's direct-PR"
 
 vizier_test_teardown

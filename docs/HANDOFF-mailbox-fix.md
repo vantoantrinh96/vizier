@@ -1,5 +1,19 @@
 # Handoff: make vizier's supervision read a real Orca mailbox
 
+> **DONE — 2026-09-02, except Fix 3 and the two things it gates.** Fixes 1 and
+> 2 are implemented, and doing them found three things this handoff had wrong.
+> Read `docs/verification/2026-09-02-mailbox-delivery-contract.md` for the
+> measurements and `docs/decisions/2026-09-02-sender-terminal.md` for what is
+> still open. **Corrections to this document are marked ⚠ inline below — the
+> original text is left standing so the corrections are legible.** Do not work
+> from the uncorrected claims.
+>
+> | # | State |
+> |---|---|
+> | 1 mailbox shape | done, and larger than described — see ⚠ 1a/1b/1c |
+> | 2 `--worktree` | **ANSWERED by the real smoke** — `new-top-level` genuinely fails, `--name` or not. The working path is `worktree create` **then** `worker-start`; `skills/brief/SKILL.md` still needs rewriting to it. See `docs/verification/2026-09-02-smoke-real-loop.md` §1 |
+> | 3 sender terminal | recorded, **not decided**, and now bigger than described — see ⚠ 3 |
+
 **Start a fresh session in this repo and read only this file plus the two it
 names.** It is self-contained on purpose — the conversation that produced it ran
 too long to continue.
@@ -7,7 +21,10 @@ too long to continue.
 ```
 repo    ~/data/me/lumin/self-harness/orca-firstmate
 branch  feat/orchestration   (do the work here; do not open a new branch)
-state   44 commits ahead of main, 20 test files, 626 assertions, suite green
+state   as handed off: 20 test files, 626 assertions, suite green
+        after this work: 21 test files, 771 assertions, suite green,
+        34 mutations run and 34 caught, plus a real smoke against Orca
+        1.4.193 (docs/verification/2026-09-02-smoke-real-loop.md)
 ```
 
 ## What this project is, in three sentences
@@ -60,6 +77,23 @@ and each message looks like:
 | `.outcome` | same place, `.outcome` |
 | `.body`, `.type` | already correct |
 
+> ⚠ **1a — the transport, not just the fields.** `check --json` returns ONE
+> **pretty-printed** envelope, in `--wait` mode as much as out of it. There is
+> no JSON-lines mode. Fed the real capture, the old plan produced **77**
+> `UNPARSEABLE` lines, no plan and no ack.
+>
+> ⚠ **1b — `.delivery_id` → `.id` is right for identifying a message and wrong
+> for acking one.** `--ack` takes `result.deliveryId`: **one per batch**, only
+> ever produced by a *default* read. `--ack <a message id>` is refused with
+> `stale_delivery` and acks nothing. So the library's per-message ACK design,
+> and the skill's `--peek` read, could not have worked even with the fields
+> fixed: a peeked batch has no ack handle at all.
+>
+> ⚠ **1c — `lib/vizier-wake-lib.sh` was broken too**, and this handoff calls
+> Fix 1 "the whole job" without mentioning it. It reads the same response the
+> same wrong way, so **the wake hook never fired** — silently, and
+> indistinguishably from an idle fleet.
+
 `tests/fake-orca/orca` emits newline-delimited JSON from `check`; it must emit
 the envelope. Its own header comment already says shapes are copied and never
 invented — it was inventing them. Every test that hand-writes a message must be
@@ -88,6 +122,22 @@ current                      selector_not_found
 path:/Users/toantv/tmp/vizier-smoke   no_active_sender_terminal   ← resolved
 ```
 
+> ⚠ **2 — `--repo` was added; the selector swap was NOT made, deliberately.**
+> `worker-start --help` says "Remote current and new-child are invalid;
+> discover an exact remote selector or **use `new-top-level`**" — so
+> `new-top-level` is how Orca documents *asking for a new worktree*, and no
+> selector form means "make me a new one". It also says the creation flags
+> (`--name`, `--repo`, `--setup`, …) are **rejected for current/existing
+> worktrees**, so a `path:` selector is mutually exclusive with the `--repo`
+> this same fix requires. The smoke's probe did measure `selector_not_found`,
+> but did not record whether it passed `--name`, which the real dispatch does;
+> that alternative reading was never separated. Swapping in a `path:` selector
+> would ship a call the tool's own docs say will be rejected, on a measurement
+> whose conditions cannot be reconstructed — so `skills/brief/SKILL.md` now
+> carries the exact `--repo`, both documented cases, and everything known
+> about the failure, at the point where the receipt is read. Separating the
+> two readings needs one live dispatch, which Fix 3 gates.
+
 `skills/brief/SKILL.md` (~line 88) and the plan's CLI table both use
 `new-top-level`. Replace it with a real worktree selector and pass `--repo`,
 which Orca's own notes require for a new worktree ("Use exact `--repo` on the
@@ -111,6 +161,16 @@ A plain editor session is not an Orca terminal. Read paths are unaffected —
 `project setups` all work from a plain shell. Only `send` and `worker-start`
 need it. `orca terminal list --json` gives live handles; a Run records one in
 `coordinator_handle`.
+
+> ⚠ **3 — bigger than dispatching.** Measured 2026-09-02: a plain shell with no
+> `ORCA_TERMINAL_HANDLE` is **still resolved to a terminal**, and fenced from
+> every Run but that terminal's:
+> `consumer_fenced — "This coordinator terminal is bound to run_d479e1e3370b,
+> not run_a15bd6bb9939."` If that generalises it breaks the **read** path,
+> where `vizier_wait_any_run` waits on every open Run in parallel — and no
+> amount of `--from` fixes a read. The decision is written up, undecided, in
+> `docs/decisions/2026-09-02-sender-terminal.md`, with the one measurement
+> that has to come first.
 
 **This one is a design question, not a patch.** The spec assumes the first mate
 is an ordinary session. Decide deliberately — discover a handle and pass
@@ -176,13 +236,68 @@ assertion — and ideally only that one — fails. Report what you observed.
 
 ## Definition of done
 
-1. `lib/vizier-supervise-lib.sh` reads the captured shape, with a test built
+1. ✅ `lib/vizier-supervise-lib.sh` reads the captured shape, with a test built
    from a **real** captured message rather than a hand-written one.
-2. `tests/fake-orca/orca`'s `check` returns the envelope, and its message
-   fixtures come from `docs/verification/2026-09-02-smoke-orchestration.md`.
-3. An Orca lifecycle-rejection notice is never classified as a completion.
-4. `skills/brief/SKILL.md` dispatches with a real worktree selector and `--repo`.
-5. The sender-terminal decision is written down before it is implemented.
-6. Full suite green, and every new assertion proven by mutation.
-7. Then the real smoke can be attempted again — the guide is
-   `docs/verification/smoke-guide-orchestration.md`.
+   `tests/fixtures/check-delivery.json` is the app's own response, committed
+   verbatim; the rejection case is read straight out of it with no builder in
+   between. Also done, and not on this list: `lib/vizier-wake-lib.sh` (⚠ 1c),
+   the delivery/ack contract (⚠ 1b), and `lib/vizier-mailbox-lib.sh` — a new
+   single owner for the response shape, which had none, which is why two
+   callers each invented their own.
+2. ✅ `tests/fake-orca/orca`'s `check` returns the envelope — pretty-printed,
+   which is load-bearing — and models the real delivery: peek forms none,
+   a default read forms and replays one, `--ack` takes the delivery id and
+   refuses a message id with `stale_delivery`. Message fixtures come from
+   `tests/fixtures/` through one builder in `tests/helpers.sh`.
+3. ✅ An Orca lifecycle-rejection notice is never classified as a completion.
+   Gated structurally, before the body is read, on `_orcaLifecycleRejection`
+   in the payload; proven against the real notice, which releases without it.
+4. ⚠ **Partly.** `--repo` is derived from the request's own project and host
+   and passed exactly. The `new-top-level` swap was deliberately not made —
+   see ⚠ 2 above for why, and `skills/brief/SKILL.md` for what a reader hits
+   at the point of failure.
+5. ✅ Written down in `docs/decisions/2026-09-02-sender-terminal.md`, then
+   **decided and built**: read path R1 (`inbox` poll in the hook, `run-use` +
+   `check` in supervise), dispatch A (`--from` a discovered handle). Deciding
+   it needed one more measurement the handoff did not know was needed — the
+   coordinator fence is real and 1:1, which meant the parallel `check --wait`
+   fan-out in `vizier-wake-lib.sh` could never have worked either.
+6. ✅ Full suite green — 21 files, 733 assertions — and **34 mutations run,
+   34 caught**, each by the assertion meant to catch it. Five of them
+   *survived* on the first pass and were the useful ones: each exposed an
+   assertion of mine that proved nothing (a compact fake passes a
+   "not JSON lines" test just as well as a pretty one), and the assertions
+   were rewritten until the mutation bit. The battery covers
+   the rejection gate, the payload read, the message id, the per-batch ack,
+   the unreadable-envelope report, the unackable-peek report, the compact vs
+   pretty envelope, ack granularity, and the `--repo` derivation.
+7. ✅ **Run, and the whole loop closes with a real crew agent.**
+   `docs/verification/2026-09-02-smoke-real-loop.md`. The whole mailbox loop
+   closes against the live app (inbox wake → `run-use` → `check` → plan → ack
+   → drained → no re-wake), and the rejection gate was proven on a notice Orca
+   produced during the run: without it, that one batch releases three
+   dispatches that never ran.
+
+   Second attempt, after the captain trusted the folder in Claude Code: the
+   agent launched, did the work, **refused to expand the contract** when it
+   found no git remote, asked, took the captain's answer through
+   `orchestration reply`, reported honestly, and the batch released and acked.
+   Nothing in the loop needed a fix.
+
+   **All of it is now done except one coverage gap:**
+   - ✅ `skills/brief/SKILL.md` is the two-step `worktree create` **then**
+     `worker-start` shape, with no creation flags on the dispatch.
+   - ✅ `agent_prompt_blocked` is a named receipt in `brief`, with the two
+     facts that make it survivable: it latches (no CLI call clears it, not
+     even `terminal send`), and trust is per **exact path**, so trusting the
+     repo root does not cover `~/orca/workspaces/…`.
+   - ✅ The rebind rule is measured, not reasoned — `consumer_fenced`, "This
+     mailbox Delivery belongs to a fenced consumer generation" — and its
+     recovery (a fresh read forms a new delivery) is written down too.
+   - ⬜ `gh pr create` is still unexercised: the smoke repo has no git remote,
+     and creating one is an outward action nobody has asked for. This is the
+     only part of `direct-PR` never run against the real thing.
+
+   Fixed during the smoke, same bug class as the mailbox: `worker-start`,
+   `worker-show`, `worker-release` and `worker-list` all returned shapes the
+   fake and the skills had invented (§3).

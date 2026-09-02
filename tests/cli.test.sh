@@ -41,7 +41,7 @@ for s in request brief supervise delivery identity; do
   assert_eq "$(test -f "$VIZIER_HOME/dist/skills/$s/SKILL.md" && echo yes)" "yes" \
     "skill $s reached dist"
 done
-for l in vizier-home vizier-request-lib vizier-routing-lib vizier-brief-lib vizier-supervise-lib vizier-wake-lib; do
+for l in vizier-home vizier-request-lib vizier-routing-lib vizier-brief-lib vizier-mailbox-lib vizier-supervise-lib vizier-wake-lib; do
   assert_eq "$(test -f "$VIZIER_HOME/dist/lib/$l.sh" && echo yes)" "yes" \
     "library $l reached dist"
 done

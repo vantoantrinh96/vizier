@@ -40,13 +40,21 @@ mk_request one run_a open
 out=$(payload sess-a | bash "$HOOK" 2>&1); rc=$?
 assert_rc "$rc" 2 "FIX 2: a timeout exits 2 to re-arm, not exit 0"
 assert_contains "$out" "re-arm" "stderr clearly states the reason is re-arm"
-assert_contains "$(fake_orca_calls)" "--run run_a" "waited on the right run"
+# THE HOOK READS `inbox` AND NOTHING ELSE. Asserted structurally, not by
+# wording: `check` forms a DELIVERY, and a delivery the hook cannot ack -- it
+# must never ack -- would be consumed with nobody able to acknowledge it.
+# `run-use` would rebind the session out from under whatever else holds it.
+assert_contains "$(fake_orca_calls)" "orchestration inbox" "the hook reads the unfenced, cross-Run inbox"
+assert_eq "$(fake_orca_calls | grep -c 'orchestration check')" "0" \
+  "and NEVER calls check -- forming a delivery is supervise's job, not the hook's"
+assert_eq "$(fake_orca_calls | grep -c 'orchestration run-use')" "0" \
+  "and never rebinds the session either"
 
 # A message, stop_hook_active:false (the FIRST report): exit 2, prints a
 # summary to STDERR, and records that summary into last-wake -- this is the
 # FIX 1 record used to compare identity on later turns, not the
 # stop_hook_active flag alone.
-fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+fake_orca_message run_a msg_a1 worker_done "PR https://x/1" "$(fake_orca_payload dispatch-1)"
 err=$(payload sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
 assert_rc "$rc" 2 "the first report (stop_hook_active=false) exits 2"
 assert_contains "$err" "worker_done" "stderr carries the summary"
@@ -82,8 +90,11 @@ assert_eq "$stdout" "" "the ceiling also prints nothing to stdout"
 # swallowed just because the flag is true. A version that only compares the
 # flag would exit 0 and silently swallow this case -- exactly the Critical
 # this catches.
-printf '%s\n' '{"type":"escalation","run_id":"run_a","outcome":"needs captain decision"}' \
-  > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
+# Built from the captured shape, not hand-written: a literal without `read`
+# or `sequence` is not a message the wake can even see, and writing one here
+# is how a test asserts a behaviour the real app would never reach.
+: > "$VIZIER_FAKE_ORCA_STATE/queue/run_a"
+fake_orca_message run_a msg_a2 escalation "needs captain decision"
 err=$(payload_active sess-a | bash "$HOOK" 2>&1 >/dev/null); rc=$?
 assert_rc "$rc" 2 "FIX 1: a message DIFFERENT from last-wake must exit 2 even with stop_hook_active=true, not be swallowed"
 assert_contains "$err" "escalation" "stderr must carry the NEW message's summary (not the old worker_done)"

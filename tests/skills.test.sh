@@ -34,8 +34,43 @@ has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is define
 has $f "vizier_brief_assemble" "the spec comes from the library, never hand-written"
 has $f "orca orchestration task-create --spec" "exact task-create"
 has $f "orca orchestration worker-start" "exact worker-start"
-has $f "--worktree new-top-level" "isolation default"
+has $f "jq -r '.result.dispatchId'" "the dispatch id is read from the field Orca actually returns"
+has $f "agent_prompt_blocked" "a dispatch that launches but cannot be prompted is named"
+# THE WORKTREE IS MADE BY A SEPARATE COMMAND. `--worktree new-top-level` was
+# measured failing twice, the second time with --name and a valid --repo both
+# present, so no `--worktree` value creates anything.
+has $f "orca worktree create --name" "the worktree is created by its own command"
+has $f "It is two calls, not one" "and the skill says plainly that it is two calls"
+has $f '--worktree "path:$wt"' "the dispatch then SELECTS the worktree it just made"
+has $f "no creation flags at all" "and passes no creation flags, which are rejected once it exists"
 has $f "--setup run" "setup runs"
+# A dispatch that launches but never receives the task is a distinct failure
+# with no CLI recovery; without this the model retries it forever.
+has $f "agent_prompt_blocked" "the blocked-prompt failure is named"
+# A LONG ANCHOR ON PURPOSE. "agent_prompt_blocked" alone appears in the code
+# block too, so deleting the whole section that explains it leaves the short
+# anchor green -- measured. This phrase occurs only in that section, and it is
+# the load-bearing half: without it the model just retries the dispatch.
+has $f "This latches, and no CLI call clears it" \
+  "and that no CLI call recovers it, so the dispatch must not be retried"
+has $f "trust is per exact path" "and the trap that trusting the repo root is not enough"
+has $f "stage: input_accepted" "success means launched AND prompted, not just launched"
+# --repo IS REQUIRED AND MUST BE EXACT (Orca's own note on worker-start), and
+# it has to come from the request's own project/host setup record rather than
+# the working directory. The dispatch shipped without it entirely.
+has $f 'orca project setups --project "$project" --host "$host_id"' \
+  "the repo selector is derived from the request's project and host"
+has $f '--repo "path:$repo_path"' "and passed to worker-start as an exact selector"
+# worker-start is one of exactly two commands that need a sender terminal; an
+# ordinary editor session is not one, so the handle has to be discovered.
+has $f "orca terminal list --json" "a live terminal handle is discovered"
+has $f '--from "$from"' "and passed to worker-start"
+has $f "An empty \`from\` **stops the dispatch**" "no live handle stops the dispatch rather than retrying"
+has $f "An empty \`repo_path\` **stops the dispatch**" \
+  "no ready setup on the named host stops the dispatch instead of falling back"
+# selector_not_found carries no information at all -- no stage, no effects, no
+# recovery command -- so the skill has to carry what is known INSTEAD.
+has $f "selector_not_found" "the measured worktree-selector failure is named"
 has $f "--on" "the host is passed through"
 has $f "inherits the request's host" "host inheritance is stated"
 has $f "Ask the captain" "an unknown delivery mode is asked, never guessed"
@@ -61,12 +96,36 @@ has $f "vizier_supervise_plan" "dispositions come from the library"
 has $f "no OPEN request names that Run" "an unresolvable run_id is named, not left to a sed error"
 has $f "**An empty \`slug\` stops this skill.**" "and it stops the skill rather than continuing"
 has $f "orca orchestration check" "the mailbox is read with check"
+has $f "vizier-mailbox-lib.sh" "the mailbox shape library is sourced"
+# WITHOUT run-use, `check` is fenced and reads nothing. The hook that woke
+# this skill used `inbox`, which needs no binding and cannot ack -- so binding
+# is this skill's job and its absence makes every later step unreachable.
+has $f 'orca orchestration run-use --id "$run_id"' "the session binds to the Run before reading"
+has $f "Do not rebind between here and the ack" \
+  "and the rule that a rebind mid-delivery invalidates the ack"
+# The rule is MEASURED, not reasoned; pin the observed error so a future
+# rewrite cannot soften it back into a hedge.
+has $f "fenced consumer generation" "with the exact error a fenced delivery gives"
+has $f "never assume the old ack" "and the recovery, which is to re-plan from a fresh delivery"
+# The rejection notice reads exactly like a completion and is not one; if this
+# rule leaves the skill, the model has no reason to treat the hold as real.
+has $f "hold lifecycle-rejection" "Orca's own rejection notice has its own named disposition"
 has $f "--ack" "ack exists"
 has $f "only after" "ack comes only after processing"
 has $f '**`reply`**' "the reply disposition is named as its own decision"
 has $f "answered or escalated before the batch is" \
   "a reply must be discharged BEFORE the ack, not after"
-has $f 'one `--ack` per `ACK` line' "every delivery in the batch is acked, not just the last"
+# ONE ACK FOR THE WHOLE BATCH, and the handle is the delivery's. Measured:
+# `--ack` takes `result.deliveryId`, clears the entire delivery, and refuses a
+# message id with `stale_delivery`. The skill previously told the model to
+# issue one `--ack` per message, which against the real app is a call that
+# always fails -- so the anchor pins the rule AND the reason.
+has $f '`--ack` for the whole batch' "the ack names the delivery, not a message"
+has $f 'stale_delivery' "and the skill says what happens if a message id is used instead"
+# THE READ MUST NOT PEEK. A peek forms no delivery, so a peeked batch has no
+# ack handle at all and replays forever. This is the one line whose loss would
+# make the whole ack section unreachable in practice.
+has $f '**No `--peek`, and no `--all`.**' "the batch is read as a delivery, never peeked"
 # PRESENCE IS NOT ENOUGH HERE. "discharge a reply before the ack" and "the
 # single consolidated report is what actually reaches the captain" are both
 # rules a model follows IN SECTION ORDER, so if the ack section sits above
@@ -86,7 +145,8 @@ assert_eq "$ack_after_report" "yes" \
   "the ack step comes after the report that puts an escalation in front of the captain"
 has $f "puts an escalation in front of the captain" \
   "and the skill says so, so the order is a stated rule and not an accident"
-has $f "agent_terminal_handle" "terminal transfer reads the handle"
+has $f "assignee_handle" "terminal transfer reads the handle Orca actually returns"
+has $f "recovery" "a release receipt is followed by its own recovery sentence"
 has $f "--terminal" "transfer reuses the terminal"
 has $f "worker-release --dispatch" "release is by dispatch"
 has $f "release_pending" "pending release receipts are handled"

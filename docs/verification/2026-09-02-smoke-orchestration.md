@@ -1,5 +1,15 @@
 # Real orchestration smoke — findings
 
+> **Superseded in part, 2026-09-02.** Everything below still stands as
+> recorded, but capturing the whole `check` surface before fixing it found
+> more: the response is one **pretty-printed** envelope (so the wake hook was
+> broken too, not just supervision), the ack handle is the **delivery's** and
+> there is one per batch (`--ack <a message id>` is refused), a **peeked batch
+> can never be acked at all**, and a coordinator terminal is fenced to one Run
+> (`consumer_fenced`). Read
+> `docs/verification/2026-09-02-mailbox-delivery-contract.md` alongside this —
+> §1's mapping table here is correct but not sufficient.
+
 Orca **1.4.193**, `state=ready reachable=true`, 2026-09-02.
 
 The smoke did not complete a loop. It stopped at `worker-start`, and in stopping
@@ -159,5 +169,8 @@ either flag correctly.
 - Orca repo registered: `/Users/toantv/tmp/vizier-smoke`, id `47ce5164-…`
 - Runs `run_a15bd6bb9939` (the live smoke, against `platform`) and
   `run_d479e1e3370b` (this diagnostic) both still open, with tasks in `ready`
+  — **update 2026-09-02:** `run_d479e1e3370b`'s mailbox was deliberately
+  drained while measuring the ack contract, after every message in it was
+  captured to `tests/fixtures/`. `run_a15bd6bb9939` is untouched.
 - No worktree was created, no dispatch started, no branch or PR anywhere.
   **Nothing was written to the `platform` repo.**

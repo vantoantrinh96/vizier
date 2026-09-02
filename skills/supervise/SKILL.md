@@ -15,6 +15,7 @@ before the first `source`, the same way every other skill does:
 VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 . "$VIZIER_DIST/lib/vizier-home.sh"
 . "$VIZIER_DIST/lib/vizier-request-lib.sh"
+. "$VIZIER_DIST/lib/vizier-mailbox-lib.sh"
 . "$VIZIER_DIST/lib/vizier-supervise-lib.sh"
 . "$VIZIER_DIST/lib/vizier-brief-lib.sh"
 ```
@@ -22,6 +23,10 @@ VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"
 `brief-lib` is here for `vizier_project_mode` in §2 — it is not only `brief`'s
 library. Without it that call is a `command not found` swallowed by `||
 default_mode=""`, which silently holds every healthy `direct-PR` worker.
+
+`mailbox-lib` owns the shape of a `check --json` response and must be sourced
+**before** `supervise-lib`, which calls into it. Without it every message is
+`command not found` inside the plan, and the plan fails closed with no ack.
 
 ## 0. Read run_id off the wake message itself
 
@@ -58,19 +63,58 @@ empty output when nothing matches, so without it every later step runs against
 fails closed *unexplained* — and an unexplained failure in a wake hook is
 indistinguishable from the hook not having fired.
 
-## 1. Read the batch
+## 1. Bind this session to the Run, then read the batch
 
 ```bash
-batch=$(orca orchestration check --run "$run_id" --peek --json)
+orca orchestration run-use --id "$run_id" --json
+batch=$(orca orchestration check --run "$run_id" --json)
 ```
+
+**`run-use` is not optional and it is not a no-op.** Reading a Run's mailbox
+with `check` is done as that Run's *bound coordinator terminal*. The binding
+is 1:1: a session bound to another Run — or to none — gets `consumer_fenced`
+and reads nothing. This is why the wake hook uses `inbox` instead, which needs
+no binding; `inbox` is also why you got here, and it cannot ack, which is why
+this step exists. See `docs/decisions/2026-09-02-sender-terminal.md`.
+
+It needs no sender terminal: measured, `run-use` from an ordinary session with
+no `--from` returns `ok:true`.
+
+**Do not rebind between here and the ack in §6.** Measured: every `run-use`
+bumps the Run's `consumer_generation`, and a delivery formed before a rebind
+is refused at the ack —
+
+```
+consumer_fenced
+"This mailbox Delivery belongs to a fenced consumer generation."
+```
+
+Bind once, process one Run to completion, then move on. If it does happen,
+nothing is lost: read the mailbox again and it forms a **new** delivery
+(`replayed: false`) over the same messages, which acks normally. Report it and
+re-plan from the new batch — never assume the old ack "probably went through".
+
+**No `--peek`, and no `--all`.** This is not a style choice and it is not an
+optimisation. Only a default read forms a *delivery*: Orca returns the batch
+together with `result.deliveryId`, replays that same delivery on every later
+read until it is acked, and accepts **only that id** at `--ack`. A peek
+returns the messages and forms no delivery, so a peeked batch has no ack
+handle at all — the messages would be processed, released, reported, and then
+replayed forever, because nothing could ever acknowledge them. Measured:
+`--ack <a message id>` is refused outright with `stale_delivery`.
+
+The reply is one pretty-printed envelope, not one message per line. Do not
+read it with `head`, `grep`, or a line loop — `vizier_supervise_plan` takes
+the raw envelope and `mailbox-lib` is the only thing that opens it.
 
 ## 2. Plan every message before acting on any
 
 Build a per-dispatch mode map from the request file's own dispatch notes.
 `brief` writes one line per dispatch, `task <id> -> dispatch <id> (<mode>)` —
 keyed by dispatch id. The per-task override note is **not** a usable join
-key here: it's keyed by task number, and the batch you're resolving only
-carries `dispatch_id`. Pull dispatch id and mode out of the dispatch note —
+key here: it's keyed by task number, and the only dispatch id the batch
+carries is the `dispatchId` inside each message's `payload` string, which is
+what the plan looks up. Pull dispatch id and mode out of the dispatch note —
 **anchored to the start of the line**, never a bare `.*` search across the
 whole file: the request body holds the captain's own words verbatim, and a
 captain who pastes a previous run's notes into a new request can reproduce
@@ -94,24 +138,34 @@ plan=$(printf '%s\n' "$batch" | vizier_supervise_plan "$default_mode" "$map")
 printf '%s\n' "$plan"
 ```
 
-Keep the plan in `$plan`: §6 acks off it, one `--ack` per `ACK` line.
+Keep the plan in `$plan`: §6 acks off it, with the single `--ack` that
+clears the whole delivery.
 
 This is **one call over the whole batch**, never one call per message —
 `vizier_supervise_plan` resolves the mode per dispatch internally from the
 map you gave it. Splitting it into per-message calls breaks the ACK
 invariant below: "did anything fail to classify" has to be computed over
-the one true peeked batch, not recomputed separately per message.
+the one true batch, not recomputed separately per message. One ack clears
+the whole delivery, so that question has exactly one answer for the batch.
 `vizier_supervise_plan` treats anything other than the exact string
 `direct-PR` — including an empty or unrecognised mode, from the map or from
 `default_mode` — as `no-mistakes` and requires the outcome line.
 
-Each `PLAN <delivery_id> <disposition> <reason>` line is a decision:
+Each `PLAN <message_id> <disposition> <reason>` line is a decision. The id
+is the message's own `.id` — useful for reporting and for matching a message
+back to its plan line, but **not** an ack handle; see §6.
 
 - **`release`** — the work is over. A *failed* `worker_done` releases too.
 - **`hold`** — a task whose body has no terminal `axi_outcome:` line, under
   the strict (default) check. **Do not release.** A pipeline run may still
   own the branch. `orca orchestration worker-read --dispatch <id>` to
   diagnose, then report to the captain.
+- **`hold lifecycle-rejection`** — Orca rejected a `worker_done` and rewrote
+  it into a notice. It still calls itself a `worker_done` and it quotes the
+  original body verbatim, terminal outcome line and all, so it reads exactly
+  like a completion and is not one: the dispatch it names does not exist.
+  Never release on it. Report it — something dispatched wrong, and the
+  captain needs to know which task has no worker behind it.
 - **`reply`** — a `question` or an `escalation`: **a human owes an answer.**
   Never a release, whatever the body says. This is the one disposition that
   leaves work outstanding after the plan is done, and §4 must clear it before
@@ -119,9 +173,19 @@ Each `PLAN <delivery_id> <disposition> <reason>` line is a decision:
 - **`none`** — not a terminal event. Never release on a timeout, TUI idle,
   heartbeat, status, or a stale `worker_done`.
 
-If the plan prints no `ACK` line, something in the batch did not classify.
-**Do not ack anything.** Orca replays an unacked batch, so nothing is lost;
-acking now would lose a message permanently.
+If the plan prints no `ACK` line, **do not ack anything.** Orca replays an
+unacked delivery, so nothing is lost; acking now would lose the whole batch
+permanently, because one ack clears all of it. Three ways that happens, and
+they are not the same problem:
+
+- an `UNPARSEABLE` line — a message in the batch did not classify. Report it
+  with the message beside it.
+- `UNPARSEABLE envelope <code>` — the response could not be read at all. A
+  real one is `consumer_fenced`: this coordinator terminal is bound to a
+  different Run. Nothing was read, so there is nothing to process; say so and
+  stop.
+- `UNACKABLE no-delivery-id` — the batch was peeked, so it has no ack handle.
+  Re-read it without `--peek` before doing anything else.
 
 ## 3. Act on each `release`
 
@@ -130,7 +194,7 @@ Decide where the terminal goes **before** acking.
 A follow-on task exists for the same agent → transfer, don't release:
 
 ```bash
-handle=$(orca orchestration worker-show --dispatch "<id>" --json | jq -r '.result.worker.agent_terminal_handle')
+handle=$(orca orchestration worker-show --dispatch "<id>" --json | jq -r '.result.dispatch.assignee_handle')
 orca orchestration worker-start --task "<next_task>" --terminal "$handle" --run "$run_id" --json
 ```
 
@@ -140,9 +204,15 @@ Otherwise release:
 orca orchestration worker-release --dispatch "<id>" --json
 ```
 
-A receipt of `release_pending` or `release_unknown` → follow the receipt's own
-recovery action. **Substituting `terminal close` is forbidden.** Repeating
-`worker-release` after a replayed delivery is safe.
+The receipt is `.result` itself — `{dispatchId, state, processAction, archive,
+lastError, recovery}` — not `.result.release`. A `state` of `release_pending`
+or `release_unknown` → follow the receipt's **own `recovery` sentence**, which
+names the exact command to run. **Substituting `terminal close` is
+forbidden.** Repeating `worker-release` after a replayed delivery is safe.
+
+`release_unknown` is not rare and not a crash: it was the real answer for a
+dispatch whose terminal had already gone (`lastError: "tab_not_found"`), with
+the archive still captured. Report it, run its recovery, do not retry blind.
 
 The captain asked to keep a terminal (`worker-retain`) → keep it.
 
@@ -186,20 +256,27 @@ message per delivery, and not a narration of the steps above.
 - A worker gone unusually quiet → `orca orchestration worker-read --dispatch <id>`
   to diagnose. Report what you found; do not guess.
 
-## 6. Ack last — one `--ack` per `ACK` line
+## 6. Ack last — one `--ack` for the whole batch
 
 Last means last: after §3's releases and after §5's report, never before
-either. The plan prints **one `ACK <delivery_id>` line per message in the
-batch**, in batch order. Issue one `--ack` for each of them. An ack removes
-exactly the delivery it names, so a single `--ack` for a multi-message batch
-leaves the rest queued — the next wake replays them, re-plans a release,
-re-runs `worker-release` on a dispatch already released, and re-reports the
-same PR to the captain.
+either.
+
+The plan prints **at most one `ACK <delivery_id>` line**, and the id is the
+*batch's*, not any message's. That is Orca's contract, measured: a default
+read forms one delivery over the whole batch, `--ack` takes that
+`result.deliveryId` and clears all of it at once, and `--ack <a message id>`
+is refused with `stale_delivery`. So there is exactly one call to make, and
+acking per message is not a safer version of it — it is a call that fails.
 
 ```bash
-printf '%s\n' "$plan" | sed -n 's/^ACK //p' | while IFS= read -r ack_id; do
-  orca orchestration check --run "$run_id" --ack "$ack_id" --json
-done
+ack_id=$(printf '%s\n' "$plan" | sed -n 's/^ACK //p')
+[ -n "$ack_id" ] && orca orchestration check --run "$run_id" --ack "$ack_id" --json
 ```
 
-Acking an id twice is harmless; leaving one unacked is not.
+Because one ack clears the whole delivery, the all-or-nothing rule in §2 is
+not a nicety: there is no way to acknowledge the messages you understood and
+leave the rest. Ack only when the plan says to.
+
+Acking the same delivery twice is harmless — it is already gone, and the
+second call simply reports nothing to acknowledge. Leaving it unacked is not:
+the delivery replays on every wake until it is cleared.

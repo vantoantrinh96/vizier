@@ -45,8 +45,61 @@ vizier_test_teardown() {
   [ -n "${VIZIER_TEST_TMP:-}" ] && rm -rf "$VIZIER_TEST_TMP"
 }
 
-fake_orca_queue() {  # <run_id> <json_line>
+fake_orca_queue() {  # <run_id> <json_line> -- raw escape hatch, prefer fake_orca_message
   printf '%s\n' "$2" >> "$VIZIER_FAKE_ORCA_STATE/queue/$1"
+}
+
+# THE MESSAGE SHAPE, COPIED FROM A REAL RESPONSE, IN ONE PLACE.
+# Every field name, and the fact that `payload` is a JSON *string* rather than
+# an object, comes from tests/fixtures/check-delivery.json -- a real
+# `orca orchestration check` response captured from Orca 1.4.193 on
+# 2026-09-02. Tests used to hand-write `{"delivery_id":…,"dispatch_id":…}`
+# message literals; none of those field names has ever existed, and because
+# the parser was written from the same imagination the suite stayed green
+# while supervision was completely inert against the real app. Hand-writing a
+# message literal in a test is what made that possible, so tests build them
+# here now, from the captured shape.
+fake_orca_payload() {  # <dispatch_id> [<outcome>] [<extra_json_object>]
+  # `payload` is a STRING containing JSON, so `-r` (raw) is required: the
+  # value handed to fake_orca_message must be the JSON *text*, which that
+  # function then encodes as a string field. Encoding it as an object here
+  # would reproduce the original bug inside the fixture builder itself.
+  #
+  # The default `{}` goes through a variable and NOT through
+  # `${3:-{}}` -- bash miscounts the braces in a `${VAR:-...}` default that
+  # contains any, and silently produces corrupt JSON. tests/fake-orca/orca
+  # carries the same warning over the same mistake.
+  local extra="${3:-}"
+  [ -n "$extra" ] || extra='{}'
+  jq -rn --arg d "$1" --arg o "${2:-succeeded}" --argjson x "$extra" \
+    '({taskId:"task_fake", dispatchId:$d, outcome:$o} + $x) | tojson'
+}
+
+fake_orca_message_json() {  # <run_id> <msg_id> <type> [<body>] [<payload_json_string>] [<sequence>]
+  # Prints one message. `fake_orca_message` queues it; disposition tests that
+  # need a single message and no mailbox use this directly, so that BOTH kinds
+  # of test are pinned to the same captured shape and neither can drift.
+  local run="$1" id="$2" type="$3" body="${4:-}" payload="${5:-}" seq="${6:-1}"
+  jq -c --arg id "$id" --arg run "$run" --arg t "$type" --arg b "$body" \
+     --arg p "$payload" --argjson seq "$seq" -n \
+    '{id:$id, run_id:$run, delivery_contract:"current_delivery",
+      from_handle:"term_fake", to_handle:("run:" + $run),
+      subject:($b[0:40]), body:$b, type:$t, priority:"normal", thread_id:null,
+      payload:(if $p == "" then null else $p end),
+      read:0, sequence:$seq,
+      created_at:"2026-09-02T00:00:00Z", delivered_at:null,
+      sender_pane_key:"fake-pane"}'
+}
+
+fake_orca_message() {  # <run_id> <msg_id> <type> [<body>] [<payload_json_string>]
+  local run="$1" id="$2" type="$3" body="${4:-}" payload="${5:-}"
+  local seq qf="$VIZIER_FAKE_ORCA_STATE/queue/$run"
+  # Guarded with `[ -f ]` rather than `wc -l < "$qf" 2>/dev/null`: the shell
+  # performs the input redirection BEFORE applying `2>/dev/null`, so a missing
+  # file -- which is simply the first message on a run -- printed a bare
+  # `No such file or directory` onto the test run's stderr.
+  if [ -f "$qf" ]; then seq=$(( $(wc -l < "$qf") + 1 )); else seq=1; fi
+  fake_orca_message_json "$run" "$id" "$type" "$body" "$payload" "$seq" >> "$qf"
 }
 
 fake_orca_calls() { cat "$VIZIER_FAKE_ORCA_STATE/calls.log" 2>/dev/null; }
@@ -67,10 +120,15 @@ fake_orca_seed_host() {  # <id> <name> <kind>
     >> "$VIZIER_FAKE_ORCA_STATE/hosts"
 }
 
-fake_orca_seed_setup() {  # <projectId> <hostId> <setupState>
-  jq -cn --arg p "$1" --arg h "$2" --arg s "$3" \
+fake_orca_seed_setup() {  # <projectId> <hostId> <setupState> [<path>]
+  # The path DEFAULTS per host rather than being one shared literal: brief
+  # derives `--repo path:<...>` from the setup record for a specific project
+  # on a specific host, and if every seeded setup carried the same path a test
+  # that resolved the wrong host -- or no host at all -- would still assert the
+  # right answer.
+  jq -cn --arg p "$1" --arg h "$2" --arg s "$3" --arg path "${4:-/seeded/$2}" \
     '{id:("setup-"+$h),projectId:$p,hostId:$h,setupState:$s,kind:"git",
-      setupMethod:"imported-existing-folder",displayName:"seeded",path:"/seeded"}' \
+      setupMethod:"imported-existing-folder",displayName:"seeded",path:$path}' \
     >> "$VIZIER_FAKE_ORCA_STATE/setups"
 }
 
@@ -81,6 +139,11 @@ fake_orca_set_status() {  # <hostName|""> <state> <reachable>
   jq -cn --arg s "$2" --argjson r "$3" \
     '{state:$s,reachable:$r,runtimeId:"00000000-0000-0000-0000-000000000000",
       appVersion:"0.0.0",capabilities:["orchestration.contract.v1"]}' > "$f"
+}
+
+fake_orca_seed_terminal() {  # <handle> [<title>]
+  jq -cn --arg h "$1" --arg t "${2:-~}" '{handle:$h,title:$t}' \
+    >> "$VIZIER_FAKE_ORCA_STATE/terminals"
 }
 
 fake_orca_seed_worker() {  # <dispatch_id> <terminal_handle>

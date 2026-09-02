@@ -24,6 +24,8 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd)" || exit 0
 # shellcheck source=/dev/null
 . "$LIB/vizier-home.sh"
 # shellcheck source=/dev/null
+. "$LIB/vizier-mailbox-lib.sh"
+# shellcheck source=/dev/null
 . "$LIB/vizier-wake-lib.sh"
 
 command -v jq >/dev/null 2>&1 || exit 0

@@ -2,11 +2,16 @@
 # Decides what a mailbox batch means. Pure: never calls orca, never releases
 # anything. The `supervise` skill executes what this plans.
 #
+# REQUIRES lib/vizier-mailbox-lib.sh to be sourced first -- it owns every fact
+# about the shape of an `orca orchestration check --json` response. Nothing in
+# this file may reach into that shape directly; that split is the whole point
+# of the fix that produced it.
+#
 # WHY A PLAN AND NOT AN EXECUTOR. The spec's rule is "ack only after every
 # message in the batch is processed". Acking early loses messages
 # permanently -- replay-until-ack is the only reason a hook that dies
 # mid-flight is safe. As prose in a skill that rule is forgettable; here the
-# ACK lines simply are not printed unless every message was classified, so the
+# ACK line simply is not printed unless every message was classified, so the
 # rule holds even when the model is in a hurry.
 #
 # EVERY UNCERTAIN CASE FAILS CLOSED. `none` and `hold` cost the captain a
@@ -36,24 +41,59 @@ _vizier_axi_outcome() {  # <body> -- prints each DISTINCT axi_outcome value foun
   # tell the worker never to write the line except as its one real, final
   # report (see vizier_brief_delivery no-mistakes), which is the actual
   # mitigation for this case, not this matcher.
+  #
+  # ONE REAL CASE OF THAT GAP IS NOT LEFT TO THE BRIEF: Orca's own rejection
+  # notice quotes the rejected message's body verbatim, terminal outcome line
+  # and all. That one is caught structurally in vizier_msg_disposition,
+  # BEFORE the body is ever read -- see the rejection gate there.
   local body="$1"
   printf '%s\n' "$body" \
     | sed -n 's/^[[:space:]]*axi_outcome:[[:space:]]*\([A-Za-z-][A-Za-z-]*\).*/\1/p' \
     | sort -u
 }
 
-vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|reply|none> <reason>"
-  # Three separate jq reads rather than one @tsv row: a body legitimately
-  # contains newlines (the axi_outcome line is on its own line), and @tsv
-  # would escape them into the middle of a single field.
+vizier_msg_disposition() {  # <mode> <message_json> -- "<release|hold|reply|none> <reason>"
+  # Separate jq reads rather than one @tsv row: a body legitimately contains
+  # newlines (the axi_outcome line is on its own line), and @tsv would escape
+  # them into the middle of a single field.
   local mode="$1" line="$2"
-  local type dispatch body
+  local type dispatch body rejection
   local values value_count outcome
   type=$(printf '%s' "$line" | jq -r '.type // ""' 2>/dev/null)
-  dispatch=$(printf '%s' "$line" | jq -r '.dispatch_id // ""' 2>/dev/null)
   body=$(printf '%s' "$line" | jq -r '.body // ""' 2>/dev/null)
+  # THE DISPATCH ID LIVES INSIDE `.payload`, WHICH IS A JSON STRING. There is
+  # no top-level `.dispatch_id` and there never was; reading one is what made
+  # every real worker_done look stale.
+  dispatch=$(vizier_mailbox_payload_field "$line" dispatchId)
+  rejection=$(vizier_mailbox_payload_field "$line" _orcaLifecycleRejection)
 
   [ -n "$type" ] || { printf 'none unparseable'; return 0; }
+
+  # ORCA'S OWN REJECTION NOTICE IS NOT A COMPLETION REPORT -- and it is the
+  # single most dangerous message in the mailbox, because it is disguised as
+  # one. Send a `worker_done` naming a dispatch Orca does not know and the
+  # call does not fail: Orca ACCEPTS it and rewrites it into a notice that
+  # still carries `type: worker_done`, still carries the original
+  # `dispatchId` in its payload (so the stale-dispatch guard does not bite),
+  # and QUOTES THE ORIGINAL BODY VERBATIM under an "Original body:" heading --
+  # terminal `axi_outcome:` line included.
+  #
+  # Measured against the real captured notice (tests/fixtures/check-delivery
+  # .json): with the field access fixed and this gate removed, it plans
+  # `release axi-outcome=passed` under the strict mode and `release ok` under
+  # direct-PR. That is a terminal released on the strength of a message whose
+  # entire content is Orca saying the terminal event never happened.
+  #
+  # Checked BEFORE the type switch, not inside the worker_done branch: what
+  # makes a rejection unsafe is that it is a lifecycle notice wearing another
+  # message's clothes, and nothing guarantees `worker_done` is the only set
+  # of clothes it can wear. `hold`, not `none`: something is genuinely wrong
+  # with a dispatch and the captain needs to hear about it, and `none` is
+  # acked away in silence.
+  if [ -n "$rejection" ]; then
+    printf 'hold lifecycle-rejection'
+    return 0
+  fi
 
   # `reply` EXISTS SO THE PLAN CAN SAY "A HUMAN OWES AN ANSWER". Before it,
   # a question got `none not-terminal` -- the same disposition as a
@@ -118,15 +158,23 @@ vizier_msg_disposition() {  # <mode> <json_line> -- "<release|hold|reply|none> <
   return 0
 }
 
-vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON lines on stdin
+vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- RAW check --json output on stdin
+  # STDIN IS THE RAW ENVELOPE, exactly as `orca orchestration check --json`
+  # printed it. It is NOT newline-delimited JSON and never was: the real
+  # command pretty-prints one envelope, in `--wait` mode as much as out of
+  # it, so a 3-message batch fed to the old JSON-lines reader produced 77
+  # `UNPARSEABLE` lines, no plan, and no ack -- supervision was inert
+  # against the real app while its own tests were green, because the test
+  # double had been built from the same invented shape as the parser.
+  #
   # WHY THE BATCH STAYS WHOLE, EVEN THOUGH THE MODE IS RESOLVED PER MESSAGE.
   # An earlier version of the calling skill called this once PER MESSAGE, to
   # get a per-dispatch mode -- that broke the ACK invariant below: an
   # unparseable message in one call could no longer suppress the ACK a
   # different call still printed, because "did anything fail to classify"
-  # was computed per call instead of over the one true peeked batch. So the
-  # mode varies per line, but the loop, the UNPARSEABLE/bad tracking, and
-  # the all-or-nothing ACK decision all stay batch-wide, exactly as before.
+  # was computed per call instead of over the one true batch. So the mode
+  # varies per line, but the loop, the UNPARSEABLE/bad tracking, and the
+  # all-or-nothing ACK decision all stay batch-wide, exactly as before.
   #
   # <mode_map_file>, if given, is lines of `<dispatch_id><TAB><mode>` --
   # the caller builds it from the request file's own
@@ -155,34 +203,45 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
   # keeping stray prose out of the map in the first place; this rule is the
   # second layer, for on the rare case a lookalike line still gets in.
   #
-  # ONE `ACK <delivery_id>` LINE PER CLASSIFIED DELIVERY, NOT ONE FOR THE
-  # BATCH. An earlier version printed only `ACK <last id>`, the skill issued
-  # one `--ack`, and an ack removes exactly one delivery -- so a two-message
-  # batch left the first message queued. The next wake replayed it: it
-  # re-planned a release, re-ran `worker-release` on an already-released
-  # dispatch, and re-reported the same PR to the captain.
+  # ONE `ACK <delivery_id>` LINE FOR THE WHOLE BATCH, and the id is the
+  # batch's, not any message's. MEASURED, not assumed: a batch read without
+  # `--peek`/`--all` is a *delivery*, named by `result.deliveryId`; reading
+  # again before acking replays the same delivery id with `replayed: true`;
+  # `--ack <that id>` clears the whole batch and echoes it back in
+  # `acknowledged`. Acking a MESSAGE id is refused outright with
+  # `stale_delivery` -- so the previous design here, which printed one ACK
+  # line per message and defended that as "correct either way", was not
+  # correct either way. It was correct in neither: every one of those acks
+  # would have been rejected, and the batch would have replayed forever.
   #
-  # Nobody has confirmed whether real Orca acks cumulatively. Acking each id
-  # explicitly is correct EITHER WAY -- against a cumulative ack the extra
-  # calls are no-ops on already-removed deliveries, which the skill already
-  # has to tolerate anyway (a replayed delivery makes a repeated
-  # worker-release safe by the same reasoning). Assuming cumulative acks is
-  # only correct if the assumption holds.
-  #
-  # The all-or-nothing rule is unchanged and still batch-wide: none of these
-  # lines is printed if any message in the batch failed to classify.
+  # The all-or-nothing rule is unchanged: the ACK line is not printed if any
+  # message in the batch failed to classify.
   local default_mode="$1" map_file="${2:-}"
-  local plan="" acks="" bad=0
+  local raw plan="" bad=0 seen=0 delivery code
   local line id dispatch mode looked
+  raw=$(cat)
+
+  # AN UNREADABLE ENVELOPE IS NOT AN EMPTY MAILBOX. `ok:false` (a real one:
+  # `consumer_fenced`, when this coordinator terminal is bound to a different
+  # Run), a truncated read, orca printing nothing at all, or any future shape
+  # drift all land here -- and all of them are reported, never silently
+  # treated as "no traffic". Silence is precisely how the original bug hid.
+  if ! vizier_mailbox_ok "$raw"; then
+    code=$(vizier_mailbox_error_code "$raw")
+    printf 'UNPARSEABLE envelope %s\n' "${code:-unreadable}"
+    return 0
+  fi
+  delivery=$(vizier_mailbox_delivery_id "$raw")
+
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    # ASSUMES ORCA NEVER REPEATS A delivery_id WITHIN ONE BATCH. This is
-    # not re-checked here: a duplicate would print two PLAN lines and two
-    # identical ACK lines for the same id, which is silently redundant
-    # rather than loud. Orca's mailbox contract guarantees unique ids, so
-    # this is a documented reliance on that guarantee, not a gap this
-    # function closes.
-    id=$(printf '%s' "$line" | jq -r '.delivery_id // empty' 2>/dev/null)
+    seen=$((seen + 1))
+    # ASSUMES ORCA NEVER REPEATS A MESSAGE id WITHIN ONE BATCH. This is
+    # not re-checked here: a duplicate would print two PLAN lines for the
+    # same id, which is silently redundant rather than loud. Orca's mailbox
+    # contract guarantees unique ids, so this is a documented reliance on
+    # that guarantee, not a gap this function closes.
+    id=$(printf '%s' "$line" | jq -r '.id // empty' 2>/dev/null)
     if [ -z "$id" ]; then
       plan="${plan}UNPARSEABLE
 "
@@ -191,7 +250,7 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
     fi
     mode="$default_mode"
     if [ -n "$map_file" ] && [ -r "$map_file" ]; then
-      dispatch=$(printf '%s' "$line" | jq -r '.dispatch_id // empty' 2>/dev/null)
+      dispatch=$(vizier_mailbox_payload_field "$line" dispatchId)
       if [ -n "$dispatch" ]; then
         # END-block accumulation, not `{print;exit}` on first match: see
         # the LAST MATCHING LINE WINS comment above vizier_supervise_plan.
@@ -201,16 +260,28 @@ vizier_supervise_plan() {  # <default_mode> [<mode_map_file>] -- batch JSON line
     fi
     plan="${plan}PLAN $id $(vizier_msg_disposition "$mode" "$line")
 "
-    acks="${acks}ACK $id
-"
-  done
+  done < <(vizier_mailbox_messages "$raw")
+
   printf '%s' "$plan"
-  # No ACK at all when anything in the batch failed to classify -- not even
-  # for the messages that DID classify. Orca replays an unacked batch, so
-  # withholding the acks loses nothing and re-delivers everything; acking a
-  # batch we did not fully understand loses a message for good.
-  if [ "$bad" -eq 0 ]; then
-    printf '%s' "$acks"
+
+  # An empty batch is a real, healthy answer -- a wait that timed out, or a
+  # mailbox already drained. Nothing to plan and nothing to ack.
+  [ "$seen" -gt 0 ] || return 0
+  # No ACK at all when anything in the batch failed to classify. Orca replays
+  # an unacked delivery, so withholding the ack loses nothing and re-delivers
+  # everything; acking a batch we did not fully understand loses all of it for
+  # good, because one ack clears the whole delivery.
+  [ "$bad" -eq 0 ] || return 0
+  if [ -n "$delivery" ]; then
+    printf 'ACK %s\n' "$delivery"
+  else
+    # A BATCH THAT CANNOT BE ACKED SAYS SO. Only a default read creates a
+    # delivery; `--peek` and `--all` do not, so a caller that peeks has
+    # messages it has fully processed and no handle to acknowledge them
+    # with. Orca will replay them forever. Printing nothing here would make
+    # that indistinguishable from a batch withheld for a classification
+    # failure -- the same silence the rest of this file exists to prevent.
+    printf 'UNACKABLE no-delivery-id\n'
   fi
   return 0
 }

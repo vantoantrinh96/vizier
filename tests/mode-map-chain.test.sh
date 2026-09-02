@@ -26,6 +26,7 @@ set -u
 vizier_test_setup
 . "$VIZIER_TEST_REPO/lib/vizier-home.sh"
 . "$VIZIER_TEST_REPO/lib/vizier-request-lib.sh"
+. "$VIZIER_TEST_REPO/lib/vizier-mailbox-lib.sh"
 . "$VIZIER_TEST_REPO/lib/vizier-supervise-lib.sh"
 
 BRIEF_SKILL="$VIZIER_TEST_REPO/skills/brief/SKILL.md"
@@ -83,14 +84,18 @@ assert_contains "$map_content" "$(printf '%s\t%s' "$dispatch_b" "$mode_b")" "the
 map_file="$VIZIER_TEST_TMP/chain-map"
 printf '%s\n' "$map_content" > "$map_file"
 
-batch=$(printf '%s\n%s\n' \
-  "{\"delivery_id\":\"c1\",\"type\":\"worker_done\",\"dispatch_id\":\"$dispatch_a\",\"outcome\":\"succeeded\",\"body\":\"PR https://x/1\"}" \
-  "{\"delivery_id\":\"c2\",\"type\":\"worker_done\",\"dispatch_id\":\"$dispatch_b\",\"outcome\":\"succeeded\",\"body\":\"still running, no outcome yet\"}")
-plan=$(printf '%s\n' "$batch" | vizier_supervise_plan direct-PR "$map_file")
+# The batch is a REAL envelope from fake-orca, and each dispatch id sits where
+# Orca actually puts it: inside the `payload` JSON string. That is the join
+# this whole chain depends on -- brief writes the note, supervise greps the
+# map out of it, and the plan looks the dispatch up from the payload.
+fake_orca_message run-c c1 worker_done "PR https://x/1" "$(fake_orca_payload "$dispatch_a")"
+fake_orca_message run-c c2 worker_done "still running, no outcome yet" "$(fake_orca_payload "$dispatch_b")"
+orca orchestration run-use --id "run-c" --json >/dev/null
+plan=$(orca orchestration check --run run-c --json | vizier_supervise_plan direct-PR "$map_file")
 
 assert_contains "$plan" "PLAN c1 release ok" "the direct-PR-mapped dispatch releases"
 assert_contains "$plan" "PLAN c2 hold no-axi-outcome" "the no-mistakes-mapped dispatch holds, in the SAME call"
-assert_eq "$(printf '%s\n' "$plan" | tail -1)" "ACK c2" "the mixed batch is still ackable as a whole"
+assert_eq "$(printf '%s\n' "$plan" | grep -c '^ACK ')" "1" "the mixed batch is ackable as ONE whole delivery"
 
 vizier_test_teardown
 vizier_test_report
