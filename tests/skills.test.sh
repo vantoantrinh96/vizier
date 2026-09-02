@@ -88,6 +88,15 @@ f=skills/supervise/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "supervise skill exists"
 has $f 'VIZIER_DIST="${VIZIER_HOME:-$HOME/.vizier}/dist"' "VIZIER_DIST is defined, not assumed"
 has $f "vizier_supervise_plan" "dispositions come from the library"
+# THE ANCHORED EXTRACTION IS NOT RE-INLINED HERE. It lives in
+# vizier_request_dispatch_notes, shared with activation's reconciliation; two
+# copies of one anchored pattern in two files is two chances for one of them
+# to drift open. The skill must call the library, and must say why.
+has $f "vizier_request_dispatch_notes" "the dispatch notes come from the shared library reader"
+has $f "Do not re-inline that pattern here" \
+  "and the skill forbids re-inlining it, naming reconciliation as the other reader"
+assert_eq "$(grep -c "^sed -n 's/\^task " "$R/$f" || true)" "0" \
+  "the old in-prose sed really is gone, not merely joined by a library call"
 # vizier_request_slug_for_run returns rc 0 with EMPTY output when no open
 # request names the Run, so an unguarded skill runs the rest of its steps
 # against vizier_request_path "" and the only symptom is a bare
@@ -181,6 +190,45 @@ has $f "destructive, irreversible, or security-sensitive" "security-sensitive fi
 has $f "orca orchestration reply --id" "the exact reply command"
 has $f "smallest option" "escalations offer the smallest non-expanding option"
 has $f "daemon" "the shared-daemon rule is restated"
+
+# --- activation ------------------------------------------------------------
+# commands/vizier.md is a prompt too, and its step 5 is the only thing in the
+# project that notices a dispatch which died without sending a message. The
+# measured hole was that this file counted `status: open` and stopped; the
+# rules below are what replaced that, so losing any of them puts the hole
+# straight back.
+f=commands/vizier.md
+assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "the activation command exists"
+has $f "vizier-reconcile-lib.sh" "the reconcile library is sourced"
+# mailbox-lib owns the envelope reader reconcile-lib calls; unsourced, every
+# response is a `command not found` swallowed inside the library and nothing
+# is reconciled -- silently, which is the one outcome this step prevents.
+has $f "vizier-mailbox-lib.sh" "and the envelope-shape library it reads through"
+has $f "vizier_reconcile_run" "reconciliation goes through the library, never ad-hoc jq"
+has $f "vizier_request_dispatch_notes" "and the dispatch notes through the shared reader"
+has $f 'orca orchestration worker-list --run "$run_id" --json' \
+  "the accounting is read per Run, with --run passed explicitly"
+# COUNTING OPEN FILES IS WHAT LET THE MEASURED CASE HIDE. Pin the reason, not
+# just the command: without it a future edit can shorten this back to a count.
+has $f "durable state" "activation reconciles from durable state, not from memory"
+has $f "run_52f834f62a96" "and names the measured case that made it necessary"
+has $f "no mailbox message at all" \
+  "including why the wake hook could never have covered it"
+# The five non-quiet classes each need naming, or the model has no reason to
+# report one of them.
+for c in failed retained missing unrecorded unreadable; do
+  has $f "**\`$c\`**" "the $c class is named with what the captain must decide"
+done
+has $f "A clean fleet stays quiet" "a clean fleet gets one sentence, not a report"
+has $f "was not reconciled at all" \
+  "and a request with no SUMMARY line is never reported as clean"
+# THE HARD RULES. Reconciliation reads and reports; a cleanup here would
+# throw away the debugging state a retained terminal exists to preserve.
+has $f "Reconciliation reads and reports. Nothing else." \
+  "the read-only rule has its own heading"
+has $f "must **not** release a terminal" "releasing is forbidden"
+has $f "close a request, or edit a request file" \
+  "as are acking, closing a request, and editing the request file"
 
 vizier_test_teardown
 vizier_test_report

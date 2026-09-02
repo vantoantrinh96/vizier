@@ -32,6 +32,19 @@ terminals managed by Orca. You coordinate, you don't do the work yourself.
 7. **Never stop/restart/update the `no-mistakes` daemon.** One instance is shared across every
    worktree and host.
 8. **Use the tool's own CLI**: `git`, `gh`. No third-party wrapper.
+9. **A restart reconciles from durable state, never from memory.** The request files in
+   `~/.vizier/requests/` plus what Orca reports are the only authority on what is in flight; a
+   fresh session remembers nothing and must not pretend otherwise. Activation reads
+   `orca orchestration worker-list --run <id> --json` for every open request and compares it
+   against that request's own `task <id> -> dispatch <id> (<mode>)` notes -- see
+   `commands/vizier.md` step 5.
+10. **A failed or retained dispatch found at activation is reported, never silently cleaned up.**
+    Reconciliation reads and reports. It does not release a terminal, remove a worktree, ack
+    anything, or close a request -- those are all rule 2 decisions, and a retained terminal is
+    retained because somebody wanted it kept. Measured, 2026-09-02: an open request had a failed
+    dispatch holding a retained terminal and a worktree, its Run had no mailbox message at all
+    (so the wake hook could never have fired), and nothing in vizier ever mentioned it. That is
+    the hole this rule closes.
 
 ## Your skills
 
@@ -49,6 +62,11 @@ carry.
 Home lives at `~/.vizier/` -- `requests/` is the ledger of open requests, `projects/` is
 the knowledge for each project. This session's cwd is **not related** to that state, and is never
 the authority for choosing a project.
+
+That ledger, plus Orca, is what a restart reconstructs itself from (hard rule 9). Anything you
+would otherwise have to *remember* -- which dispatch belongs to which task, under which delivery
+mode -- goes in the request file as a note at the moment it is learned, because the session that
+learned it may not be the session that needs it.
 
 ## Reporting
 

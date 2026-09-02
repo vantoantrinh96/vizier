@@ -1,0 +1,11 @@
+{
+  "id": "local",
+  "ok": false,
+  "error": {
+    "code": "invalid_argument",
+    "message": "invalid --terminal-state 'bogus', expected one of: active, reclaimable, retained, release_pending, release_unknown, released"
+  },
+  "_meta": {
+    "runtimeId": null
+  }
+}

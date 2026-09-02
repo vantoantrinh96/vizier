@@ -37,12 +37,24 @@
 #
 # Requires jq. Sourced, never executed.
 
-vizier_mailbox_ok() {  # <raw> -- rc 0 only for a READABLE SUCCESS envelope
+vizier_envelope_ok() {  # <raw> <result_array_key> -- rc 0 only for a READABLE SUCCESS envelope
+  # THE ENVELOPE IS SHARED ACROSS EVERY ORCHESTRATION COMMAND; only the
+  # `result` payload inside it is per-command. Measured 2026-09-02 against
+  # `check` and `worker-list` alike: both answer `{id, ok, result, _meta}`,
+  # and both answer a failure as `{"ok":false,"error":{"code":…}}` with rc 1
+  # (`consumer_fenced` for one, `invalid_argument` for the other). So the
+  # envelope test is written once, parameterised by the one array key the
+  # caller expects in `result`, and lib/vizier-reconcile-lib.sh reuses it for
+  # `workers` rather than opening a second reader of its own. A shape with two
+  # private readers is a shape nobody owns -- see the header of this file for
+  # what that cost the last time.
+  #
   # Both halves matter. `.ok == true` alone would accept a success envelope
-  # whose result is some future shape with no messages array; the array test
+  # whose result is some future shape with no such array; the array test
   # alone would accept a malformed one that happens to carry the key. An
-  # envelope that fails this is never "an empty mailbox" -- it is a response
-  # nothing here understands, and the caller must fail closed on it.
+  # envelope that fails this is never "an empty mailbox" or "an empty fleet"
+  # -- it is a response nothing here understands, and the caller must fail
+  # closed on it.
   #
   # rc is normalised to 0/1 rather than passed through from jq, which answers
   # "false" with 1 but "could not parse the input" with 4 and "no output" with
@@ -50,11 +62,18 @@ vizier_mailbox_ok() {  # <raw> -- rc 0 only for a READABLE SUCCESS envelope
   # unreadable response is somehow a different KIND of not-ok. It is not:
   # every one of these means the same thing here, and it must mean it in one
   # value.
-  if printf '%s' "$1" | jq -e '(.ok == true) and (.result.messages | type == "array")' \
+  if printf '%s' "$1" | jq -e --arg k "$2" '(.ok == true) and (.result[$k] | type == "array")' \
        >/dev/null 2>&1; then
     return 0
   fi
   return 1
+}
+
+vizier_mailbox_ok() {  # <raw> -- rc 0 only for a READABLE SUCCESS envelope
+  # Kept as its own name because every caller of it is asking about a
+  # MAILBOX, and `vizier_envelope_ok "$raw" messages` at each of those call
+  # sites would let one of them quietly ask for the wrong key.
+  vizier_envelope_ok "$1" messages
 }
 
 vizier_mailbox_messages() {  # <raw> -- one COMPACT message per line

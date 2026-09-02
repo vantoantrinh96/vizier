@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Exercises the mode-map extraction sed command that skills/supervise/SKILL.md
-# tells the model to run against the request file (Task 6-9 review round 4).
+# Exercises the mode-map extraction that skills/supervise/SKILL.md tells the
+# model to run against the request file (Task 6-9 review round 4).
 #
-# WHY THE SED IS PULLED OUT OF THE SKILL FILE INSTEAD OF RETYPED HERE. The
-# extraction lives in skill prose, not a library function -- so the only way
-# to test what actually SHIPS, rather than a copy that can silently drift
-# from it, is to grep the literal line out of the skill and run it. If the
-# skill's sed ever changes, this test exercises whatever is really there.
+# WHY THE MAP-BUILDING LINE IS PULLED OUT OF THE SKILL FILE INSTEAD OF
+# RETYPED HERE. The only way to test what actually SHIPS, rather than a copy
+# that can silently drift from it, is to grep the literal line out of the
+# skill and run it. If the skill's line ever changes, this test exercises
+# whatever is really there.
+#
+# THE ANCHORED PATTERN ITSELF NO LONGER LIVES IN SKILL PROSE. It moved into
+# vizier_request_dispatch_notes (lib/vizier-request-lib.sh) when activation's
+# reconciliation became its second reader -- two copies of one anchored
+# pattern in two files is two chances for one of them to drift open. What the
+# skill still owns, and what this file therefore still greps out of it, is
+# the projection down to the `<dispatch>TAB<mode>` map that
+# vizier_supervise_plan joins on. Both halves are exercised: the line from
+# the skill, running against the library the skill names.
 #
 # THE BUG THIS GUARDS AGAINST: an unanchored `.*-> dispatch <id> (<mode>)`
 # search matches ANYWHERE in the request file, including the captain's own
@@ -29,16 +38,21 @@ SKILL="$VIZIER_TEST_REPO/skills/supervise/SKILL.md"
 
 # The one line in the skill's bash fence that builds the map. Captured by
 # its fixed prefix, not retyped -- see the file header.
-sed_line=$(grep -m1 "^sed -n '" "$SKILL")
-assert_eq "$(test -n "$sed_line" && echo yes)" "yes" "the mode-map sed command is present in the skill"
+map_line=$(grep -m1 '^vizier_request_dispatch_notes ' "$SKILL")
+assert_eq "$(test -n "$map_line" && echo yes)" "yes" "the mode-map command is present in the skill"
+assert_contains "$map_line" 'cut -f2,3' \
+  "and it projects the shared extraction down to <dispatch>TAB<mode>, which is what the plan joins on"
 
-# build_map <request_file> -- runs the SKILL'S OWN sed line (not a copy) by
-# setting the exact shell variables it references ($f, $map) and letting it
+# build_map <slug> -- runs the SKILL'S OWN map-building line (not a copy) by
+# setting the exact shell variables it references ($slug, $map) and letting it
 # expand them itself, then prints the resulting map file's content.
 build_map() {
-  local f="$1" map
+  # `slug` looks unused and is not: the skill's line references it and is
+  # reached only through `eval`, which shellcheck cannot see into.
+  # shellcheck disable=SC2034
+  local slug="$1" map
   map="$VIZIER_TEST_TMP/mode-map-$$-$RANDOM"
-  eval "$sed_line"
+  eval "$map_line"
   cat "$map" 2>/dev/null
   rm -f "$map"
 }
@@ -51,8 +65,7 @@ build_map() {
 vizier_request_create lookalike-wins run-1 proj proj-id local \
   "Retry note from last time: it failed with -> dispatch d-1 (direct-PR)"
 vizier_request_note lookalike-wins "task 3 -> dispatch d-1 (no-mistakes)"
-f=$(vizier_request_path lookalike-wins)
-map=$(build_map "$f")
+map=$(build_map lookalike-wins)
 assert_eq "$map" "$(printf 'd-1\tno-mistakes')" "the map holds ONLY the genuine note's mode -- the unanchored prose (which came first) never enters it at all"
 
 # End-to-end: with this map, a no-mistakes-shaped worker_done for d-1 with
@@ -75,8 +88,7 @@ assert_contains "$plan" "PLAN e1 hold no-axi-outcome" "end-to-end: the lookalike
 # usable, is the strict path (see vizier_msg_disposition).
 vizier_request_create lookalike-only run-2 proj proj-id local \
   "For context, last time -> dispatch d-2 (direct-PR)"
-f=$(vizier_request_path lookalike-only)
-map=$(build_map "$f")
+map=$(build_map lookalike-only)
 assert_eq "$map" "" "a lookalike line with no genuine note produces an EMPTY map, not a direct-PR entry"
 
 map_file="$VIZIER_TEST_TMP/lookalike-only-map"

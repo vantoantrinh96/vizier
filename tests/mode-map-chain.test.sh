@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Proves the mode-map note format `brief` writes and the sed `supervise`
-# reads are the SAME text, not two independently pinned strings.
+# Proves the mode-map note format `brief` writes and the extraction
+# `supervise` reads it back with are the SAME text, not two independently
+# pinned strings.
 #
 # tests/skills.test.sh pins the note format `brief` writes; that file is
 # UNCHANGED and untouched by this test. tests/supervise-mode-map.test.sh
-# pins the real sed pulled out of `skills/supervise/SKILL.md` -- but it
+# pins the real line pulled out of `skills/supervise/SKILL.md` -- but it
 # fabricates the note by hand instead of taking it from `brief`. Both ends
 # were correct in isolation and nothing asserted they agree with each
 # other. This is the third time that exact coupling shape has appeared in
@@ -17,7 +18,7 @@
 # here: the note template is grepped out of skills/brief/SKILL.md, real
 # values are substituted into THAT template (not a hand-typed one), the
 # result is appended to a real request file with the real
-# vizier_request_note, and then the sed grepped out of
+# vizier_request_note, and then the map-building line grepped out of
 # skills/supervise/SKILL.md is run over that same file. If either skill's
 # wording drifts from the other, this reddens; a copy retyped into a test
 # would not have.
@@ -37,9 +38,13 @@ SUPERVISE_SKILL="$VIZIER_TEST_REPO/skills/supervise/SKILL.md"
 note_tpl=$(grep -o 'task <id> -> dispatch <id> (<mode>)' "$BRIEF_SKILL" | head -1)
 assert_eq "$(test -n "$note_tpl" && echo yes)" "yes" "brief's dispatch-note template is present in the skill"
 
-# --- side B: the sed supervise actually ships -------------------------------
-sed_line=$(grep -m1 "^sed -n '" "$SUPERVISE_SKILL")
-assert_eq "$(test -n "$sed_line" && echo yes)" "yes" "supervise's mode-map sed command is present in the skill"
+# --- side B: the map-building line supervise actually ships -----------------
+# The anchored extraction moved into vizier_request_dispatch_notes when
+# activation's reconciliation became its second reader; the skill still owns
+# the projection down to the <dispatch>TAB<mode> map the plan joins on, and
+# that line is what gets grepped and run here.
+map_line=$(grep -m1 '^vizier_request_dispatch_notes ' "$SUPERVISE_SKILL")
+assert_eq "$(test -n "$map_line" && echo yes)" "yes" "supervise's mode-map command is present in the skill"
 
 # --- drive the chain: real template -> real note -> real request file ------
 vizier_request_create chain-run run-1 proj proj-id local "Add dark mode"
@@ -67,13 +72,12 @@ note_b=${note_b/<mode>/$mode_b}
 vizier_request_note "$slug" "$note_a"
 vizier_request_note "$slug" "$note_b"
 
-# --- run supervise's OWN sed line over that same file -----------------------
-# Variable names ($f, $map) match exactly what the skill's sed line
+# --- run supervise's OWN map-building line over that same file --------------
+# Variable names ($slug, $map) match exactly what the skill's line
 # references, so `eval` expands it unmodified -- this is the skill's
 # command, not a copy of it.
-f=$(vizier_request_path "$slug")
 map="$VIZIER_TEST_TMP/mode-map-$$-$RANDOM"
-eval "$sed_line"
+eval "$map_line"
 map_content=$(cat "$map" 2>/dev/null)
 rm -f "$map"
 

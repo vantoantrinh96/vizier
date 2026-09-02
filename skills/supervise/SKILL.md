@@ -114,19 +114,27 @@ Build a per-dispatch mode map from the request file's own dispatch notes.
 keyed by dispatch id. The per-task override note is **not** a usable join
 key here: it's keyed by task number, and the only dispatch id the batch
 carries is the `dispatchId` inside each message's `payload` string, which is
-what the plan looks up. Pull dispatch id and mode out of the dispatch note —
-**anchored to the start of the line**, never a bare `.*` search across the
-whole file: the request body holds the captain's own words verbatim, and a
-captain who pastes a previous run's notes into a new request can reproduce
-`-> dispatch <id> (<mode>)`-shaped prose by accident, with no need for
-anyone to exploit anything. Only a line that actually starts with `task `
-and has the real note's shape counts:
+what the plan looks up.
+
+`vizier_request_dispatch_notes` is the one reader of that note, and it is
+**anchored to the start of the line** — never a bare `.*` search across the
+whole file. The notes live in the request *body*, which holds the captain's
+own words verbatim, and a captain who pastes a previous run's notes into a
+new request can reproduce `-> dispatch <id> (<mode>)`-shaped prose by
+accident, with no need for anyone to exploit anything. Only a line that
+actually starts with `task ` and has the real note's shape counts. It prints
+`<task_id><TAB><dispatch_id><TAB><mode>`; the map this step needs is its
+second and third columns:
 
 ```bash
-f=$(vizier_request_path "$slug")
 map=$(mktemp)
-sed -n 's/^task [^[:space:]]* -> dispatch \([^[:space:]]*\) (\(.*\))$/\1\t\2/p' "$f" > "$map"
+vizier_request_dispatch_notes "$slug" | cut -f2,3 > "$map"
 ```
+
+**Do not re-inline that pattern here.** Activation's reconciliation reads the
+same notes (`commands/vizier.md` step 5), and two copies of one anchored
+pattern in two files is two chances for one of them to drift open. It lives
+in `lib/vizier-request-lib.sh`, beside the writer of the file it reads.
 
 The fallback for a dispatch the map doesn't name is the project's own
 default mode — never a guess, and if even that is unavailable, the strict

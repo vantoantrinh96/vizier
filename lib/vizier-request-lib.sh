@@ -123,6 +123,55 @@ vizier_request_close() {  # <slug>
   vizier_request_set "$1" status closed
 }
 
+# THE ONE OWNER OF THE `task <id> -> dispatch <id> (<mode>)` NOTE.
+#
+# `brief` writes that line (skills/brief/SKILL.md §5) and TWO readers need it
+# back: `supervise` joins the batch's per-message `dispatchId` to a delivery
+# mode, and reconciliation at activation joins the file's dispatches against
+# `orca orchestration worker-list`. Both used to be -- or would have been --
+# their own copy of the same sed, in skill prose, where a change to one is
+# invisible to the other. It lives here instead, next to the writer of the
+# file it reads, so there is exactly one pattern to change.
+#
+# ANCHORED TO THE START OF THE LINE, and that is the whole point. THE NOTES
+# ARE IN THE BODY, not the frontmatter -- they are appended after the closing
+# `---` by vizier_request_note -- so this reader cannot be frontmatter-scoped
+# the way every other read in this file is, and the body holds the captain's
+# own words VERBATIM. A captain who pastes a previous run's notes into a new
+# request reproduces `-> dispatch <id> (<mode>)`-shaped prose by accident,
+# with nobody needing to predict a dispatch id or exploit anything; the
+# review that found this had a repro where the prose line preceded the
+# genuine note for the same id and won, resolving a no-mistakes dispatch to
+# direct-PR. Only a line that actually STARTS with `task ` and has the whole
+# real note's shape counts.
+#
+# THE TASK AND DISPATCH IDS ARE REQUIRED TO BE NON-EMPTY (`\{1,\}`, not `*`).
+# The earlier in-skill pattern used `*`, which would have matched a line with
+# an empty dispatch id -- harmless for supervise's map, whose lookup skips an
+# empty key, but reconciliation would have reported that empty id as a
+# dispatch Orca has lost. Real notes are unaffected either way.
+#
+# Real request files carry OTHER lines that start with `task ` and are not
+# dispatch notes -- measured on the captain's machine: `task 1: mode=direct-PR
+# because ...`, `task 1: copyright holder fixed by captain = ...`, `task
+# task_8a5ccd5abe4e created (status=ready), spec assembled with
+# mode=direct-PR.` None has the ` -> dispatch ` middle, so none matches. That
+# is not luck: it is why the note's shape is mandated exactly in `brief`.
+#
+# Output is `<task_id><TAB><dispatch_id><TAB><mode>`, in file order. A caller
+# that wants supervise's two-column mode map takes `cut -f2,3`.
+vizier_request_dispatch_notes() {  # <slug> -- one <task>\t<dispatch>\t<mode> line per dispatch note
+  local f
+  f=$(vizier_request_path "$1")
+  [ -r "$f" ] || return 0
+  # `tr -d '\r'` for the same reason the frontmatter readers do it: a CRLF
+  # file would leave the mode ending in a carriage return, and the mode is
+  # then compared against the exact string `direct-PR`.
+  tr -d '\r' < "$f" \
+    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\(.*\))$/\1\t\2\t\3/p'
+  return 0
+}
+
 vizier_request_open_slugs() {
   local d f s
   d=$(vizier_requests_dir)

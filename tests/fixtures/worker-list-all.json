@@ -1,0 +1,93 @@
+{
+  "id": "39c8e39f-8e63-4645-b35e-824439a157a8",
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_354ce874603e",
+        "taskId": "task_6c411f536fd3",
+        "runId": "run_d521599841dd",
+        "workerState": "failed",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_cb0f3c7e-50ff-43b4-a302-3e5d05819621",
+        "terminalState": "release_unknown",
+        "resource": {
+          "id": "wtr_3f3696538659",
+          "ownershipState": "owned",
+          "releaseState": "unknown",
+          "retainedReason": null,
+          "terminalHandle": "term_cb0f3c7e-50ff-43b4-a302-3e5d05819621",
+          "worktreeId": "47ce5164-51f9-4f2e-9a3f-f32a1aa9c1a0::/Users/toantv/orca/workspaces/vizier-smoke/smoke-license",
+          "originDispatchId": "ctx_354ce874603e",
+          "ownerDispatchId": "ctx_354ce874603e",
+          "releaseRequestedAt": "2026-09-02 02:07:48",
+          "releaseCompletedAt": null,
+          "releaseError": "tab_not_found",
+          "archive": {
+            "source": "terminal",
+            "status": "captured"
+          }
+        }
+      },
+      {
+        "dispatchId": "ctx_ae9c346dbbee",
+        "taskId": "task_f42ab05a3525",
+        "runId": "run_cbac83d07798",
+        "workerState": "succeeded",
+        "dispatchStatus": "completed",
+        "agentTerminalHandle": "term_dc1a72c1-9d43-46f6-9529-320bbda1e29f",
+        "terminalState": "retained",
+        "resource": {
+          "id": "wtr_fd173e1cecf8",
+          "ownershipState": "user_owned",
+          "releaseState": "retained",
+          "retainedReason": "user_takeover",
+          "terminalHandle": "term_dc1a72c1-9d43-46f6-9529-320bbda1e29f",
+          "worktreeId": "47ce5164-51f9-4f2e-9a3f-f32a1aa9c1a0::/Users/toantv/tmp/vizier-smoke",
+          "originDispatchId": "ctx_ae9c346dbbee",
+          "ownerDispatchId": "ctx_ae9c346dbbee",
+          "releaseRequestedAt": null,
+          "releaseCompletedAt": null,
+          "releaseError": null,
+          "archive": {
+            "source": null,
+            "status": null
+          }
+        }
+      },
+      {
+        "dispatchId": "ctx_70061775b9ca",
+        "taskId": "task_f5a588ccf365",
+        "runId": "run_52f834f62a96",
+        "workerState": "failed",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_e2a3fc69-05f9-4726-b908-55fd94dd2120",
+        "terminalState": "retained",
+        "resource": {
+          "id": "wtr_35501bf69297",
+          "ownershipState": "user_owned",
+          "releaseState": "retained",
+          "retainedReason": "user_takeover",
+          "terminalHandle": "term_e2a3fc69-05f9-4726-b908-55fd94dd2120",
+          "worktreeId": "5d217a28-d779-4178-8c04-10c56a930aa7::/Users/toantv/orca/workspaces/demo-vizier/mit-license",
+          "originDispatchId": "ctx_70061775b9ca",
+          "ownerDispatchId": "ctx_70061775b9ca",
+          "releaseRequestedAt": null,
+          "releaseCompletedAt": null,
+          "releaseError": null,
+          "archive": {
+            "source": null,
+            "status": null
+          }
+        }
+      }
+    ],
+    "counts": {
+      "release_unknown": 1,
+      "retained": 2
+    }
+  },
+  "_meta": {
+    "runtimeId": "5ea7b246-0245-4ed8-ae5e-48f67d8cc79a"
+  }
+}
