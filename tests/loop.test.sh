@@ -97,13 +97,19 @@ vizier_request_note "$slug" "task $task -> dispatch $dispatch ($mode)"
 wake_slug=$(vizier_request_slug_for_run "$run")
 assert_eq "$wake_slug" "$slug" "a cold wake translates run_id back to the request's slug"
 
-# Everything from here uses ONLY what the wake could have known.
-f=$(vizier_request_path "$wake_slug")
+# Everything from here uses ONLY what the wake could have known. The skill's
+# map-building line references $slug, so it is rebound HERE from the cold-wake
+# lookup -- deliberately not left holding the value this test carried forward,
+# which is the whole point of the section above.
+slug="$wake_slug"
 map="$VIZIER_TEST_TMP/loop-mode-map"
-# supervise's own extraction line, grepped out of the shipped skill rather
-# than retyped -- same reason as tests/supervise-mode-map.test.sh.
-sed_line=$(grep -m1 "^sed -n '" "$VIZIER_TEST_REPO/skills/supervise/SKILL.md")
-eval "$sed_line"
+# supervise's own map-building line, grepped out of the shipped skill rather
+# than retyped -- same reason as tests/supervise-mode-map.test.sh. The
+# anchored extraction it calls now lives in vizier_request_dispatch_notes,
+# shared with activation's reconciliation; what the skill still owns is the
+# projection down to the <dispatch>TAB<mode> map the plan joins on.
+map_line=$(grep -m1 '^vizier_request_dispatch_notes ' "$VIZIER_TEST_REPO/skills/supervise/SKILL.md")
+eval "$map_line"
 assert_eq "$(cat "$map")" "$(printf '%s\t%s' "$dispatch" "$mode")" \
   "the mode map is built from the note brief wrote, keyed by the real dispatch id"
 

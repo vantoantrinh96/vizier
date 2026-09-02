@@ -27,12 +27,23 @@ vizier_test_setup() {
   export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"
   mkdir -p "$VIZIER_BIN_DIR"
   # This test runner itself COULD be running under a child session/subagent
-  # (the variable has actually been observed set in this very project's CI)
-  # -- if that leaked through, every activate test would eat FIX 5's
-  # refusal by mistake while testing a completely different branch. The
-  # test environment must be clear of the real harness variable of the
-  # PROCESS RUNNING THE TESTS, not of the scenario under test.
+  # (CLAUDE_CODE_CHILD_SESSION has actually been observed set in this very
+  # project's CI) -- if that leaked through, every activate test would eat
+  # FIX 5's refusal by mistake while testing a completely different branch.
+  # CLAUDE_PLUGIN_ROOT has exactly the same property and is worse, because
+  # THIS REPO IS THE PLUGIN: it is exported to plugin hook and plugin command
+  # execution, and commands/vizier.md resolves
+  # `VIZIER_DIST="${CLAUDE_PLUGIN_ROOT:-${VIZIER_HOME:-$HOME/.vizier}/dist}"`,
+  # which tests/skill-preamble.test.sh greps out of the shipped file and
+  # evals. Leaked, it points VIZIER_DIST at the INSTALLED plugin instead of
+  # the temp dist the test just built from `lib/` -- and since installing
+  # from a dev checkout is forbidden, that copy cannot carry the library
+  # under test, so a correct checkout reddens. The test environment must be
+  # clear of the real harness variables of the PROCESS RUNNING THE TESTS,
+  # not of the scenario under test, and that belongs here where no
+  # individual test can forget it.
   unset CLAUDE_CODE_CHILD_SESSION
+  unset CLAUDE_PLUGIN_ROOT
   export VIZIER_FAKE_ORCA_STATE="$VIZIER_TEST_TMP/fake-orca"
   mkdir -p "$VIZIER_FAKE_ORCA_STATE/queue"
   : > "$VIZIER_FAKE_ORCA_STATE/calls.log"
@@ -103,6 +114,66 @@ fake_orca_message() {  # <run_id> <msg_id> <type> [<body>] [<payload_json_string
 }
 
 fake_orca_calls() { cat "$VIZIER_FAKE_ORCA_STATE/calls.log" 2>/dev/null; }
+
+# THE worker-list SHAPE, COPIED FROM A REAL RESPONSE, IN ONE PLACE.
+# Every field name and every nesting level below comes from
+# tests/fixtures/worker-list-all.json and
+# tests/fixtures/worker-list-failed-retained.json -- real
+# `orca orchestration worker-list --json` responses captured from the app on
+# 2026-09-02. Note `worker-list` is camelCase while `worker-show` is
+# snake_case for the same concepts: that is the real CLI's own inconsistency,
+# reproduced rather than tidied.
+#
+# WHY A BUILDER EXISTS AT ALL, given the rule that fixtures come from the app.
+# Two of the six `terminalState` values the CLI enumerates cannot be captured
+# on this machine: nothing is currently `active`, and no dispatch has ever
+# reached `released` -- a real `worker-release` on a healthy dispatch returned
+# `retained` and one on a dead terminal returned `release_unknown`
+# (docs/verification/2026-09-02-smoke-real-loop.md). Those two cases are built
+# HERE, from the captured field set, exactly the way `fake_orca_message`
+# handles messages the app has not been made to produce. Every case the app
+# DID produce is read from the captured fixture with no builder in between.
+fake_orca_worker_json() {  # <dispatch_id> <run_id> <worker_state> <dispatch_status> <terminal_state> [<retained_reason>] [<worktree_path>] [<task_id>]
+  # `resource` is a nested OBJECT here, unlike a mailbox message's `payload`,
+  # which is a JSON string. Getting that difference wrong in a builder is how
+  # a test double teaches a parser the wrong shape, so both are pinned to
+  # captured responses and neither is written from memory.
+  local reason="${6:-}" wtpath="${7:-/Users/x/orca/workspaces/fake/wt}" task="${8:-task_fake}"
+  jq -cn --arg d "$1" --arg run "$2" --arg ws "$3" --arg ds "$4" --arg ts "$5" \
+     --arg reason "$reason" --arg wt "$wtpath" --arg task "$task" \
+    '{dispatchId:$d, taskId:$task, runId:$run,
+      workerState:$ws, dispatchStatus:$ds,
+      agentTerminalHandle:("term_" + $d),
+      terminalState:$ts,
+      resource:{
+        id:("wtr_" + $d),
+        ownershipState:"owned",
+        releaseState:$ts,
+        retainedReason:(if $reason == "" then null else $reason end),
+        terminalHandle:("term_" + $d),
+        worktreeId:("00000000-0000-0000-0000-000000000000::" + $wt),
+        originDispatchId:$d,
+        ownerDispatchId:$d,
+        releaseRequestedAt:null,
+        releaseCompletedAt:null,
+        releaseError:null,
+        archive:{source:null,status:null}}}'
+}
+
+fake_orca_worker_list_json() {  # <worker_json>... -- one worker-list envelope
+  # ONE PRETTY-PRINTED ENVELOPE, like the real command. `jq` without `-c` is
+  # deliberate: the parser must never depend on the response being one line,
+  # which is the mistake the mailbox reader shipped with.
+  local rows="" w
+  for w in "$@"; do
+    [ -n "$w" ] || continue
+    if [ -z "$rows" ]; then rows="$w"; else rows="$rows,$w"; fi
+  done
+  jq -n --argjson workers "[$rows]" \
+    '{id:"00000000-0000-0000-0000-000000000000", ok:true,
+      result:{workers:$workers, counts:{}},
+      _meta:{runtimeId:"fake-runtime"}}'
+}
 
 # --- fake-orca seeding ----------------------------------------------------
 # Each seeder appends one JSON line to a state file; fake-orca assembles the

@@ -1,0 +1,40 @@
+{
+  "id": "3b751da7-ae02-4062-a636-612090b9074a",
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_70061775b9ca",
+        "taskId": "task_f5a588ccf365",
+        "runId": "run_52f834f62a96",
+        "workerState": "failed",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_e2a3fc69-05f9-4726-b908-55fd94dd2120",
+        "terminalState": "retained",
+        "resource": {
+          "id": "wtr_35501bf69297",
+          "ownershipState": "user_owned",
+          "releaseState": "retained",
+          "retainedReason": "user_takeover",
+          "terminalHandle": "term_e2a3fc69-05f9-4726-b908-55fd94dd2120",
+          "worktreeId": "5d217a28-d779-4178-8c04-10c56a930aa7::/Users/toantv/orca/workspaces/demo-vizier/mit-license",
+          "originDispatchId": "ctx_70061775b9ca",
+          "ownerDispatchId": "ctx_70061775b9ca",
+          "releaseRequestedAt": null,
+          "releaseCompletedAt": null,
+          "releaseError": null,
+          "archive": {
+            "source": null,
+            "status": null
+          }
+        }
+      }
+    ],
+    "counts": {
+      "retained": 1
+    }
+  },
+  "_meta": {
+    "runtimeId": "5ea7b246-0245-4ed8-ae5e-48f67d8cc79a"
+  }
+}

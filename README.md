@@ -33,7 +33,9 @@ any Claude Code session + vizier plugin
 
 A `Stop` hook (`asyncRewake`) wakes the first-mate session whenever one of its Runs has mailbox
 traffic, so you don't have to poll each worktree by hand. A `PostCompact` hook re-prints the
-identity rules after a context compaction.
+identity rules after a context compaction. The wake hook only ever fires on a *message*, so a
+worker that dies without sending one is caught by activation's reconciliation instead — measured:
+that is exactly how a failed dispatch sat unnoticed with a terminal and a worktree still held.
 
 ## Requirements
 
@@ -83,7 +85,12 @@ touches nobody else's config.
 ```
 
 The session claims the single first-mate lock, loads the identity skill, runs `doctor`, and
-reports how many requests are open. Only **one** session at a time can hold the lock.
+then **reconciles every open request against Orca** before it says anything: for each open
+request it reads `orca orchestration worker-list --run <id> --json` and compares it against that
+request's own dispatch notes, so a worker that failed or a terminal still held gets named even
+though no mailbox message was ever sent. A clean fleet gets one sentence. Reconciliation reads
+and reports only — it never releases a terminal, removes a worktree, acks, or closes a request.
+Only **one** session at a time can hold the lock.
 
 ## CLI
 
@@ -113,7 +120,7 @@ the first mate talks to `orca` directly.
 
 ```
 .claude-plugin/plugin.json   plugin manifest
-commands/vizier.md           /vizier:vizier — activates the session and claims the lock
+commands/vizier.md           /vizier:vizier — claims the lock, then reconciles open requests
 skills/
   identity/                  identity + hard rules (loaded on activate and after compaction)
   request/                   open and close a Request: project, routing, the one host question
@@ -126,14 +133,15 @@ hooks/
   wake-cursor.sh             same gate for Cursor (synchronous hooks: parks instead)
   reidentify-claude.sh       re-print identity after a compaction
 lib/                         shell libraries: home/lock, request, brief, mailbox, supervise,
-                             routing, wake, merge
+                             reconcile, routing, wake, merge
 bin/
   vizier                     the install/diagnostics CLI
   vizier-activate.sh         claims the first-mate lock for a session
   vizier-adapter-claude.sh   install/uninstall for Claude Code
   vizier-adapter-cursor.sh   install/uninstall for Cursor
 install.sh                   POSIX-sh bootstrap (curl | sh)
-tests/                       21 bash test files + a fake-orca fixture
+tests/                       22 bash test files, a fake-orca fixture, and captured Orca
+                             responses under tests/fixtures/
 docs/                        spec, plans, decisions, verification notes
 ```
 
