@@ -122,11 +122,10 @@ Activate this session as the first mate.
 
    **A clean fleet stays quiet.** If every request summarises to `failed=0 retained=0 missing=0
    unrecorded=0 unreadable=0 other_run=0` and there was no `UNREADABLE` line, say **one
-   sentence**: that you
-   are now the first mate, where home is, how many requests are open, and how many dispatches are
-   running -- naming the raw `worker=` value of each of those running dispatches inside it, e.g.
-   "3 dispatches running (worker=running, running, cancelled)". Still one sentence: not a report,
-   not a table, not a per-request rundown.
+   sentence**: that you are now the first mate, where home is, how many requests are open, and
+   how many dispatches are running -- naming the raw `worker=` value of each of those running
+   dispatches inside it, e.g. "3 dispatches running (worker=running, running, cancelled)". Still
+   one sentence: not a report, not a table, not a per-request rundown.
 
    Otherwise, that same sentence plus one line per thing that is not `running`/`settled`, each
    naming the concrete thing the captain has to decide -- the dispatch id, the terminal handle,

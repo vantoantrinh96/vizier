@@ -1,5 +1,11 @@
 # shellcheck shell=bash
-# The ONE owner of "what `orca orchestration check --json` actually returns".
+# The ONE owner of "what `orca orchestration check --json` actually returns",
+# and of the `{id, ok, result, _meta}` envelope EVERY orchestration command
+# answers in: `vizier_envelope_ok` is that shared half, parameterised by the
+# one array key the caller expects inside `result`, so no second reader of the
+# envelope has to exist. lib/vizier-reconcile-lib.sh reads `worker-list`
+# through it; `vizier_mailbox_ok` is the `messages` wrapper for this file's
+# own callers.
 #
 # WHY THIS FILE EXISTS. Two callers -- the wake hook (vizier-wake-lib.sh) and
 # the supervision plan (vizier-supervise-lib.sh) -- each open-coded their own

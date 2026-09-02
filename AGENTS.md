@@ -17,10 +17,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 `shellcheck` is **not installed** on this machine, so `tests/run-all.sh` does not run it and a
 static pass cannot be claimed without fetching it (the standalone release tarball works).
-When you do run it: every file in `lib/` must be at **zero** findings. Test files carry three
-tolerated classes only — `SC1091` (sourcing `helpers.sh`), `SC2016` (single-quoted anchors in
-`tests/skills.test.sh`), and `SC2148` in `tests/helpers.sh`, which has no shebang by design.
-Anything else in a file you touched is a regression.
+When you do run it (`shellcheck -x`), every file in `lib/` must be at **zero** findings — that
+is the bar for library code and it currently holds. `tests/` does **not**: it carries a
+pre-existing backlog (`SC1091` from sourcing `helpers.sh`, `SC2016`, `SC2148` in
+`tests/helpers.sh` which has no shebang by design, plus `SC2100`, `SC2319`, `SC2119`, `SC2012`
+and others, and `tests/wake-lib.test.sh` does not parse at all). So the bar for a test file is
+comparative: check the base commit's version of the same file and add no finding that was not
+already there.
 
 ## The one rule the libraries are built around
 
@@ -32,11 +35,10 @@ envelope; nothing else may open one by hand.
 
 ## Fixtures come from the app, never from imagination
 
-`tests/fixtures/README.md` is authoritative and explains the incident behind the rule: parsers
-and test doubles were both written from an invented shape, 574 assertions stayed green, and the
-feature was inert against the real app. Capture a new fixture from the real CLI rather than
-editing one to make a test pass, and build only the cases the app cannot be made to produce —
-via the builders in `tests/helpers.sh`, from a captured field set.
+`tests/fixtures/README.md` is authoritative, and records the incident this rule came out of.
+Capture a new fixture from the real CLI rather than editing one to make a test pass, and build
+only the cases the app cannot be made to produce — via the builders in `tests/helpers.sh`, from
+a captured field set.
 
 ## Maintaining this file
 

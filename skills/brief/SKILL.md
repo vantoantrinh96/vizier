@@ -198,11 +198,17 @@ as `--model <id> --effort <level>`. Orca **requires --model whenever
 
 The dispatch id is **`.result.dispatchId`** — camelCase, at the top of
 `result`. There is no `.result.dispatch` object; reading one gets you an empty
-id, and an empty id silently breaks the mode map `supervise` joins on.
+id, and a note written with an empty id is not a note at all: the reader
+requires both ids non-empty, so the whole line is dropped and the dispatch
+becomes invisible to everything that reads these notes back.
 
 Record it in the request file in **exactly** this shape —
-`task <id> -> dispatch <id> (<mode>)` — because that is the line `supervise`
-extracts its per-dispatch mode map from, anchored to the start of the line:
+`task <id> -> dispatch <id> (<mode>)` — because **two** readers join on that
+line: `supervise`'s per-dispatch mode map, and activation's reconciliation of
+the request against `orca orchestration worker-list` (`commands/vizier.md`
+step 5). Both go through `vizier_request_dispatch_notes` in
+`lib/vizier-request-lib.sh`, which owns the shape and is anchored to the start
+of the line:
 
 ```bash
 dispatch=$(printf '%s' "$receipt" | jq -r '.result.dispatchId')
