@@ -145,11 +145,26 @@ vizier_request_close() {  # <slug>
 # direct-PR. Only a line that actually STARTS with `task ` and has the whole
 # real note's shape counts.
 #
-# THE TASK AND DISPATCH IDS ARE REQUIRED TO BE NON-EMPTY (`\{1,\}`, not `*`).
-# The earlier in-skill pattern used `*`, which would have matched a line with
-# an empty dispatch id -- harmless for supervise's map, whose lookup skips an
-# empty key, but reconciliation would have reported that empty id as a
-# dispatch Orca has lost. Real notes are unaffected either way.
+# ALL THREE COLUMNS ARE REQUIRED NON-EMPTY AND WHITESPACE-FREE
+# (`[^[:space:]]\{1,\}`, not `*` and not `.*`). The earlier in-skill pattern
+# used `*` for the ids, which would have matched a line with an empty
+# dispatch id -- harmless for supervise's map, whose lookup skips an empty
+# key, but reconciliation would have reported that empty id as a dispatch
+# Orca has lost. The mode was `.*` for the same reason it should not have
+# been: nothing downstream looked at its shape. Reconciliation does. It
+# prints the mode as a `key=value` pair on a fixed-shape report line where
+# `worktree=` is the ONLY field allowed to contain a space (see
+# _vizier_reconcile_line), so a mode carrying one would shift `health=` and
+# every field after it out of position. The same pasted-prose channel the
+# anchoring above exists for reaches this: a hand-edited body line like
+# `task 3 -> dispatch ctx_abc (direct-PR, retried by hand)` satisfies the
+# anchor. Bounding the capture here -- at the owner of the file format --
+# makes the report's grammar true by construction rather than repaired by
+# every reader. Such a line now matches nothing at all, which fails closed
+# both ways: reconciliation reports the dispatch as `unrecorded` (loud, and
+# the ledger IS malformed), and supervise resolves no mode for it, which
+# vizier_msg_disposition already treats as the strict path. Real notes,
+# which `brief` writes from a single-token mode, are unaffected.
 #
 # Real request files carry OTHER lines that start with `task ` and are not
 # dispatch notes -- measured on the captain's machine: `task 1: mode=direct-PR
@@ -168,7 +183,7 @@ vizier_request_dispatch_notes() {  # <slug> -- one <task>\t<dispatch>\t<mode> li
   # file would leave the mode ending in a carriage return, and the mode is
   # then compared against the exact string `direct-PR`.
   tr -d '\r' < "$f" \
-    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\(.*\))$/\1\t\2\t\3/p'
+    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\([^[:space:]]\{1,\}\))$/\1\t\2\t\3/p'
   return 0
 }
 

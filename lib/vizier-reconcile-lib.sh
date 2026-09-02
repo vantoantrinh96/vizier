@@ -95,10 +95,24 @@
 # live values"; there is no measured list of those. It is defined as the
 # leftover: terminal `active`, and workerState neither `failed` nor
 # `succeeded`. An unmeasured settled-ish state (a `cancelled`, say) sitting on
-# a live terminal would therefore read `running`. The mitigation is that the
-# line carries `worker=<the raw value>` verbatim, so the report names the word
-# Orca actually used and the captain sees it even when this file has no rule
-# for it. Inventing the enumeration instead is the exact mistake that shipped
+# a live terminal -- or an absent workerState -- therefore reads `running`.
+#
+# THE MITIGATION IS NOT THIS FILE ALONE, and claiming it was is what made the
+# residual worse than it read. The line does carry `worker=<the raw value>`
+# verbatim, but `running` is a class the activation report is told to be
+# quiet about, and a raw value nobody reports is a raw value the captain
+# never hears. The mitigation only holds if BOTH halves hold, and the second
+# half lives in commands/vizier.md: the one summary sentence a clean fleet is
+# allowed must NAME the raw `worker=` value of every `running` dispatch. That
+# is what makes a `cancelled` on a live terminal audible while still costing
+# one line. Change the classification here and that sentence changes with it.
+#
+# Narrowing `running` to a whitelist of live values and failing everything
+# else to `unreadable` was the alternative, and it is rejected on the same
+# measurement: with no live workerState ever observed, every genuinely
+# healthy dispatch would report `unreadable`, and a report that cries wolf on
+# the healthy case is a report nobody reads -- a loud fail-open in place of a
+# quiet one. Inventing the enumeration is also the exact mistake that shipped
 # supervision inert -- see the header of lib/vizier-mailbox-lib.sh.
 #
 # `terminalState` IS enumerated, by the CLI itself: `worker-list

@@ -27,12 +27,23 @@ vizier_test_setup() {
   export VIZIER_BIN_DIR="$VIZIER_TEST_TMP/bin"
   mkdir -p "$VIZIER_BIN_DIR"
   # This test runner itself COULD be running under a child session/subagent
-  # (the variable has actually been observed set in this very project's CI)
-  # -- if that leaked through, every activate test would eat FIX 5's
-  # refusal by mistake while testing a completely different branch. The
-  # test environment must be clear of the real harness variable of the
-  # PROCESS RUNNING THE TESTS, not of the scenario under test.
+  # (CLAUDE_CODE_CHILD_SESSION has actually been observed set in this very
+  # project's CI) -- if that leaked through, every activate test would eat
+  # FIX 5's refusal by mistake while testing a completely different branch.
+  # CLAUDE_PLUGIN_ROOT has exactly the same property and is worse, because
+  # THIS REPO IS THE PLUGIN: it is exported to plugin hook and plugin command
+  # execution, and commands/vizier.md resolves
+  # `VIZIER_DIST="${CLAUDE_PLUGIN_ROOT:-${VIZIER_HOME:-$HOME/.vizier}/dist}"`,
+  # which tests/skill-preamble.test.sh greps out of the shipped file and
+  # evals. Leaked, it points VIZIER_DIST at the INSTALLED plugin instead of
+  # the temp dist the test just built from `lib/` -- and since installing
+  # from a dev checkout is forbidden, that copy cannot carry the library
+  # under test, so a correct checkout reddens. The test environment must be
+  # clear of the real harness variables of the PROCESS RUNNING THE TESTS,
+  # not of the scenario under test, and that belongs here where no
+  # individual test can forget it.
   unset CLAUDE_CODE_CHILD_SESSION
+  unset CLAUDE_PLUGIN_ROOT
   export VIZIER_FAKE_ORCA_STATE="$VIZIER_TEST_TMP/fake-orca"
   mkdir -p "$VIZIER_FAKE_ORCA_STATE/queue"
   : > "$VIZIER_FAKE_ORCA_STATE/calls.log"

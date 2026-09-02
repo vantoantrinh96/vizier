@@ -451,6 +451,26 @@ vizier_request_note blanks "task 4 -> dispatch  (direct-PR)"
 assert_eq "$(vizier_request_dispatch_notes blanks)" "" \
   "a note with a blank task or dispatch id is not a note"
 
+# A MODE CARRYING A SPACE MUST NOT REACH THE REPORT LINE. The mode used to be
+# captured with `.*`, so a hand-edited or pasted body line put a space inside
+# a `key=value` pair and shifted `health=` and everything after it out of
+# position -- the one field allowed to hold a space is `worktree=`, and only
+# because it is last. Bounded at the reader, the line is not a note at all,
+# which is loud in both directions: the dispatch reconciles as `unrecorded`
+# rather than being reported under a corrupt shape.
+vizier_request_create spacey-mode run_52f834f62a96 proj proj-id local "body"
+vizier_request_note spacey-mode "task task_f5a588ccf365 -> dispatch ctx_70061775b9ca (direct-PR, retried by hand)"
+assert_eq "$(vizier_request_dispatch_notes spacey-mode)" "" \
+  "a note whose mode carries a space is not a dispatch note"
+report=$(vizier_reconcile_run run_52f834f62a96 \
+  "$(vizier_request_dispatch_notes spacey-mode)" "$REAL_FAILED")
+assert_eq "$(field_of "$report" ctx_70061775b9ca health)" "failed" \
+  "the dispatch is still reported, with health= at its contracted position"
+assert_eq "$(field_of "$report" ctx_70061775b9ca mode)" "-" \
+  "and no unknown mode is invented for it"
+assert_eq "$(class_of "$report" ctx_70061775b9ca)" "unrecorded" \
+  "the malformed ledger entry is named, not silently honoured"
+
 # A slug with no file at all answers empty and rc 0 -- reconciliation runs
 # over open requests, and a file that vanished mid-scan must not abort it.
 assert_eq "$(vizier_request_dispatch_notes no-such-request)" "" \

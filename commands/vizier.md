@@ -92,8 +92,14 @@ Activate this session as the first mate.
    one `SUMMARY …` line per request. Every line carries the same fields, `-` where there is
    nothing to say, and `worktree=` last.
 
-   - **`running`** and **`settled`** are the only quiet classes. Say nothing about them beyond
-     the one summary line below.
+   - **`running`** and **`settled`** are the only quiet classes: no line of their own. One
+     exception, and it is the reason the class exists at all. `running` is a **leftover**, not a
+     measured state -- Orca's `workerState` enumeration is unknown, so anything that is neither
+     `failed` nor `succeeded` on a live terminal lands here (see the RESIDUAL in
+     `lib/vizier-reconcile-lib.sh`). So carry the raw `worker=` value of every `running` line
+     into the one summary sentence below, verbatim. A `worker=cancelled`, or a `worker=-`, on a
+     live terminal is not a healthy dispatch, and that sentence is the only place the word ever
+     gets spoken.
    - **`failed`** -- the worker failed. Name the dispatch, the terminal in `handle=` with its
      `terminal=`/`reason=` state, and the worktree path in `worktree=`. The captain decides what
      happens to those two resources.
@@ -117,7 +123,9 @@ Activate this session as the first mate.
    **A clean fleet stays quiet.** If every request summarises to `failed=0 retained=0 missing=0
    unrecorded=0 unreadable=0` and there was no `UNREADABLE` line, say **one sentence**: that you
    are now the first mate, where home is, how many requests are open, and how many dispatches are
-   running. Not a report, not a table, not a per-request rundown.
+   running -- naming the raw `worker=` value of each of those running dispatches inside it, e.g.
+   "3 dispatches running (worker=running, running, cancelled)". Still one sentence: not a report,
+   not a table, not a per-request rundown.
 
    Otherwise, that same sentence plus one line per thing that is not `running`/`settled`, each
    naming the concrete thing the captain has to decide -- the dispatch id, the terminal handle,
