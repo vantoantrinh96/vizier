@@ -151,10 +151,16 @@ _vizier_reconcile_rows() {  # <raw> -- one TSV row per worker, fixed field order
   # `-` IS A SENTINEL AND COULD IN PRINCIPLE COLLIDE with a real value of
   # exactly that text. It cannot in practice: every field it stands in for is
   # an Orca identifier (`ctx_…`, `task_…`, `term_…`), an enumerated state
-  # word, or an absolute path, and none of those is a lone dash. Said out loud
-  # rather than left as a silent assumption, because the one place it would
-  # matter is the dispatch-id test in pass 2, which reads `-` as "this row
-  # cannot be joined".
+  # word, or an absolute path, and none of those is a lone dash.
+  #
+  # THE LOAD-BEARING READING, AND THERE IS ONLY ONE: `-` means "THIS ROW
+  # CANNOT BE JOINED". Both tests in pass 2 that branch on it -- the dispatch
+  # id and the run id -- must read it that way and report the row rather than
+  # drop it. Stated here rather than left implicit because the two once
+  # disagreed: the run test read `-` as "belongs to a different Run" and
+  # counted a failed dispatch away into `other_run`, producing a clean-fleet
+  # summary over a held worktree. See the comment on that test for the
+  # measurement.
   #
   # EVERY FIELD ACCESS IS MADE SAFE AGAINST A NON-OBJECT, and that is not
   # defensive padding. `.result.workers` being an array is all
@@ -204,9 +210,27 @@ _vizier_reconcile_notes() {  # dispatch notes on stdin -- deduped, ordered
   # in vizier_request_dispatch_notes cannot produce one, so anything that
   # gets here is a caller passing something else, and a blank dispatch id
   # would otherwise be reported as a `missing` dispatch that never existed.
-  awk -F'\t' '
+  #
+  # WHITESPACE IN THE NOTE-SOURCED COLUMNS IS COLLAPSED HERE, AND THIS IS THE
+  # ONLY PLACE IT MAY BE. `task` and `mode` come from the request file, not
+  # from Orca, so they are the two fields on the report line that never pass
+  # through _vizier_reconcile_rows's `w` -- and a space in either splits the
+  # `key=value` pair it is printed as, shifting `health=` and every field
+  # after it off the positions _vizier_reconcile_line contracts for. Same
+  # rule as `w`, applied for the same reason, at the reporter that owns the
+  # grammar.
+  #
+  # DELIBERATELY NOT FIXED AT THE READER. vizier_request_dispatch_notes keeps
+  # the mode whole and greedy because supervise joins its delivery decision
+  # to that value, and a mode this file cannot print is still a mode that
+  # must reach supervise unrecognised rather than be dropped -- the header of
+  # vizier_request_dispatch_notes records the measured release-instead-of-hold
+  # that bounding it at the reader caused. So: whole value to supervise,
+  # collapsed value to the report.
+  awk -F'\t' -v OFS='\t' '
     $2 == "" { next }
-    { if (!($2 in seen)) { seen[$2] = 1; order[++n] = $2 }
+    { gsub(/[[:space:]]+/, "_", $1); gsub(/[[:space:]]+/, "_", $3)
+      if (!($2 in seen)) { seen[$2] = 1; order[++n] = $2 }
       last[$2] = $0 }
     END { for (i = 1; i <= n; i++) print last[order[i]] }
   '
@@ -414,20 +438,45 @@ EOF
     # Already reported by pass 1, with the mode the note gave it.
     printf '%s\n' "$dedup" \
       | awk -F'\t' -v d="$d" '$2 == d { found = 1 } END { exit !found }' && continue
-    if [ -n "$run_id" ] && [ "$rid" != "$run_id" ]; then
+    # `-` MEANS "CANNOT BE JOINED", NEVER "BELONGS TO ANOTHER RUN". This test
+    # and the dispatch-id test above read the sentinel the SAME way, and a
+    # review round already found them disagreeing: the run filter used to
+    # treat an absent `runId` as another Run's problem and drop the row,
+    # counting it only in `other_run`. Measured on the committed
+    # worker-list-failed-retained capture with `runId` deleted from its one
+    # row, the report was `SUMMARY total=0 ... failed=0 ... unrecorded=0
+    # unreadable=0 held=0 other_run=1` -- no RECONCILE line at all, and a
+    # summary that satisfies activation's clean-fleet gate verbatim, over the
+    # exact failed-dispatch-still-holding-a-worktree state this file exists to
+    # surface. It was the one branch here that failed OPEN on shape drift.
+    #
+    # So a row that names no Run is `unreadable`: it genuinely cannot be read
+    # into a decision about THIS Run. It is counted in `total` and in `held`,
+    # because those are the counters the clean-fleet gate keys on and a
+    # summary must not be able to read all-zero over it. `other_run` keeps its
+    # original job -- catching a caller who passed the machine-wide
+    # `worker-list --json` instead of the per-run one -- narrowed to rows that
+    # genuinely name a DIFFERENT Run.
+    if [ "$rid" = "-" ]; then
+      class=unreadable
+      n_unreadable=$((n_unreadable + 1))
+    elif [ -n "$run_id" ] && [ "$rid" != "$run_id" ]; then
       n_other=$((n_other + 1))
       continue
+    else
+      class=unrecorded
+      n_unrecorded=$((n_unrecorded + 1))
     fi
     total=$((total + 1))
-    n_unrecorded=$((n_unrecorded + 1))
     health=$(vizier_reconcile_health "$ws" "$ds" "$ts")
     case "$ts" in -|released) : ;; *) n_held=$((n_held + 1)) ;; esac
-    # class=unrecorded, health=whatever Orca says. Both, on one line: the
-    # ledger being wrong and the dispatch having failed are two separate
-    # things the captain has to act on, and a report that picked one of them
-    # would drop the other. `mode` is `-`, not a guessed default: the note
-    # that would have carried the delivery mode is the very thing missing.
-    out="${out}$(_vizier_reconcile_line unrecorded "$d" "$t" - \
+    # class says how the row joins, health says what Orca's own fields say.
+    # Both, on one line: the ledger being wrong (or unjoinable) and the
+    # dispatch having failed are two separate things the captain has to act
+    # on, and a report that picked one of them would drop the other. `mode`
+    # is `-`, not a guessed default: the note that would have carried the
+    # delivery mode is the very thing missing.
+    out="${out}$(_vizier_reconcile_line "$class" "$d" "$t" - \
       "$health" "$ws" "$ds" "$ts" "$rr" "$handle" "$wt")
 "
   done < <(printf '%s\n' "$rows")

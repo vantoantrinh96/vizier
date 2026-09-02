@@ -98,5 +98,50 @@ orca orchestration run-use --id "run-e2" --json >/dev/null
 plan=$(orca orchestration check --run run-e2 --json | vizier_supervise_plan no-mistakes "$map_file")
 assert_contains "$plan" "PLAN e2 hold no-axi-outcome" "no genuine note for d-2 -> falls back to the given default (strict), never the prose's direct-PR"
 
+# --- Test 3: A NOTE WHOSE MODE CARRIES A SPACE MUST STILL BE IN THE MAP ---
+# A DROPPED NOTE IS NOT THE STRICT PATH, and that is the whole reason the
+# mode capture in vizier_request_dispatch_notes stays greedy. On a map miss
+# vizier_supervise_plan falls back to `$default_mode`, which is the PROJECT's
+# `delivery:` field and can be exactly `direct-PR` -- the one value that
+# skips the axi_outcome check. So a reader that tidies an odd mode away
+# releases a terminal a pipeline may still own.
+#
+# Measured, same request file, both directions: with the mode captured
+# greedily this plans `hold no-axi-outcome`; with it bounded to
+# `[^[:space:]]\{1,\}` the note vanished and the identical input planned
+# `release ok`. The default below is deliberately `direct-PR` -- with any
+# other default this assertion would pass for the wrong reason.
+vizier_request_create spacey-mode run-3 proj proj-id local "body"
+vizier_request_note spacey-mode "task task_9 -> dispatch d-3 (no-mistakes per captain)"
+map=$(build_map spacey-mode)
+assert_eq "$map" "$(printf 'd-3\tno-mistakes per captain')" \
+  "the odd mode reaches the map whole and unrecognised, rather than being dropped"
+
+map_file="$VIZIER_TEST_TMP/spacey-map"
+printf '%s\n' "$map" > "$map_file"
+fake_orca_message run-e3 e3 worker_done "done, no outcome line" "$(fake_orca_payload d-3)"
+orca orchestration run-use --id "run-e3" --json >/dev/null
+plan=$(orca orchestration check --run run-e3 --json | vizier_supervise_plan direct-PR "$map_file")
+assert_contains "$plan" "PLAN e3 hold no-axi-outcome" \
+  "end-to-end: an unrecognised mode HOLDS even when the project default is direct-PR"
+
+# The same, via a tab rather than a space: the note reader's output is
+# tab-separated, so a captured tab would split the mode into a fourth column
+# and `cut -f2,3` would hand the map exactly `direct-PR`, promoting an
+# unrecognised mode into the only one that releases without the check.
+vizier_request_create tabby-mode run-4 proj proj-id local "body"
+vizier_request_note tabby-mode "$(printf 'task task_10 -> dispatch d-4 (direct-PR\tretried by hand)')"
+map=$(build_map tabby-mode)
+assert_eq "$map" "$(printf 'd-4\tdirect-PR retried by hand')" \
+  "a tab in the mode is folded, never allowed to truncate the value into direct-PR"
+
+map_file="$VIZIER_TEST_TMP/tabby-map"
+printf '%s\n' "$map" > "$map_file"
+fake_orca_message run-e4 e4 worker_done "done, no outcome line" "$(fake_orca_payload d-4)"
+orca orchestration run-use --id "run-e4" --json >/dev/null
+plan=$(orca orchestration check --run run-e4 --json | vizier_supervise_plan direct-PR "$map_file")
+assert_contains "$plan" "PLAN e4 hold no-axi-outcome" \
+  "so it holds too, instead of being read as a bare direct-PR and released"
+
 vizier_test_teardown
 vizier_test_report

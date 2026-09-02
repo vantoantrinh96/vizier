@@ -145,26 +145,52 @@ vizier_request_close() {  # <slug>
 # direct-PR. Only a line that actually STARTS with `task ` and has the whole
 # real note's shape counts.
 #
-# ALL THREE COLUMNS ARE REQUIRED NON-EMPTY AND WHITESPACE-FREE
-# (`[^[:space:]]\{1,\}`, not `*` and not `.*`). The earlier in-skill pattern
-# used `*` for the ids, which would have matched a line with an empty
-# dispatch id -- harmless for supervise's map, whose lookup skips an empty
-# key, but reconciliation would have reported that empty id as a dispatch
-# Orca has lost. The mode was `.*` for the same reason it should not have
-# been: nothing downstream looked at its shape. Reconciliation does. It
-# prints the mode as a `key=value` pair on a fixed-shape report line where
-# `worktree=` is the ONLY field allowed to contain a space (see
-# _vizier_reconcile_line), so a mode carrying one would shift `health=` and
-# every field after it out of position. The same pasted-prose channel the
-# anchoring above exists for reaches this: a hand-edited body line like
-# `task 3 -> dispatch ctx_abc (direct-PR, retried by hand)` satisfies the
-# anchor. Bounding the capture here -- at the owner of the file format --
-# makes the report's grammar true by construction rather than repaired by
-# every reader. Such a line now matches nothing at all, which fails closed
-# both ways: reconciliation reports the dispatch as `unrecorded` (loud, and
-# the ledger IS malformed), and supervise resolves no mode for it, which
-# vizier_msg_disposition already treats as the strict path. Real notes,
-# which `brief` writes from a single-token mode, are unaffected.
+# THE TASK AND DISPATCH IDS ARE REQUIRED NON-EMPTY (`\{1,\}`, not `*`). The
+# earlier in-skill pattern used `*`, which would have matched a line with an
+# empty dispatch id -- harmless for supervise's map, whose lookup skips an
+# empty key, but reconciliation would have reported that empty id as a
+# dispatch Orca has lost.
+#
+# THE MODE CAPTURE IS GREEDY ON PURPOSE, AND A REVIEW ROUND ALREADY GOT THIS
+# WRONG ONCE -- the reason is recorded here because the wrong version looked
+# obviously safer. A mode carrying a space corrupts reconciliation's report
+# line, whose `key=value` grammar reserves the trailing `worktree=` as the
+# only field allowed to hold one, so the mode was bounded to
+# `[^[:space:]]\{1,\}` to fix the grammar at this reader. That FIXED THE
+# GRAMMAR BY TRUNCATING MEANING, and traded a cosmetic defect for an unsafe
+# one: a bounded pattern makes such a note match NOTHING, so the note is
+# DROPPED. Measured on the shipped code, same request file, both directions:
+# a note reading `task task_9 -> dispatch ctx_9 (no-mistakes per captain)`
+# planned `PLAN mx hold no-axi-outcome` under the greedy capture and
+# `PLAN mx release ok` under the bounded one -- a terminal whose pipeline may
+# still own the branch, released.
+#
+# WHY DROPPING IS THE DANGEROUS DIRECTION, spelled out because the intuition
+# runs the other way: a missing note is NOT the strict path. On a map miss
+# vizier_supervise_plan falls back to `mode="$default_mode"`, and
+# `default_mode` is the PROJECT's `delivery:` field, which can be exactly
+# `direct-PR` -- the single value vizier_msg_disposition lets skip the
+# axi_outcome check. A note that is PRESENT with an unrecognised mode is safe
+# by construction: anything other than the exact string `direct-PR` takes the
+# strict path. So the reader's job is to keep the note, not to tidy it, and
+# an odd mode must survive here unrecognised rather than vanish. Reachable
+# through the ordinary override path: `brief` writes whatever mode the captain
+# named into the note while `default_mode` still comes from the project.
+#
+# The report line's grammar is fixed SEPARATELY, at the reporter that owns
+# that grammar -- _vizier_reconcile_notes collapses whitespace in the
+# note-sourced columns for display, exactly as _vizier_reconcile_rows's `w`
+# already does for every Orca-sourced state word. Semantics unchanged there,
+# and the value supervise's map joins on stays the untruncated one.
+#
+# A TAB IS DELETED RATHER THAN CAPTURED, and that is this function's own TSV
+# contract, not tidying. The output is tab-separated, so a tab inside the
+# parenthesised mode would emit a FOURTH column, and `cut -f2,3` would then
+# hand supervise the text up to that tab: `(direct-PR<TAB>junk)` truncates to
+# exactly `direct-PR` and releases. That is the one thing no reading of this
+# file may do -- silently truncate an unrecognised mode INTO a recognised
+# one. Folded to a space, the mode stays whole, stays unrecognised, and stays
+# in one column.
 #
 # Real request files carry OTHER lines that start with `task ` and are not
 # dispatch notes -- measured on the captain's machine: `task 1: mode=direct-PR
@@ -181,9 +207,10 @@ vizier_request_dispatch_notes() {  # <slug> -- one <task>\t<dispatch>\t<mode> li
   [ -r "$f" ] || return 0
   # `tr -d '\r'` for the same reason the frontmatter readers do it: a CRLF
   # file would leave the mode ending in a carriage return, and the mode is
-  # then compared against the exact string `direct-PR`.
-  tr -d '\r' < "$f" \
-    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\([^[:space:]]\{1,\}\))$/\1\t\2\t\3/p'
+  # then compared against the exact string `direct-PR`. The tab fold is the
+  # TSV contract described above.
+  tr -d '\r' < "$f" | tr '\t' ' ' \
+    | sed -n 's/^task \([^[:space:]]\{1,\}\) -> dispatch \([^[:space:]]\{1,\}\) (\(.*\))$/\1\t\2\t\3/p'
   return 0
 }
 

@@ -344,6 +344,29 @@ assert_eq "$(printf '%s\n' "$report" | grep -c '^RECONCILE ')" "3" \
 assert_contains "$(summary_of "$report")" "unrecorded=2" "the unnamed ones as unrecorded"
 assert_contains "$(summary_of "$report")" "other_run=0" "and nothing filtered"
 
+# --- A ROW THAT NAMES NO RUN IS UNJOINABLE, NOT SOMEBODY ELSE'S ROW -------
+# `-` means "cannot be joined" everywhere in this file. The run filter once
+# read it as "belongs to a different Run" and counted the row away into
+# `other_run`, and the consequence was the worst outcome this library has:
+# the measured failed dispatch, still holding its worktree, reported as a
+# clean fleet. The fixture is the real capture with `runId` deleted from its
+# one row -- shape drift, which every other case here fails closed on.
+norun=$(printf '%s' "$REAL_FAILED" | jq -c 'del(.result.workers[0].runId)')
+report=$(vizier_reconcile_run run_52f834f62a96 "" "$norun")
+assert_eq "$(printf '%s\n' "$report" | grep -c '^RECONCILE ')" "1" \
+  "the row is reported, not dropped"
+assert_eq "$(class_of "$report" ctx_70061775b9ca)" "unreadable" \
+  "under the unjoinable class, keyed by its real dispatch id"
+assert_eq "$(field_of "$report" ctx_70061775b9ca health)" "failed" \
+  "and Orca's own verdict still rides along -- the captain must hear that it failed"
+assert_contains "$report" "worktree=/Users/toantv/orca/workspaces/demo-vizier/mit-license" \
+  "with the worktree it is still holding named in full"
+# THE COUNTS ARE THE POINT. Activation's clean-fleet gate keys on these, so
+# an all-zero summary here is a spoken all-clear over a held resource.
+assert_eq "$(summary_of "$report")" \
+  "total=1 running=0 settled=0 failed=0 retained=0 missing=0 unrecorded=0 unreadable=1 held=1 other_run=0" \
+  "counted in total, in unreadable and in held -- and NOT in other_run"
+
 # --- a task id disagreement between the file and Orca is visible ----------
 # The request file's note is the ledger's record of what a dispatch was for.
 # If Orca says otherwise, trusting either side silently loses the other.
@@ -451,25 +474,42 @@ vizier_request_note blanks "task 4 -> dispatch  (direct-PR)"
 assert_eq "$(vizier_request_dispatch_notes blanks)" "" \
   "a note with a blank task or dispatch id is not a note"
 
-# A MODE CARRYING A SPACE MUST NOT REACH THE REPORT LINE. The mode used to be
-# captured with `.*`, so a hand-edited or pasted body line put a space inside
-# a `key=value` pair and shifted `health=` and everything after it out of
-# position -- the one field allowed to hold a space is `worktree=`, and only
-# because it is last. Bounded at the reader, the line is not a note at all,
-# which is loud in both directions: the dispatch reconciles as `unrecorded`
-# rather than being reported under a corrupt shape.
+# A MODE CARRYING A SPACE IS KEPT WHOLE BY THE READER AND COLLAPSED BY THE
+# REPORTER. Two properties, and an earlier round satisfied the second by
+# breaking the first: bounding the reader's capture made such a note match
+# nothing, the note was DROPPED, and supervise then fell back to the project
+# default -- which can be `direct-PR` -- and released a terminal it should
+# have held. tests/supervise-mode-map.test.sh pins that half. Here: the note
+# survives extraction with its mode intact, and the report line it produces
+# still parses by position.
 vizier_request_create spacey-mode run_52f834f62a96 proj proj-id local "body"
 vizier_request_note spacey-mode "task task_f5a588ccf365 -> dispatch ctx_70061775b9ca (direct-PR, retried by hand)"
-assert_eq "$(vizier_request_dispatch_notes spacey-mode)" "" \
-  "a note whose mode carries a space is not a dispatch note"
+assert_eq "$(vizier_request_dispatch_notes spacey-mode)" \
+  "$(printf 'task_f5a588ccf365\tctx_70061775b9ca\tdirect-PR, retried by hand')" \
+  "the reader keeps the whole mode -- truncating it is what dropped the note and released a terminal"
 report=$(vizier_reconcile_run run_52f834f62a96 \
   "$(vizier_request_dispatch_notes spacey-mode)" "$REAL_FAILED")
+assert_eq "$(field_of "$report" ctx_70061775b9ca mode)" "direct-PR,_retried_by_hand" \
+  "the reporter collapses its whitespace, the way every Orca-sourced state word already is"
 assert_eq "$(field_of "$report" ctx_70061775b9ca health)" "failed" \
-  "the dispatch is still reported, with health= at its contracted position"
-assert_eq "$(field_of "$report" ctx_70061775b9ca mode)" "-" \
-  "and no unknown mode is invented for it"
-assert_eq "$(class_of "$report" ctx_70061775b9ca)" "unrecorded" \
-  "the malformed ledger entry is named, not silently honoured"
+  "so health= is still at its contracted position on the line"
+assert_eq "$(field_of "$report" ctx_70061775b9ca terminal)" "retained" \
+  "and so is every field after it"
+assert_eq "$(class_of "$report" ctx_70061775b9ca)" "failed" \
+  "and the dispatch reconciles against its own note, not as one the ledger never recorded"
+
+# A TAB IN THE MODE MUST NOT TRUNCATE IT INTO A RECOGNISED ONE. The output is
+# tab-separated, so a captured tab would emit a fourth column and supervise's
+# `cut -f2,3` would hand it exactly `direct-PR` -- an unrecognised mode
+# silently promoted to the one value that skips the axi_outcome check.
+vizier_request_create tabby-mode run-tabby proj proj-id local "body"
+vizier_request_note tabby-mode "$(printf 'task 1 -> dispatch d-t (direct-PR\tretried)')"
+assert_eq "$(vizier_request_dispatch_notes tabby-mode)" \
+  "$(printf '1\td-t\tdirect-PR retried')" \
+  "the tab folds to a space, so the mode stays whole, unrecognised, and in one column"
+assert_eq "$(vizier_request_dispatch_notes tabby-mode | cut -f2,3)" \
+  "$(printf 'd-t\tdirect-PR retried')" \
+  "and supervise's map cannot read it as direct-PR"
 
 # A slug with no file at all answers empty and rc 0 -- reconciliation runs
 # over open requests, and a file that vanished mid-scan must not abort it.
