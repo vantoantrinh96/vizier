@@ -61,7 +61,7 @@ printf 'session_id=sess-a\nharness=cursor-agent\npid=%s\nsince=1\n' $$ > "$(vizi
 mk_request one run_a
 
 # A message: prints exactly one followup_message object, exit 0 (NOT exit 2)
-fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+fake_orca_message run_a msg_a1 worker_done "PR https://x/1" "$(fake_orca_payload dispatch-1)"
 out=$(payload sess-a 0 | bash "$HOOK" 2>/dev/null); rc=$?
 assert_rc "$rc" 0 "Cursor always exits 0, even when waking"
 assert_contains "$out" "followup_message" "prints followup_message"
@@ -101,7 +101,7 @@ rm -f "$VIZIER_HOME/park-owner"
 ( payload sess-a 0 | bash "$HOOK" > "$VIZIER_TEST_TMP/p1.out" 2>/dev/null ) & p1=$!
 ( payload sess-a 0 | bash "$HOOK" > "$VIZIER_TEST_TMP/p2.out" 2>/dev/null ) & p2=$!
 wait_for_park_ready "$p1" "$p2"
-fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+fake_orca_message run_a msg_a2 worker_done "PR https://x/1" "$(fake_orca_payload dispatch-1)"
 wait "$p1" 2>/dev/null || true
 wait "$p2" 2>/dev/null || true
 emitters=$(grep -l followup_message "$VIZIER_TEST_TMP/p1.out" "$VIZIER_TEST_TMP/p2.out" 2>/dev/null | wc -l | tr -d ' ')
@@ -117,7 +117,7 @@ rm -f "$VIZIER_HOME/park-owner"
 ( payload sess-a 0 | bash "$HOOK" > "$VIZIER_TEST_TMP/p3.out" 2>/dev/null ) & p3=$!
 wait_for_park_ready "$p3"
 printf 'usurper\n' > "$VIZIER_HOME/park-owner"
-fake_orca_queue run_a '{"type":"worker_done","run_id":"run_a","outcome":"succeeded"}'
+fake_orca_message run_a msg_a3 worker_done "PR https://x/1" "$(fake_orca_payload dispatch-1)"
 wait "$p3" 2>/dev/null || true
 assert_eq "$(cat "$VIZIER_TEST_TMP/p3.out")" "" "being replaced as owner partway through stays quiet, even after seeing the message"
 

@@ -12,24 +12,39 @@ assert_rc "$rc" 0 "a clean doctor gives rc 0"
 assert_contains "$out" "orca" "doctor mentions orca"
 
 # Orca not ready makes doctor fail and states clearly how to fix it
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"runtime":{"reachable":false,"state":"starting","capabilities":[]}}}'
+# NOTE: fake-orca wraps the envelope itself (id/ok/_meta); the override hook
+# only supplies the .result body, so only that much is set here.
+export VIZIER_FAKE_ORCA_STATUS_RESULT='{"runtime":{"reachable":false,"state":"starting","capabilities":[]}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "Orca not ready gives rc 1"
 assert_contains "$out" "NOT_READY" "reports NOT_READY"
 assert_contains "$out" "orca open" "suggests the fix command"
 
 # Missing a required capability also fails
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"runtime":{"reachable":true,"state":"ready","capabilities":["other.v1"]}}}'
+export VIZIER_FAKE_ORCA_STATUS_RESULT='{"runtime":{"reachable":true,"state":"ready","capabilities":["other.v1"]}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "missing capability gives rc 1"
 assert_contains "$out" "orchestration.contract.v1" "names the exact missing capability"
-unset VIZIER_FAKE_ORCA_STATUS
+unset VIZIER_FAKE_ORCA_STATUS_RESULT
 
 # install copies the payload into dist then calls the adapter
 out=$(bash "$CLI" install --harness claude 2>&1); rc=$?
 assert_rc "$rc" 0 "install claude succeeds"
 [ -f "$VIZIER_HOME/dist/hooks/wake-claude.sh" ]; assert_rc $? 0 "the payload is in dist"
 [ -f "$VIZIER_CLAUDE_SKILLS_DIR/vizier/hooks/hooks.json" ]; assert_rc $? 0 "the claude adapter is installed"
+
+# A skill added to the repo must reach dist with no manifest edit. If
+# _sync_dist ever switches to an explicit file list, install still succeeds
+# and the skill silently never appears -- so assert the payload, not the
+# exit code.
+for s in request brief supervise delivery identity; do
+  assert_eq "$(test -f "$VIZIER_HOME/dist/skills/$s/SKILL.md" && echo yes)" "yes" \
+    "skill $s reached dist"
+done
+for l in vizier-home vizier-request-lib vizier-routing-lib vizier-brief-lib vizier-mailbox-lib vizier-supervise-lib vizier-wake-lib; do
+  assert_eq "$(test -f "$VIZIER_HOME/dist/lib/$l.sh" && echo yes)" "yes" \
+    "library $l reached dist"
+done
 
 # An unsupported harness says so plainly, does not stay silent
 out=$(bash "$CLI" install --harness codex 2>&1); rc=$?
@@ -86,22 +101,22 @@ out=$( cd "$DECOY" && VIZIER_SKIP_GH_AUTH=1 "$LINKDIR/vizier" doctor 2>&1 ); rc=
 assert_rc "$rc" 0 "doctor runs fine through a symlink"
 
 # Capability must match EXACTLY, not as a substring
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"runtime":{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v10"]}}}'
+export VIZIER_FAKE_ORCA_STATUS_RESULT='{"runtime":{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v10"]}}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "capability v10 must NOT count as v1"
 assert_contains "$out" "orchestration.contract.v1" "names the still-missing capability"
-unset VIZIER_FAKE_ORCA_STATUS
+unset VIZIER_FAKE_ORCA_STATUS_RESULT
 
 # REGRESSION: the real orca app nests reachable/state/capabilities under
 # result.runtime, not directly under result. A status document in the OLD
 # flat shape (the one the parser used to read, and the fixture used to
 # emit) must now be treated as not-ready, proving doctor actually reads the
 # nested path and no longer accepts the shape it used to wrongly accept.
-export VIZIER_FAKE_ORCA_STATUS='{"ok":true,"result":{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v1"]}}'
+export VIZIER_FAKE_ORCA_STATUS_RESULT='{"reachable":true,"state":"ready","capabilities":["orchestration.contract.v1"]}'
 out=$(bash "$CLI" doctor 2>&1); rc=$?
 assert_rc "$rc" 1 "doctor rejects the OLD flat status shape (reachable/state/capabilities directly under result)"
 assert_contains "$out" "NOT_READY" "the old flat shape is reported NOT_READY, not silently accepted as ready"
-unset VIZIER_FAKE_ORCA_STATUS
+unset VIZIER_FAKE_ORCA_STATUS_RESULT
 
 # A symlink chain deeper than the ceiling must REPORT AN ERROR, not silently use a half-resolved path
 # Test: create ENOUGH symlinks to exceed the 16-hop ceiling while bash can still execute it

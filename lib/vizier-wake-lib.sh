@@ -2,21 +2,50 @@
 # Scans open requests and waits on the mailbox of several Runs at once.
 # Requires lib/vizier-home.sh to be sourced first.
 #
-# WHY WAIT IN PARALLEL: `orca orchestration check` is per-Run (`--run <id>`),
-# and the spec allows several requests to be open at once. Waiting
-# sequentially would let one silent Run block another Run's message for the
-# whole timeout. We fork one background process per Run, whichever gets a
-# message first wins, then we kill the rest.
+# WHY inbox AND NOT `check --wait`: measured 2026-09-02, reading a Run's
+# mailbox with `check` is done as that Run's BOUND coordinator terminal. The
+# binding is 1:1, a terminal bound to one Run is fenced off every other
+# (`consumer_fenced`), and an unbound terminal reads nothing at all. So the
+# design this file used to have -- one session, one `check --wait` per open
+# Run, all in parallel -- could never have worked against the real app: at
+# most one of those waits can succeed.
 #
-# ALWAYS PASS --run: a first-mate session is not an Orca terminal, so there is
-# no terminal-bound Run to fall back on.
+# `orca orchestration inbox` is the read that has none of those constraints:
+# no binding, every Run, every row carrying `run_id` and a `read` flag. It
+# also has no `--ack` and no delivery, which is not a gap -- it is exactly the
+# split this project already committed to. THE HOOK NEVER ACKS. Forming the
+# delivery, and acknowledging it, belongs to `supervise`, which binds with
+# `run-use` first. See docs/decisions/2026-09-02-sender-terminal.md.
+#
+# THE COST OF THE SWAP IS POLLING. `inbox` has no `--wait`, so this is a poll
+# loop where it used to be a long block, and every tick is a real call into
+# the app rather than a read of a local file. That is why the default cadence
+# below is seconds, not the one second the old file-polling loop could afford.
+#
+# ALWAYS FILTER BY THE OPEN RUNS. `inbox` shows messages across every Run on
+# the machine, including Runs this vizier does not own. Waking on one of those
+# would put a first mate to work on someone else's Run.
+#
+# REQUIRES lib/vizier-mailbox-lib.sh to be sourced first (after
+# lib/vizier-home.sh). It owns the shape of the response -- and `inbox`
+# returns the same `.result.messages[]` envelope `check` does, which is the
+# whole reason that library exists as its own owner.
 
 VIZIER_WAKE_TYPES="${VIZIER_WAKE_TYPES:-worker_done,escalation,question}"
 
-# Poll cadence. Production keeps it at 1000ms: at an eight-hour timeout that's
-# 28,500 loops instead of 285,000, and the extra sub-second wake latency is not
-# something a human notices. Tests lower it to 50ms for speed.
-VIZIER_WAKE_POLL_MS="${VIZIER_WAKE_POLL_MS:-1000}"
+# Poll cadence. EVERY TICK IS NOW A REAL CALL INTO THE APP, not a stat of a
+# local file the way it was when background `orca --wait` children did the
+# blocking -- so the old 1000ms would mean ~28,500 CLI invocations across an
+# eight-hour hook. 3000ms costs ~9,500 and adds at most three seconds of wake
+# latency, which is not something a human supervising a fleet notices. Tests
+# lower it to 50ms for speed.
+VIZIER_WAKE_POLL_MS="${VIZIER_WAKE_POLL_MS:-3000}"
+
+# `inbox` returns newest-first (observed) and takes `--limit`. An explicit
+# limit is passed rather than relying on whatever the default is, because an
+# unknown default is exactly the kind of thing that silently truncates the one
+# message that mattered once a mailbox gets busy.
+VIZIER_WAKE_INBOX_LIMIT="${VIZIER_WAKE_INBOX_LIMIT:-100}"
 
 # Return only the frontmatter: the block between the first `---` line and the
 # second. A "status:" that happens to appear in the prose body must never get
@@ -25,7 +54,7 @@ VIZIER_WAKE_POLL_MS="${VIZIER_WAKE_POLL_MS:-1000}"
 _vizier_frontmatter() {  # <file>
   awk '
     { gsub(/\r$/, "") }
-    NR==1 && $0 != "---" { exit }
+    NR==1 && $0 !~ /^---[[:space:]]*$/ { exit }
     /^---[[:space:]]*$/ { n++; if (n==2) exit; next }
     n==1 { print }
   ' "$1" 2>/dev/null | tr -d '\r'
@@ -58,93 +87,71 @@ vizier_summarize() {  # <json_line>
     | tr '\n\r\t' '   ' | sed 's/[[:space:]]*$//'
 }
 
-# Read run ids from stdin, wait up to <timeout_ms>, print one summary line or
-# empty.
-vizier_wait_any_run() {  # <timeout_ms>
-  # The whole function body lives in a subshell so `trap` belongs only to it,
-  # not to the caller's shell.
-  (
-    local timeout_ms=$1 tmp run i=0 line poll_s deadline f
-    tmp=$(mktemp -d "${TMPDIR:-/tmp}/vizier-wake.XXXXXX") || return 0
-    # TRAP BEFORE SPAWNING ANYTHING. If this process is killed from the
-    # outside -- the harness cuts the hook, the captain closes the session, the
-    # machine sleeps -- every child `orca --wait` must die with it. Without the
-    # trap, EVERY TURN of EVERY session on the machine would leave behind an
-    # orphaned process that can live for up to eight hours. The trap is also
-    # the only cleanup path for all three normal exits, so there is nowhere
-    # left where cleanup has to be remembered by hand.
-    # TWO traps, not one. In bash, a SIGNAL trap runs its handler then
-    # CONTINUES execution -- it does not end the process. A single trap
-    # combined for both EXIT and INT/TERM would clean up but leave this shell
-    # spinning through the poll loop to the original deadline (eight hours in
-    # production), once per hook run: exactly the accumulation the trap exists
-    # to block. The signal branch must therefore `exit` explicitly. Cleaning up
-    # twice is harmless: kill against an already-dead pid and rm -rf against an
-    # already-gone directory are both no-ops.
-    trap '_vizier_wake_kill_all "$tmp"; rm -rf "$tmp"' EXIT
-    trap '_vizier_wake_kill_all "$tmp"; rm -rf "$tmp"; exit 0' INT TERM HUP
-    # NEVER `set -m` here. Bash does not create a new process group for a
-    # background job, so every child `orca` stays in the process group the
-    # HARNESS owns -- and that is exactly what lets the harness ending the hook
-    # clean up the whole cluster
-    # (firstmate/bin/fm-claude-stop-autoarm.sh:35-37: "Claude owns the process
-    # group, so its timeout/session teardown kills arm and watcher together").
-    # Turning on `set -m` would push the children into a NEW group and escape
-    # that cleanup -- exactly the opposite of what we want. The trap above
-    # covers the clean-exit path; the process group covers the cut-off path.
-    while IFS= read -r run; do
-      [ -n "$run" ] || continue
-      i=$((i + 1))
-      (
-        # FIX 11 -- `</dev/null` IS MANDATORY. This `while read` loop reads run
-        # ids from the function's OWN stdin (caller `printf ... |
-        # vizier_wait_any_run`), and a background process doesn't get its own fd
-        # 0 -- it INHERITS the loop's stdin whole unless explicitly redirected.
-        # If `orca` (a real process, not a builtin) reads stdin for any reason
-        # at all -- a bug, logging, or some future behavior we don't control --
-        # it eats part of the pipe the `while read` loop still needs, and
-        # every run id AFTER THAT is SILENTLY SWALLOWED, no error, no log: the
-        # second request onward is never waited on. Close that path off
-        # entirely by pointing the child's fd 0 at /dev/null, so it never
-        # touches the loop's pipe by even one byte.
-        orca orchestration check --wait --peek --run "$run" \
-          --types "$VIZIER_WAKE_TYPES" --timeout-ms "$timeout_ms" --json \
-          2>/dev/null > "$tmp/$i.out" < /dev/null
-      ) &
-      printf '%s\n' "$!" >> "$tmp/pids"
-    done
-    [ "$i" -gt 0 ] || return 0
-
-    # Deadline by REAL wall-clock time, not a logical counter: a counter that
-    # accumulates poll ticks drifts away from real time, since each iteration
-    # also costs time running the loop body -- and it drifts further as the
-    # file grows.
-    poll_s=$(awk -v m="${VIZIER_WAKE_POLL_MS}" 'BEGIN{printf "%.3f", m/1000}')
-    deadline=$(( $(date +%s) + (timeout_ms + 999) / 1000 ))
-    while :; do
-      for f in "$tmp"/*.out; do
-        [ -s "$f" ] || continue
-        # Cheap grep before jq: `--types` already guarantees every returned
-        # message has a `type`, and Orca's keepalive goes to stderr and gets
-        # dropped, so most loop iterations fork no jq at all.
-        grep -q '"type"' "$f" 2>/dev/null || continue
-        line=$(jq -rc 'select(._keepalive|not) | select(.type? != null)' "$f" 2>/dev/null | head -1)
-        [ -n "$line" ] || continue
-        vizier_summarize "$line"
-        return 0
-      done
-      [ "$(date +%s)" -lt "$deadline" ] || return 0
-      sleep "$poll_s"
-    done
-  )
+_vizier_wake_pick() {  # <raw_inbox_json> <run_ids one per line> -- one message, or empty
+  # THREE FILTERS, ALL LOAD-BEARING:
+  #   read == 0   -- `read` flips to 1 when a delivery is formed, so this is
+  #                  "nobody has taken delivery of this yet". It is the same
+  #                  boundary the old `--peek` wait had, not a new one.
+  #   run_id      -- only Runs this vizier has an OPEN request for.
+  #   type        -- VIZIER_WAKE_TYPES, applied here because `inbox` has no
+  #                  `--types` of its own.
+  # THE NEWEST MATCH IS NAMED, and it is chosen by an explicit sort rather
+  # than by trusting the order `inbox` happens to return. `inbox` was observed
+  # newest-first, but that was one measurement over one Run, and the choice
+  # is not cosmetic: the Claude hook compares each summary against the last
+  # one it reported and stays silent on a repeat, so naming a stale message
+  # while a fresh one waits would suppress the wake entirely. Sorting here
+  # makes that independent of an ordering nobody has pinned.
+  local raw="$1" runs="$2"
+  vizier_mailbox_ok "$raw" || return 0
+  printf '%s' "$raw" | jq -c --arg types "$VIZIER_WAKE_TYPES" --arg runs "$runs" '
+      ($types | split(",")) as $t
+    | ($runs | split("\n") | map(select(length > 0))) as $r
+    | [ .result.messages[]?
+        | select(.read == 0)
+        | select(.run_id as $x | $r | index($x))
+        | select(.type  as $y | $t | index($y)) ]
+    | sort_by([.created_at, .sequence])
+    | last // empty
+  ' 2>/dev/null
 }
 
-_vizier_wake_kill_all() {  # <tmpdir>
-  local p
-  [ -f "$1/pids" ] || return 0
-  while IFS= read -r p; do
-    case "$p" in ''|*[!0-9]*) continue ;; esac
-    kill "$p" 2>/dev/null || true
-  done < "$1/pids"
-  wait 2>/dev/null || true
+# Read run ids from stdin, poll up to <timeout_ms>, print one summary line or
+# empty.
+vizier_wait_any_run() {  # <timeout_ms>
+  # NO BACKGROUND CHILDREN, AND SO NO TRAPS. The previous version forked one
+  # `orca --wait` per Run and needed two traps plus a pid file to guarantee
+  # none of them outlived the hook -- an orphan could live eight hours, once
+  # per turn per session. Polling a single short-lived call removes that whole
+  # class of failure rather than managing it: there is nothing left to leak.
+  # The harness still owns the process group, so cutting the hook still ends
+  # everything here; `set -m` must never appear in this file, for the same
+  # reason it never could.
+  local timeout_ms=$1 runs="" run poll_s deadline raw line
+  while IFS= read -r run; do
+    [ -n "$run" ] || continue
+    runs="${runs}${run}
+"
+  done
+  [ -n "$runs" ] || return 0
+
+  # Deadline by REAL wall-clock time, not a logical counter: a counter that
+  # accumulates poll ticks drifts away from real time, since each iteration
+  # also costs time running the loop body.
+  poll_s=$(awk -v m="${VIZIER_WAKE_POLL_MS}" 'BEGIN{printf "%.3f", m/1000}')
+  deadline=$(( $(date +%s) + (timeout_ms + 999) / 1000 ))
+  while :; do
+    # `</dev/null` is kept from the old fan-out for the same reason it was
+    # added there: `orca` is a real process, and nothing about this loop
+    # should depend on what it does or does not read from an inherited stdin.
+    raw=$(orca orchestration inbox --limit "$VIZIER_WAKE_INBOX_LIMIT" --json \
+            2>/dev/null </dev/null)
+    line=$(_vizier_wake_pick "$raw" "$runs")
+    if [ -n "$line" ]; then
+      vizier_summarize "$line"
+      return 0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || return 0
+    sleep "$poll_s"
+  done
 }

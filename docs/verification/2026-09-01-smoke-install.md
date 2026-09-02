@@ -22,7 +22,7 @@ repository. This document records what happened when it did.
 | `vizier version` after install | `payload: dist matches src` |
 | `~/.cursor/hooks.json` | byte-identical before and after; the bare install skipped Cursor as designed |
 | Claude Code plugin load | `vizier@skills-dir`, status `loaded`; components `identity` and `vizier` |
-| `${CLAUDE_PLUGIN_ROOT}` | **resolved** -- the model ran `"/Users/toantv/.claude/skills/vizier/bin/vizier-activate.sh" claude` |
+| `${CLAUDE_PLUGIN_ROOT}` | **resolved** -- the model ran `"~/.claude/skills/vizier/bin/vizier-activate.sh" claude` |
 | child-session guard (since removed, see Correction below) | fired in the real world: `refused reason=child_session`, exit 2 -- this was NOT a success: it was the guard blocking the captain's only real activation attempt outright, the defect described in the Correction section |
 | the command file's rc rules | followed: the model stopped on rc 2, did not retry, did not touch the lock |
 

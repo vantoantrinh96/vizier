@@ -50,7 +50,7 @@ Every response is enveloped:
 | `orca worktree ps` | `orca worktree ps [--json]` |
 | `orca orchestration run-create` | `--objective <text> [--from <handle>] [--json]` |
 | `orca orchestration task-create` | `--spec <text> [--task-title <text>] [--display-name <text>] [--deps <json_array>] [--parent <task_id>] [--run <run_id>] [--json]` |
-| `orca orchestration worker-start` | `--task <task_id> [--on <saved-environment>] [--worktree <current\|selector\|new-child\|new-top-level>] (--agent <agent> \| --terminal <handle>) [--model <id>] [--effort <level>] [--name <name>] [--repo <selector>] [--base-branch <ref>] [--setup <run\|skip\|inherit>] [--retry-of <dispatch_id>] [--timeout-ms <n>] [--run <run_id>] [--json]` |
+| `orca orchestration worker-start` ⚠ **the usage line below is Orca's own `--help` text and it is MISLEADING: `new-top-level`, `new-child` and `current` all return `selector_not_found` (measured 2026-09-02). `worker-start` only ever SELECTS an existing worktree; `orca worktree create` makes one. See `docs/verification/2026-09-02-smoke-real-loop.md` §1.** | `--task <task_id> [--on <saved-environment>] [--worktree <current\|selector\|new-child\|new-top-level>] (--agent <agent> \| --terminal <handle>) [--model <id>] [--effort <level>] [--name <name>] [--repo <selector>] [--base-branch <ref>] [--setup <run\|skip\|inherit>] [--retry-of <dispatch_id>] [--timeout-ms <n>] [--run <run_id>] [--json]` |
 | `orca orchestration worker-show` | `--dispatch <dispatch_id> [--json]` |
 | `orca orchestration worker-release` | `--dispatch <dispatch_id> [--json]` |
 | `orca orchestration worker-list` | `[--run <run_id>] [--terminal-state <active\|reclaimable\|retained\|release_pending\|release_unknown\|released>] [--json]` |
@@ -128,9 +128,14 @@ Decided while writing the plan. Recorded so an implementer does not re-litigate 
 - `tests/helpers.sh` — helpers to seed projects, requests, and fake dispatch state.
 - `bin/vizier-adapter-claude.sh` — ship the four new skills.
 - `skills/identity/SKILL.md` — point at the new skills; no new rules.
-- `tests/run-all.sh` — register the new test files.
 
-**New tests:** `tests/request-lib.test.sh`, `tests/routing-lib.test.sh`, `tests/brief-lib.test.sh`, `tests/supervise-lib.test.sh`, `tests/loop.test.sh`.
+**New tests:** `tests/fake-orca.test.sh`, `tests/request-lib.test.sh`, `tests/routing-lib.test.sh`, `tests/brief-lib.test.sh`, `tests/supervise-lib.test.sh`, `tests/skills.test.sh`, `tests/loop.test.sh`.
+
+**Do NOT edit `tests/run-all.sh` to register a test file.** It runs
+`for t in *.test.sh` (line 48) and discovers new files by itself. Converting
+that glob into an explicit list is a regression: the next test file anyone adds
+would silently never run. The only reason to touch `run-all.sh` in this plan is
+if a task genuinely changes how the suite runs, and no task does.
 
 ---
 
@@ -280,7 +285,10 @@ fake_orca_seed_worker() {  # <dispatch_id> <terminal_handle>
 
 - [ ] **Step 4: Rewrite fake-orca**
 
-Replace `tests/fake-orca/orca` entirely:
+Replace `tests/fake-orca/orca` entirely (this is the file as actually shipped
+in `791635f`; the first draft of this plan omitted the `exit 0` on every branch
+but `orchestration check`, so successful calls fell through to the `exit 64`
+handler — found by the Task 1 implementer and confirmed by the reviewer):
 
 ```bash
 #!/usr/bin/env bash
@@ -352,32 +360,38 @@ case "$1 ${2:-}" in
       '{target:{kind:"local"},app:{running:true,pid:0,desktopWindowStatus:"available"},runtime:$rt,graph:{state:"ready"}}')
     result="${VIZIER_FAKE_ORCA_STATUS_RESULT:-$default_result}"
     envelope "$result"
+    exit 0
     ;;
 
   "host list")
     hosts=$(jq -cs '.' "$STATE/hosts" 2>/dev/null || printf '[]')
     envelope "$(jq -cn --argjson h "${hosts:-[]}" '{hosts:$h}')"
+    exit 0
     ;;
 
   "project setups")
     all=$(jq -cs '.' "$STATE/setups" 2>/dev/null || printf '[]')
     envelope "$(jq -cn --argjson s "${all:-[]}" --arg p "$project" --arg h "$host" \
       '{setups: ($s | map(select(($p=="" or .projectId==$p) and ($h=="" or .hostId==$h))))}')"
+    exit 0
     ;;
 
   "worktree ps")
     envelope '{"totalCount":0,"truncated":false,"worktrees":[]}'
+    exit 0
     ;;
 
   "orchestration run-create")
     id=$(next_id run run)
     envelope "$(jq -cn --arg id "$id" --arg o "$objective" '{run:{id:$id,objective:$o}}')"
+    exit 0
     ;;
 
   "orchestration task-create")
     id=$(next_id task task)
     printf '%s' "$spec" > "$STATE/spec.$id"
     envelope "$(jq -cn --arg id "$id" --arg r "$run_id" '{task:{id:$id,run_id:$r}}')"
+    exit 0
     ;;
 
   "orchestration worker-start")
@@ -387,21 +401,25 @@ case "$1 ${2:-}" in
     [ -f "$STATE/workers/$id" ] || printf 'term-%s\n' "$n" > "$STATE/workers/$id"
     envelope "$(jq -cn --arg id "$id" --arg t "$task" --arg on "$on_host" \
       '{dispatch:{id:$id,task_id:$t,on:$on,state:"running"}}')"
+    exit 0
     ;;
 
   "orchestration worker-show")
     h=$(cat "$STATE/workers/$dispatch" 2>/dev/null || printf '')
     envelope "$(jq -cn --arg d "$dispatch" --arg h "$h" \
       '{worker:{dispatch_id:$d,agent_terminal_handle:$h,state:"settled"}}')"
+    exit 0
     ;;
 
   "orchestration worker-release")
     st="${VIZIER_FAKE_ORCA_RELEASE_STATE:-released}"
     envelope "$(jq -cn --arg d "$dispatch" --arg s "$st" '{release:{dispatch_id:$d,state:$s}}')"
+    exit 0
     ;;
 
   "orchestration worker-list")
     envelope '{"workers":[]}'
+    exit 0
     ;;
 
   "orchestration check")
@@ -440,6 +458,7 @@ case "$1 ${2:-}" in
   "orchestration send"|"orchestration reply"|"orchestration ask")
     id=$(next_id msg msg)
     envelope "$(jq -cn --arg id "$id" --arg r "$msg_id" '{message:{id:$id,in_reply_to:$r}}')"
+    exit 0
     ;;
 
 esac
@@ -462,14 +481,10 @@ The wake tests already drive `orchestration check` and `status`. They must not h
 Run: `bash tests/run-all.sh`
 Expected: PASS, same count as before plus this file's assertions.
 
-- [ ] **Step 7: Register the new test file**
-
-In `tests/run-all.sh`, add `fake-orca.test.sh` to the list of test files.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add tests/fake-orca/orca tests/helpers.sh tests/fake-orca.test.sh tests/run-all.sh
+git add tests/fake-orca/orca tests/helpers.sh tests/fake-orca.test.sh
 git commit -m "test: fake-orca covers the full Run/Task/Worker surface"
 ```
 
@@ -717,9 +732,8 @@ vizier_request_open_slugs() {
 Run: `bash tests/request-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the whole suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `request-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -727,7 +741,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/vizier-request-lib.sh tests/request-lib.test.sh tests/run-all.sh
+git add lib/vizier-request-lib.sh tests/request-lib.test.sh
 git commit -m "feat: request file lifecycle"
 ```
 
@@ -804,7 +818,10 @@ assert_contains "$(fake_orca_calls)" "project setups --project github:acme/platf
 # --- the table ------------------------------------------------------------
 fake_orca_set_status "Mac mini" ready true
 t=$(vizier_routing_table github:acme/platform)
-assert_eq "$(printf '%s' "$t" | wc -l | tr -d ' ')" "3" "one row per host"
+# printf '%s\n', not '%s': command substitution strips the trailing newline,
+# so `wc -l` over a bare '%s' counts one fewer line than there are rows and
+# this assertion can never pass.
+assert_eq "$(printf '%s\n' "$t" | wc -l | tr -d ' ')" "3" "one row per host"
 assert_eq "$(printf '%s\n' "$t" | awk -F'\t' '$1=="this machine"{print $4}')" "yes" "local eligible"
 assert_eq "$(printf '%s\n' "$t" | awk -F'\t' '$1=="Mac mini"{print $4}')" "no" "healthy host with a pending setup is NOT eligible"
 assert_eq "$(printf '%s\n' "$t" | awk -F'\t' '$1=="Broken box"{print $4}')" "no" "unreachable host is not eligible"
@@ -892,9 +909,8 @@ vizier_routing_table() {  # <project_id> -- name TAB health TAB setup TAB eligib
 Run: `bash tests/routing-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `routing-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -902,7 +918,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/vizier-routing-lib.sh tests/routing-lib.test.sh tests/run-all.sh
+git add lib/vizier-routing-lib.sh tests/routing-lib.test.sh
 git commit -m "feat: host routing eligibility"
 ```
 
@@ -1081,7 +1097,7 @@ You are a crew agent working one task inside one Orca worktree.
   `tasks-axi`, `lavish-axi`, `chrome-devtools-axi`, or `quota-axi`, even if
   one looks more convenient, unless this project's section below names a
   different tool for that job.
-- Never stop, restart, or update the `no-mistakes` daemon. One instance is
+- Never stop, restart, or update the no-mistakes daemon. One instance is
   shared across every worktree and every host, and restarting it kills
   someone else's running pipeline. A daemon error means: escalate, then stop.
 EOF
@@ -1179,9 +1195,8 @@ write it as instructions to someone who has never seen the repo.
 Run: `bash tests/brief-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 6: Register and run the suite**
+- [ ] **Step 6: Run the whole suite**
 
-Add `brief-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -1189,7 +1204,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add lib/vizier-brief-lib.sh docs/project-file-format.md tests/brief-lib.test.sh tests/run-all.sh
+git add lib/vizier-brief-lib.sh docs/project-file-format.md tests/brief-lib.test.sh
 git commit -m "feat: four-layer brief assembly"
 ```
 
@@ -1205,8 +1220,28 @@ git commit -m "feat: four-layer brief assembly"
 - Consumes: `jq`, and the `axi_outcome:` line mandated by `vizier_brief_delivery no-mistakes` (Task 4).
 - Produces:
   - `vizier_msg_disposition <mode> <json_line>` → prints `<release|hold|none> <reason>`
-  - `vizier_supervise_plan <mode>` → reads a batch of JSON lines on stdin, prints `PLAN <delivery_id> <disposition> <reason>` per message, then — **only if every message produced a disposition** — one final `ACK <last_delivery_id>` line.
+  - `vizier_supervise_plan <default_mode> [<mode_map_file>]` → reads a batch of JSON lines on stdin, prints `PLAN <delivery_id> <disposition> <reason>` per message, then — **only if every message produced a disposition** — one `ACK <delivery_id>` line **per classified delivery**, in batch order.
 - Produces no side effects: it never calls `orca`. The `supervise` skill executes the plan.
+
+> **This interface changed during execution, twice, and a third change followed
+> it downstream.** As first written it took a single `<mode>` for the whole
+> batch, which let a mixed-mode batch release a `no-mistakes` worker unchecked;
+> the mode map fixed that while keeping the all-or-nothing ack decision
+> batch-wide. It also emitted one `ACK <last id>` for the whole batch, which
+> acked only the last delivery and left the rest to be replayed on the next
+> wake — re-releasing an already-released dispatch and re-reporting the same
+> PR. A `reply` disposition was then added for `question` and `escalation`, so
+> a captain decision can no longer be acked away unanswered, and the skill
+> grew a `run_id` guard for a wake naming no open request. All were found by
+> review, not by the tests below.
+>
+> **Every task text and test snippet that follows is the original draft**, kept
+> as the historical record. The authoritative sources are
+> `lib/vizier-supervise-lib.sh` and `tests/supervise-lib.test.sh` for the
+> library, `skills/supervise/SKILL.md` for the procedure the model follows, and
+> `tests/loop.test.sh` for the end-to-end ack behaviour. Where this plan and
+> any of those four disagree, the shipped file is right and the plan is
+> history.
 
 **Why a plan and not an executor:** the spec's rule is "ack only after every message in the batch is processed". As prose in a skill that rule is forgettable. As a function that withholds the `ACK` line unless every message classified, it is enforced, and testable without a model.
 
@@ -1393,9 +1428,8 @@ vizier_supervise_plan() {  # <mode> -- batch JSON lines on stdin
 Run: `bash tests/supervise-lib.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `supervise-lib.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -1403,7 +1437,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/vizier-supervise-lib.sh tests/supervise-lib.test.sh tests/run-all.sh
+git add lib/vizier-supervise-lib.sh tests/supervise-lib.test.sh
 git commit -m "feat: mailbox batch disposition rules"
 ```
 
@@ -1414,6 +1448,16 @@ git commit -m "feat: mailbox batch disposition rules"
 **Files:**
 - Create: `skills/request/SKILL.md`
 - Test: `tests/skills.test.sh` (create; Tasks 7–9 add to it)
+
+**How these assertions work, and how they break.** `has` is a literal,
+case-sensitive substring match against the raw Markdown. Three things therefore
+break an assertion that looks correct: a capital letter at the start of a
+sentence (`Never silently` is not `never silently`), a pair of backticks inside
+the phrase (`` `no-mistakes` daemon `` does not contain `no-mistakes daemon`),
+and a shell command wrapped across a line continuation (`worker-start \` then
+`--task` does not contain `worker-start --task`). Five assertions in the first
+draft of this plan were unpassable for exactly these reasons. When you add one,
+grep the skill text for your needle before trusting it.
 
 **Interfaces:**
 - Consumes: `lib/vizier-request-lib.sh`, `lib/vizier-routing-lib.sh`.
@@ -1448,7 +1492,7 @@ has $f "name: request" "skill is named"
 has $f "orca orchestration run-create --objective" "the exact run-create call"
 has $f "vizier_routing_table" "routing comes from the library"
 has $f "exactly once" "the host is asked exactly once"
-has $f "never silently" "no silent host substitution"
+has $f "Never silently" "no silent host substitution"
 has $f "orca project setup-clone" "setup-clone is proposed, not run"
 has $f "vizier_request_create" "the request file is written through the library"
 has $f "vizier_request_close" "closing goes through the library"
@@ -1553,9 +1597,8 @@ Host pinning ends here. The next request routes from scratch.
 Run: `bash tests/skills.test.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Register and run the suite**
+- [ ] **Step 5: Run the whole suite**
 
-Add `skills.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh`
 Expected: PASS.
@@ -1563,7 +1606,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add skills/request/SKILL.md tests/skills.test.sh tests/run-all.sh
+git add skills/request/SKILL.md tests/skills.test.sh
 git commit -m "feat: request lifecycle skill"
 ```
 
@@ -1589,12 +1632,12 @@ f=skills/brief/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "brief skill exists"
 has $f "vizier_brief_assemble" "the spec comes from the library, never hand-written"
 has $f "orca orchestration task-create --spec" "exact task-create"
-has $f "orca orchestration worker-start --task" "exact worker-start"
+has $f "orca orchestration worker-start" "exact worker-start"
 has $f "--worktree new-top-level" "isolation default"
 has $f "--setup run" "setup runs"
 has $f "--on" "the host is passed through"
 has $f "inherits the request's host" "host inheritance is stated"
-has $f "ask the captain" "an unknown delivery mode is asked, never guessed"
+has $f "Ask the captain" "an unknown delivery mode is asked, never guessed"
 has $f "--effort" "model hints are applied"
 has $f "requires --model" "effort depends on model"
 has $f "--retry-of" "retries chain"
@@ -1676,8 +1719,8 @@ orca orchestration worker-start \
 ```
 
 Model hints from the project file (`model_scout`, `effort_scout`, …) are applied
-as `--model <id> --effort <level>`. Orca **requires `--model` whenever
-`--effort` is given**, and accepts neither when reusing a terminal via
+as `--model <id> --effort <level>`. Orca **requires --model whenever
+--effort is given**, and accepts neither when reusing a terminal via
 `--terminal`.
 
 Record the dispatch in the request file:
@@ -1705,7 +1748,7 @@ Expected: PASS.
 - [ ] **Step 5: Run the suite and commit**
 
 ```bash
-bash tests/run-all.sh
+bash
 git add skills/brief/SKILL.md tests/skills.test.sh
 git commit -m "feat: brief and dispatch skill"
 ```
@@ -1721,6 +1764,16 @@ git commit -m "feat: brief and dispatch skill"
 **Interfaces:**
 - Consumes: `vizier_supervise_plan` (Task 5); the wake hook from Plan 1, which is what causes this skill to run.
 - Produces: released or held terminals, one consolidated report to the captain.
+
+> **SUPERSEDED DRAFT — read `skills/supervise/SKILL.md`, not this.** The draft
+> below shows `## 4. Ack last` with a single `--ack` for the batch, no `reply`
+> disposition, and no `run_id` guard. All three are wrong in the shipped skill:
+> it acks once per `ACK` line, it has a `reply` disposition that a `question`
+> or `escalation` cannot be acked past, the batch is not acked until the one
+> consolidated report has actually put an escalation in front of the captain,
+> and §0 stops the skill when a wake's `run_id` names no open request.
+> `skills/supervise/SKILL.md` and its assertions in `tests/skills.test.sh` are
+> authoritative; this task text is the historical record of the first attempt.
 
 - [ ] **Step 1: Add the failing assertions**
 
@@ -1840,7 +1893,7 @@ PR URLs, and decisions the captain must make.
 
 ```bash
 bash tests/skills.test.sh
-bash tests/run-all.sh
+bash
 git add skills/supervise/SKILL.md tests/skills.test.sh
 git commit -m "feat: supervision skill"
 ```
@@ -1865,7 +1918,7 @@ f=skills/delivery/SKILL.md
 assert_eq "$(test -f "$R/$f" && echo yes)" "yes" "delivery skill exists"
 has $f "never call" "the first mate never drives a worker's run"
 has $f "axi respond" "the command it must not run is named"
-has $f "one precise decision" "the reply is a single decision"
+has $f "One precise decision" "the reply is a single decision"
 has $f "expand the contract" "the escalation test is stated"
 has $f "not authority" "a reviewer label is evidence, not authority"
 has $f "security" "security-sensitive findings escalate"
@@ -1948,7 +2001,7 @@ pipeline. That is the captain's call, on the machine that owns the daemon.
 
 ```bash
 bash tests/skills.test.sh
-bash tests/run-all.sh
+bash
 git add skills/delivery/SKILL.md tests/skills.test.sh
 git commit -m "feat: delivery decision skill"
 ```
@@ -2035,6 +2088,14 @@ git commit -m "feat: identity names the four coordination skills"
 - Produces: the regression that catches an integration break no single library test would.
 
 **Why this exists separately:** each library is correct in isolation. What no unit test covers is the *order* — that the request file is written before a worker starts, that the host recorded at open is the host passed at dispatch, and that a `hold` really does leave the terminal unreleased all the way through.
+
+> **SUPERSEDED DRAFT — read `tests/loop.test.sh`, not this.** The draft below
+> asserts a single `ACK d1` for the whole batch, which is the ack contract
+> Task 5's blockquote records as wrong: the shipped planner emits one `ACK`
+> line **per classified delivery**, and a `question` or `escalation` plans as
+> `reply` rather than being acked past. `tests/loop.test.sh` as it stands in
+> the repo is authoritative; this task text is the historical record of the
+> first attempt.
 
 - [ ] **Step 1: Write the test**
 
@@ -2127,9 +2188,8 @@ Expected: PASS. If the `--on Mac mini` assertion fails, the host is being
 re-derived somewhere instead of read from the request file — fix that, not the
 assertion.
 
-- [ ] **Step 3: Register and run the suite**
+- [ ] **Step 3: Run the whole suite**
 
-Add `loop.test.sh` to `tests/run-all.sh`.
 
 Run: `bash tests/run-all.sh` — five times in a row.
 Expected: PASS every time, identical assertion count. A varying count means a
@@ -2138,7 +2198,7 @@ test depends on timing or on state left by a previous file.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/loop.test.sh tests/run-all.sh
+git add tests/loop.test.sh
 git commit -m "test: the coordination loop end to end"
 ```
 
