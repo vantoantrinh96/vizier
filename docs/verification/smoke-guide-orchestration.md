@@ -1,302 +1,261 @@
 # Running the real orchestration smoke
 
-Task 12 of the orchestration plan. Everything else in the plan is built and
-reviewed against `tests/fake-orca`; this is the only step that runs against the
-real Orca app, and the only thing that can answer the questions at the bottom.
+**Rewritten 2026-09-02, after a first pass that changed most of what this said.**
+The mechanical half — every Orca call the skills make — has now been run against
+the real app and is recorded in
+`docs/verification/2026-09-02-smoke-real-loop.md`. What is left is the half only
+a person can drive: **a live first-mate session exercising the skills as
+prompts.**
 
-Written 2026-09-02 against the state of this machine: Orca **1.4.193**,
-`state=ready reachable=true`.
-
----
-
-## Two dangers, read before anything else
-
-**1. The only project currently `ready` in Orca is a real work repo.**
-
-```
-github:luminpdf/platform  on host local: ready  path=/Users/toantv/data/me/lumin/platform
-```
-
-If you open a Request without registering something else first, that is what the
-first mate will route to, and a crew agent will make a branch and open a PR in
-it. **Step 1 exists to prevent that.** Never smoke against a repo with work in it.
-
-**2. The installed `vizier` is Plan 1 only.**
-
-```
-$ vizier version
-source:   1d95c70 …
-```
-
-None of the orchestration code is installed — no `request`/`brief`/`supervise`/
-`delivery` skills, none of the six libraries. Step 0 installs the branch, and
-tells you how to put it back.
+Against Orca **1.4.193** on this machine.
 
 ---
 
-## Step 0 — install the branch, and know how to undo it
+## The four questions the old version of this guide asked are answered
+
+Do not re-derive them; they are measured and pinned to fixtures.
+
+| Question | Answer |
+|---|---|
+| Does `--ack` acknowledge cumulatively or one delivery at a time? | **Per delivery, one per batch.** The handle is `result.deliveryId`, only a default read creates one, and `--ack <a message id>` is refused with `stale_delivery`. |
+| What does a real mailbox message look like? | Captured — `tests/fixtures/check-delivery.json`. `.id`, and `dispatchId`/`outcome` inside `payload`, which is a JSON **string**. |
+| Does the wake hook fire against a real mailbox? | It **never had.** `check --json` returns one pretty-printed envelope, so the old JSON-lines reader matched nothing. It fires now, via `inbox`. |
+| Does `worker-release` ever return `release_pending`/`release_unknown`? | Yes — `release_unknown` with `lastError: tab_not_found`, and `retained` on a healthy dispatch. Three states, not one. |
+
+## What this smoke is now FOR
+
+Only these. Everything else has either a test or a measurement behind it.
+
+1. **The skills as prompts.** A live first mate confirming the project instead
+   of assuming it, showing a routing table with a *reason* per host, asking the
+   host question **exactly once**, and writing the captain's **verbatim** words
+   into the request file.
+2. **The Stop hook waking a real session by itself**, with nobody typing. The
+   wait function is tested directly; the hook firing end-to-end in a live
+   session is not.
+3. **Wake latency** against a real mailbox — now a poll, not a block.
+4. **`gh pr create`** — the closing step of `direct-PR`, never once exercised,
+   because the smoke repo has no remote.
+
+---
+
+## Step 0 — what is already done on this machine
+
+Skip these; they are set up. Verify rather than redo.
+
+```sh
+orca project setups --json | jq -r '.result.setups[] | "\(.projectId) \(.hostId) \(.setupState)"'
+#   -> repo:47ce5164-51f9-4f2e-9a3f-f32a1aa9c1a0 local ready   (~/tmp/vizier-smoke)
+cat ~/.vizier/projects/vizier-smoke.md          # delivery: direct-PR
+ls ~/.vizier/requests/                          # all closed; `vizier_open_run_ids` is empty
+```
+
+`~/tmp/vizier-smoke` is also **trusted in Claude Code**, which matters — see the
+trust trap in Step 5.
+
+⚠ It has **no git remote**. Without one, `direct-PR` cannot finish and the crew
+agent will (correctly) stop and ask. If you want question 4 answered, create one
+first:
+
+```sh
+cd ~/tmp/vizier-smoke
+gh auth switch --user vantoantrinh96
+gh repo create vizier-smoke --private --source=. --push
+gh auth switch --user toantvlumin        # always switch back
+```
+
+## Step 1 — install this branch
+
+The installed `vizier` is still the Plan 1 build (`1d95c70`) and its dist does
+not even match its src. **None of the orchestration work is live until you do
+this.**
 
 ```sh
 cd ~/data/me/lumin/self-harness/orca-firstmate
 git rev-parse --abbrev-ref HEAD          # expect: feat/orchestration
 bin/vizier install
 vizier version                           # source: should now be the branch head
-vizier doctor
+vizier doctor                            # Orca reachable, jq/git/gh present
 ```
 
-`install` refreshes `~/.vizier/src` and `~/.vizier/dist` and re-points the
-harness adapters. `doctor` must report Orca reachable and `jq`/`git`/`gh` present.
+⚠ `install` re-points the harness adapters, so it **changes the skills of any
+Claude session already running**. Do it when no first mate is mid-task.
 
 **To undo, at any point:**
 
 ```sh
 cd ~/data/me/lumin/self-harness/orca-firstmate
-git checkout main
-bin/vizier install
+git checkout main && bin/vizier install
 ```
-
-That returns you to the merged Plan 1 build. Your `~/.vizier/requests/` and
-`~/.vizier/projects/` files are *not* touched by install — delete them by hand
-if you want a clean slate.
-
----
-
-## Step 1 — make a throwaway repo and register it with Orca
-
-```sh
-mkdir -p ~/tmp/vizier-smoke && cd ~/tmp/vizier-smoke
-git init -b main
-printf '# vizier smoke\n' > README.md
-git add README.md && git commit -m "init"
-```
-
-It needs a real remote, because `direct-PR` mode ends in `gh pr create`:
-
-```sh
-gh auth switch --user vantoantrinh96
-gh repo create vizier-smoke --private --source=. --push
-gh auth switch --user toantvlumin        # put your default account back
-```
-
-Then register it with Orca and confirm it is `ready`:
-
-```sh
-orca repo add --path ~/tmp/vizier-smoke
-orca project setups --json | jq -r '.result.setups[] | "\(.projectId) \(.hostId) \(.setupState)"'
-```
-
-You want a line for the smoke repo with `setupState: ready`. If it is not ready,
-stop here and sort that out first — routing is supposed to refuse a host with no
-ready setup, and you cannot tell a correct refusal from a broken one if the
-setup genuinely is not there.
-
-**Write the project knowledge file**, or the first mate will ask you for the
-delivery mode (which is correct behaviour, but adds a question to every task):
-
-```sh
-mkdir -p ~/.vizier/projects
-cat > ~/.vizier/projects/vizier-smoke.md <<'EOF'
----
-delivery: direct-PR
----
-Nothing to build. Nothing to test.
-PRs target `main`. Keep changes to one file.
-EOF
-```
-
----
 
 ## Step 2 — free the lock
 
-A live session currently holds it:
-
-```
-session_id=43af847f-…  harness=claude  pid=36460   (alive)
-```
-
-Two ways forward. Either **run the smoke in that session** — it is already the
-first mate — or, if you would rather start fresh:
-
 ```sh
-vizier unlock          # only after you are sure that session is finished with
+cat ~/.vizier/lock          # session_id / harness / pid
+ps -p <pid>                 # is that session still alive?
 ```
 
-`unlock` clears the lock whoever holds it. It exists precisely because a `/clear`
-or a resume leaves the process alive with a new session id, which the lock can
-never match again. It does not ask, so be sure first.
-
----
+Either run the smoke **in** that session — it is already the first mate — or
+`vizier unlock` if you would rather start fresh. `unlock` does not ask, so be
+sure the holder is finished first.
 
 ## Step 3 — activate a fresh session
 
-Open a new Claude Code session **in the smoke repo**, not in this one:
+Open Claude Code **in the smoke repo**, not in this one, then `/vizier:vizier`.
 
 ```sh
 cd ~/tmp/vizier-smoke && claude
 ```
 
-Then run `/vizier:vizier`.
-
-**Watch for:** it should say it is the first mate, report `0 requests open`, and
-propose the project from `git remote get-url origin` as a *suggestion* that it
-asks you to confirm. If it announces a project as decided, that is a finding —
-the working directory is never authority.
-
-Confirm the lock really moved, from any other terminal:
-
-```sh
-cat ~/.vizier/lock
-```
-
----
+**Watch for:** it says it is the first mate, reports `0 requests open`, and
+proposes the project from `git remote get-url origin` as a *suggestion it asks
+you to confirm*. If it announces a project as decided, that is a finding — the
+working directory is never authority.
 
 ## Step 4 — open a Request, and watch routing
 
-Tell it, in your own words, something like:
+Tell it, in your own words:
 
 > Add a LICENSE file with the MIT text. One task.
 
-**What must happen, in order:**
+**In order:**
 
 1. It confirms the project with you.
-2. It shows a routing table with **both** hosts and a reason for each:
-   - `this machine` — eligible
-   - `Mac mini` — **not** eligible, because there is no ready setup for this
-     project on it
-3. It asks you to choose a host — **once**. This is the request's only
-   mandatory question.
+2. It shows a routing table with **both** hosts and a reason for each —
+   `this machine` eligible, `Mac mini` **not** eligible for want of a ready
+   setup.
+3. It asks you to choose a host, **once**.
 
-**Findings to write down if you see them:** a host presented without a reason; a
-choice made for you; being asked about the host more than once; `Mac mini`
-offered as eligible when it has no setup.
-
-Then check what it wrote:
+**Findings to write down:** a host presented without a reason; a choice made for
+you; being asked twice; `Mac mini` offered as eligible.
 
 ```sh
 cat ~/.vizier/requests/*.md
 ```
 
-Frontmatter should carry `run_id`, `project`, `project_id`, `host`, `status:
-open`, `opened`. The body should quote **your** words, not a paraphrase.
-
----
+Frontmatter carries `run_id`, `project`, `project_id`, `host`, `status: open`,
+`opened`. The body quotes **your** words, not a paraphrase.
 
 ## Step 5 — the brief and the dispatch
 
-Let it create the task and start the worker. Before it does, ask it to show you
-the `--spec` it is about to send. Check the four layers are all there:
+Ask to see the `--spec` before it dispatches. Four layers:
 
 ```
-## 1. Invariants     ## 2. Project     ## 3. Delivery     ## 4. Task
+## 1. Invariants   ## 2. Project   ## 3. Delivery   ## 4. Task
 ```
 
-Layer 1 must name the banned tools (`gh-axi`, `tasks-axi`, …) explicitly, and
-layer 3 must open with `Delivery contract: mode=direct-PR`.
+Layer 1 must name the banned tools (`gh-axi`, `tasks-axi`, …); layer 3 must open
+with `Delivery contract: mode=direct-PR`.
 
-Confirm the host you chose is the host that reaches the dispatch:
+**The dispatch is TWO calls.** `worker-start` only ever *selects* a worktree;
+`orca worktree create` makes one. `--worktree new-top-level` returns
+`selector_not_found` — measured twice, the second time with `--name` and a valid
+`--repo` both present. If you see `new-top-level` in the transcript, that is a
+finding.
+
+⚠ **THE TRUST TRAP, and it will bite.** A brand-new worktree lands in
+`~/orca/workspaces/<repo>/<name>` — a **different path** from the repo root, and
+Claude Code's trust is per exact path. The agent launches into its first-run
+"Is this a project you trust?" dialog, Orca's prompt paste lands in the dialog,
+and the dispatch fails with:
+
+```
+worker-show -> status "failed", last_failure "agent_prompt_blocked"
+```
+
+**It latches. No CLI call clears it** — `orca terminal send --text 1 --enter`
+against that terminal is itself refused with `agent_prompt_blocked`. Clear it in
+the **Orca UI** (accept the dialog once for that path), then re-dispatch. A good
+first mate reports exactly this instead of retrying; if it retries blind, that is
+a finding.
+
+A successful dispatch reads `state: ready` **and** `stage: input_accepted` —
+launched *and* prompted. Confirm the host you chose reached it:
 
 ```sh
-orca orchestration worker-list --json | jq '.result'
+orca orchestration worker-list --json | jq '.result.workers'
 ```
 
-**This is the single most important assertion of the whole smoke.** The host you
-picked in step 4 must be the one on the dispatch. Everything else has a unit
-test; this crosses three files and a file-on-disk.
+`.dispatchId`, `.workerState`, `.agentTerminalHandle` — camelCase here, and
+snake_case in `worker-show`. That is Orca's own inconsistency.
 
----
+**This is the single most important assertion of the whole smoke:** the host you
+picked in Step 4 is the host on the dispatch. Everything else has a unit test;
+this crosses three files and a file on disk.
 
 ## Step 6 — the wake, and supervision
 
-Now leave the session alone. The worker does its task and sends `worker_done`;
-the Stop hook is waiting on the mailbox and should wake the session **by itself**,
-without you typing anything.
+Leave the session alone. The hook polls `orca orchestration inbox` (unbound,
+across Runs, `read == 0` means new) and should wake the session **by itself**.
 
-**Time it.** Note the gap between the worker finishing and the session waking.
-Plan 1 measured a 40 ms wake from idle, but never with a real Orca mailbox behind
-it.
+**Time it.** Default cadence is 3000 ms, so expect seconds, not the 40 ms of the
+Plan 1 idle measurement — it is a poll now, not a block.
 
-When it wakes it should: read the batch, plan a disposition per message, act,
-ack, and give you **one** consolidated message with the PR URL.
+When it wakes it should `run-use` to bind, read the batch as a **delivery**,
+plan a disposition per message, act, report once, and ack **last** with a single
+`--ack <deliveryId>`.
 
 **Watch for:**
+- a `--peek` anywhere in the read — a peeked batch has no ack handle at all
+- more than one `--ack`, or an `--ack` naming a *message* id
+- an ack before the terminal is dealt with, or before a `reply` is answered
 - more than one report for one batch
-- an ack that happens before the terminal is dealt with
-- a `worker-release` that runs on anything other than a real `worker_done`
-- a `command not found` anywhere — that was a real bug in this branch and its
-  only symptom was a line in the transcript
+- a `worker-release` on anything that is not a real `worker_done`
+- a `command not found` anywhere — that was a real bug here and its only
+  symptom was one line in a transcript
 
----
+⚠ **Do not touch `run-use` while a batch is in flight.** A rebind bumps
+`consumer_generation` and the ack is then refused with `consumer_fenced`, "This
+mailbox Delivery belongs to a fenced consumer generation." Nothing is lost — the
+next read forms a fresh delivery — but the first mate must notice and re-plan
+rather than assume the ack went through.
+
+**If there is no remote**, the crew agent should stop and **ask** rather than
+create a repo. That is correct behaviour, and it is what happened on the last
+pass: it offered three options and said it would not create a GitHub repo
+without explicit go-ahead. Answer through the first mate, not directly.
 
 ## Step 7 — close, then look at what is left
-
-Tell it the request is done. It should release any remaining dispatch and set
-`status: closed`.
 
 ```sh
 cat ~/.vizier/requests/*.md               # status: closed
 orca orchestration worker-list --json     # nothing still holding a terminal
-pgrep -fl 'orchestration check'           # no orphaned waiters
+orca terminal list --json                 # no leftover agent terminals
+orca worktree list --json                 # no leftover worktrees
+pgrep -fl 'orchestration inbox'           # no orphaned pollers
 ```
 
-The PR must still be **open and unmerged** — the captain merges every PR, and a
-crew agent that merged its own is a serious finding.
+The PR, if there is one, must still be **open and unmerged** — the captain
+merges; a crew agent that merged its own is a serious finding.
 
----
+⚠ **Every `--terminal "$h"` needs `[ -n "$h" ]` in front of it.** `orca terminal
+close` with an empty `--terminal` closes the **active** terminal. That mistake
+cost a captain's terminal tab on the last pass.
 
 ## Step 8 — record it
 
-Write `docs/verification/2026-09-02-smoke-orchestration.md` with, for each stage,
-the command and the **real response**, not a summary: the `run-create` reply, the
-request file as written, the routing table as presented, the full four-layer
-`--spec`, the `worker-start` receipt, the wake line and its delay, the batch, the
-plan, the release receipt, the PR URL, and confirmation that you merged it rather
-than the crew.
-
-Stamp the Orca version. Orca exposes no protocol marker, so the version plus the
-capability list is the compatibility evidence.
-
----
-
-## The questions this smoke exists to answer
-
-These are open and cannot be settled against `tests/fake-orca`:
-
-1. **Does `orca orchestration check --ack` acknowledge cumulatively, or one
-   delivery at a time?** The library now emits one `ACK` per classified delivery
-   and the skill issues one `--ack` each. That is safe either way, but nobody has
-   watched the real mailbox. Send a batch of two and see whether one `--ack`
-   drains both.
-2. **What does a real mailbox message actually look like?** Every field name the
-   supervisor reads — `delivery_id`, `dispatch_id`, `type`, `body`, `outcome` —
-   is asserted only against strings our own tests write. Capture one real
-   `check --json` and compare. Note that every *other* Orca response uses
-   camelCase (`setupState`, `projectId`) while these are snake_case.
-3. **Does the wake hook fire reliably against a real mailbox**, and how long does
-   it take?
-4. **Does `worker-release` ever return `release_pending` / `release_unknown` in
-   practice?** The recovery path for those is written but has never executed.
+Write a dated file in `docs/verification/` with, per stage, the command and the
+**real response**, not a summary. Stamp the Orca version: Orca exposes no
+protocol marker, so version plus capability list is the compatibility evidence.
 
 ---
 
 ## Optional second pass: the remote host
 
-Only if you want it, and only after the local pass is clean. Set the smoke repo
-up on `Mac mini` (`orca project setup-clone --project <id> --host
-0559ea68-256d-4cbc-9e53-50bda88dd120 --url <clone-url> --destination <path>`),
-then open a second Request and choose that host.
+Only after the local pass is clean. Set the smoke repo up on `Mac mini`
+(`orca project setup-clone --project <id> --host <host-id> --url <clone-url>
+--destination <path>`), then open a second Request and choose that host.
 
-This is the variant that catches a host **name** being passed where an **id**
-belongs — three different Orca commands take the same host three different ways,
-and only a real remote dispatch proves we got them right.
-
----
+This is the variant that catches a host **name** passed where an **id** belongs
+— three Orca commands take the same host three different ways, and only a real
+remote dispatch proves we got it right.
 
 ## Cleaning up afterwards
 
 ```sh
 rm -f ~/.vizier/requests/*.md ~/.vizier/projects/vizier-smoke.md
 gh auth switch --user vantoantrinh96
-gh repo delete vantoantrinh96/vizier-smoke --yes
+gh repo delete vantoantrinh96/vizier-smoke --yes     # only if you created it
 gh auth switch --user toantvlumin
 rm -rf ~/tmp/vizier-smoke
 cd ~/data/me/lumin/self-harness/orca-firstmate && git checkout main && bin/vizier install
