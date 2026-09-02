@@ -50,7 +50,7 @@ Every response is enveloped:
 | `orca worktree ps` | `orca worktree ps [--json]` |
 | `orca orchestration run-create` | `--objective <text> [--from <handle>] [--json]` |
 | `orca orchestration task-create` | `--spec <text> [--task-title <text>] [--display-name <text>] [--deps <json_array>] [--parent <task_id>] [--run <run_id>] [--json]` |
-| `orca orchestration worker-start` | `--task <task_id> [--on <saved-environment>] [--worktree <current\|selector\|new-child\|new-top-level>] (--agent <agent> \| --terminal <handle>) [--model <id>] [--effort <level>] [--name <name>] [--repo <selector>] [--base-branch <ref>] [--setup <run\|skip\|inherit>] [--retry-of <dispatch_id>] [--timeout-ms <n>] [--run <run_id>] [--json]` |
+| `orca orchestration worker-start` ⚠ **the usage line below is Orca's own `--help` text and it is MISLEADING: `new-top-level`, `new-child` and `current` all return `selector_not_found` (measured 2026-09-02). `worker-start` only ever SELECTS an existing worktree; `orca worktree create` makes one. See `docs/verification/2026-09-02-smoke-real-loop.md` §1.** | `--task <task_id> [--on <saved-environment>] [--worktree <current\|selector\|new-child\|new-top-level>] (--agent <agent> \| --terminal <handle>) [--model <id>] [--effort <level>] [--name <name>] [--repo <selector>] [--base-branch <ref>] [--setup <run\|skip\|inherit>] [--retry-of <dispatch_id>] [--timeout-ms <n>] [--run <run_id>] [--json]` |
 | `orca orchestration worker-show` | `--dispatch <dispatch_id> [--json]` |
 | `orca orchestration worker-release` | `--dispatch <dispatch_id> [--json]` |
 | `orca orchestration worker-list` | `[--run <run_id>] [--terminal-state <active\|reclaimable\|retained\|release_pending\|release_unknown\|released>] [--json]` |
